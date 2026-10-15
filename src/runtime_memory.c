@@ -376,6 +376,9 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
     uintptr_t address=(uintptr_t)*inout;
     if (flags & MAP_FIXED_FLAG) {
         if (!address || address%PAGE) return INVALID;
+        /* bbport: never over the host's low memory (the game image, the runtime's maps and, on
+         * macOS, the low heap), which MAP_FIXED would replace, nor past the guest's range. */
+        if (address<BB_LOW_MAX || size>USER_MAX || address>USER_MAX-size) return INVALID;
         if ((flags & MAP_NO_OVERWRITE) && overlaps(address,address+size,1)) return NO_MEMORY;
     } else {
         address=find_free(address,size,alignment);

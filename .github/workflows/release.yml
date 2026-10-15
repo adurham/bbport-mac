@@ -131,15 +131,20 @@ jobs:
             { [[ $log == *errors.txt ]] && cat "$log" || grep -E 'error' "$log"; } | head -640 |
               split -l 80 - "/tmp/annotation-$(basename "$log")-"
             for part in /tmp/annotation-"$(basename "$log")"-*; do
-              [[ -f $part ]] && echo "::error title=$log $(basename "$part")::$(python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\n","%0A"), end="")' < "$part")"
+              [[ -f $part ]] && echo "::error title=$log $(basename "$part")::$(python3 -c 'import sys; print(sys.stdin.read().replace("%","%25").replace("\r","%0D").replace("\n","%0A"), end="")' < "$part")"
             done
           done
+          # Third-party build output is printed with workflow commands off: a line in it can't act
+          # as one.
+          token=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          echo "::stop-commands::$token"
           for log in out/gpu-errors.txt out/loader-build.log deps-x86_64/setup.log; do
             [[ -f $log ]] && { echo "=== $log"; tail -150 "$log"; }
           done
           ls deps-x86_64/logs 2>/dev/null | while read -r log; do
             echo "=== deps-x86_64/logs/$log"; tail -40 "deps-x86_64/logs/$log"
           done
+          echo "::$token::"
           true
 
       - name: Upload the zip

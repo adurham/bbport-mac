@@ -203,14 +203,6 @@ private:
     vk::UniquePipelineCache pipeline_cache;
     Shader::Profile profile{};
     Shader::Pools pools;
-    /// bbport: set during a parallel WarmUp: Load*Pipeline queue the pipeline creation (the
-    /// driver's shader compile, `build`, run on worker threads) and the map insertion
-    /// (`finish`, run afterwards on the WarmUp thread).
-    struct PreloadJob {
-        std::function<void()> build;
-        std::function<void()> finish;
-    };
-    std::vector<PreloadJob>* preload_jobs{};
     tsl::robin_map<size_t, std::unique_ptr<Program>> program_cache;
     std::function<void(VAddr, u64)> program_memory_sync;
     std::function<void(VAddr, u64)> program_write_sync;
