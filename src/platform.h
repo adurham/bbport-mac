@@ -14,8 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/uio.h>
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
 #else
 #include <sys/random.h>
 #endif
@@ -173,20 +171,10 @@ static inline void bb_sleep_until(const struct timespec *abs_monotonic) {
 
 #ifdef __APPLE__
 /* Linux functions the runtime calls that macOS lacks, as drop-in replacements. */
-/* Reads from this process only (the runtime's sole use), failing instead of faulting. */
-static inline ssize_t process_vm_readv(pid_t pid, const struct iovec *local, unsigned long local_count,
-                                       const struct iovec *remote, unsigned long remote_count,
-                                       unsigned long flags) {
-    if (pid != getpid() || flags || local_count != 1 || remote_count != 1) { errno = EINVAL; return -1; }
-    size_t n = local[0].iov_len < remote[0].iov_len ? local[0].iov_len : remote[0].iov_len;
-    mach_vm_size_t got = 0;
-    if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)remote[0].iov_base, n,
-                               (mach_vm_address_t)(uintptr_t)local[0].iov_base, &got) != KERN_SUCCESS) {
-        errno = EFAULT;
-        return -1;
-    }
-    return (ssize_t)got;
-}
+/* Reads from this process only (the runtime's sole use), failing instead of faulting
+ * (runtime_macos.c: Mach, kept out of this header: its names clash with the runtime's). */
+ssize_t process_vm_readv(pid_t pid, const struct iovec *local, unsigned long local_count,
+                         const struct iovec *remote, unsigned long remote_count, unsigned long flags);
 static inline ssize_t getrandom(void *buffer, size_t size, unsigned flags) {
     (void)flags;
     arc4random_buf(buffer, size);
