@@ -45,6 +45,7 @@
 #include "cp/command_processor.h"
 #include "render/presenter.h"
 #include "render/rasterizer.h"
+#include "remote/bb_remote.h"
 
 namespace Frontend {
 class WindowSDL;
@@ -62,6 +63,47 @@ using namespace Pm4;
 using OrbisKernelEqueue = BbKernel::EqueueHandle;
 using OrbisKernelEvent = BbKernel::Event;
 using BbCp::CommandProcessor;
+
+// bbport (native GPU process, docs/macos-native-gpu.md): the GPU core may run in bb-gpu, where
+// these calls are forwarded; the guest's command buffers are in memory both processes share.
+namespace Gpu {
+static void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::SubmitGfx(dcb, ccb);
+        return;
+    }
+    liverpool->SubmitGfx(dcb, ccb);
+}
+static void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::SubmitAsc(gnm_vqid, acb);
+        return;
+    }
+    liverpool->SubmitAsc(gnm_vqid, acb);
+}
+static void SubmitDone(u64 frame) {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::SubmitDone(frame);
+        return;
+    }
+    liverpool->SubmitDone(frame);
+}
+static bool IsGpuIdle() {
+    return BbRemote::FrontActive() ? BbRemote::Front::IsGpuIdle() : liverpool->IsGpuIdle();
+}
+struct AscRing {
+    VAddr map_addr;
+    u32 ring_size_dw;
+};
+static AscRing AscQueue(u32 vqid) {
+    if (BbRemote::FrontActive()) {
+        const auto queue = BbRemote::Front::GetAscQueue(vqid);
+        return {VAddr(queue.map_addr), queue.ring_size_dw};
+    }
+    const auto& queue = liverpool->asc_queues[Common::SlotId{vqid}];
+    return {queue.map_addr, queue.ring_size_dw};
+}
+} // namespace Gpu
 
 namespace {
 
@@ -222,7 +264,7 @@ s32 CheckBuffers(u32 count, const void* dcbs, const u32* dcb_sizes, const void* 
 void Submit(u32 count, const u32* const* dcbs, const u32* dcb_sizes, const u32* const* ccbs,
             const u32* ccb_sizes) {
     if (send_init_state) {
-        liverpool->SubmitGfx(FrameInitState(), {});
+        Gpu::SubmitGfx(FrameInitState(), {});
         send_init_state = false;
     }
     for (u32 i = 0; i < count; ++i) {
@@ -230,7 +272,7 @@ void Submit(u32 count, const u32* const* dcbs, const u32* dcb_sizes, const u32* 
         const std::span ccb{ccbs ? ccbs[i] : nullptr, ccb_sizes ? ccb_sizes[i] / 4 : 0};
         BbGnmHooks::CheckSubmission(dcb.data(), dcb.size());
         BbGnmHooks::CheckSubmission(ccb.data(), ccb.size());
-        liverpool->SubmitGfx(dcb, ccb);
+        Gpu::SubmitGfx(dcb, ccb);
     }
 }
 
@@ -311,12 +353,18 @@ bool SubmitLockOnDecode() {
 }
 
 void ReleaseSubmissionLock() {
+    if (BbRemote::BackActive()) {
+        BbRemote::Back::ReleaseSubmissionLock(); // the guest waits in the game process
+    }
     std::scoped_lock lock{pacing.mutex};
     pacing.locked = false;
     pacing.cv.notify_all();
 }
 
 void NoteFramesRetired(u64 frames) {
+    if (BbRemote::BackActive()) {
+        BbRemote::Back::FramesRetired(frames); // the guest waits in the game process
+    }
     BbTimeline::Note(BbTimeline::FrameRetired, frames);
     std::scoped_lock lock{pacing.mutex};
     pacing.frames_retired = std::max(pacing.frames_retired, frames);
@@ -422,9 +470,21 @@ s32 PS4_SYSV_ABI sceGnmMapComputeQueue(u32 pipe_id, u32 queue_id, u64 ring_base,
     if (reinterpret_cast<uintptr_t>(read_ptr) % 4 != 0) {
         return BbErr::GnmQueueBadReadPtr;
     }
-    const auto slot = liverpool->asc_queues.insert(ring_base, read_ptr, ring_size_dw, pipe_id);
-    *liverpool->asc_queues[slot].read_addr = 0;
-    const u32 vqid = slot.index + 1; // DingDong numbers queues from 1
+    u32 index = 0;
+    if (BbRemote::FrontActive()) {
+        // bbport (native GPU process): the queue lives in bb-gpu's command processor.
+        const s32 remote = BbRemote::Front::MapComputeQueue(ring_base, read_ptr, ring_size_dw, pipe_id);
+        if (remote < 0) {
+            return BbErr::GnmQueueBadRingBase;
+        }
+        index = u32(remote);
+        *read_ptr = 0;
+    } else {
+        const auto slot = liverpool->asc_queues.insert(ring_base, read_ptr, ring_size_dw, pipe_id);
+        *liverpool->asc_queues[slot].read_addr = 0;
+        index = slot.index;
+    }
+    const u32 vqid = index + 1; // DingDong numbers queues from 1
     LOG_INFO(Lib_GnmDriver, "compute pipe {} queue {} mapped to vqueue {}", pipe_id, queue_id, vqid);
     return s32(vqid);
 }
@@ -435,6 +495,10 @@ s32 PS4_SYSV_ABI sceGnmMapComputeQueueWithPriority(u32 pipe_id, u32 queue_id, u6
 }
 
 s32 PS4_SYSV_ABI sceGnmUnmapComputeQueue(u32 vqid) {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::UnmapComputeQueue(vqid - 1);
+        return BbErr::Ok;
+    }
     liverpool->asc_queues.erase(Common::SlotId{vqid - 1});
     return BbErr::Ok;
 }
@@ -447,18 +511,18 @@ void PS4_SYSV_ABI sceGnmDingDong(u32 vqid, u32 next_dw) {
     }
     std::scoped_lock lock{submit_mutex};
     WaitBeforeSubmit();
-    auto& queue = liverpool->asc_queues[Common::SlotId{vqid - 1}];
+    const auto queue = Gpu::AscQueue(vqid - 1);
     u32& read_dw = queue_read_dw[vqid - 1];
     const auto* ring = reinterpret_cast<const u32*>(queue.map_addr);
     if (next_dw != read_dw) {
         if (next_dw < read_dw && next_dw != 0) {
-            liverpool->SubmitAsc(vqid, {ring + read_dw, queue.ring_size_dw - read_dw});
+            Gpu::SubmitAsc(vqid, {ring + read_dw, queue.ring_size_dw - read_dw});
             read_dw = 0;
         }
         const u32 end = next_dw ? next_dw : queue.ring_size_dw;
         const std::span commands{ring + read_dw, end - read_dw};
         read_dw = next_dw;
-        liverpool->SubmitAsc(vqid, commands);
+        Gpu::SubmitAsc(vqid, commands);
     }
     if (SubmitLockOnDecode()) {
         WaitAfterSubmit(); // handed over first, as the graphics submissions
@@ -537,10 +601,10 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
             std::scoped_lock pacing_lock{pacing.mutex};
             frame = ++pacing.frames_submitted;
         }
-        liverpool->SubmitDone(frame);
+        Gpu::SubmitDone(frame);
     } else {
         WaitGpuIdle();
-        if (!liverpool->IsGpuIdle()) {
+        if (!Gpu::IsGpuIdle()) {
             std::scoped_lock pacing_lock{pacing.mutex};
             pacing.locked = true;
         }
@@ -548,7 +612,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
             std::scoped_lock pacing_lock{pacing.mutex};
             ++pacing.frames_submitted;
         }
-        liverpool->SubmitDone();
+        Gpu::SubmitDone(0);
     }
     send_init_state = true;
     return BbErr::Ok;
@@ -850,9 +914,12 @@ constexpr std::array<StubFn, sizeof...(Index)> MakeStubFunctions(
 } // namespace
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
-    LOG_INFO(Lib_GnmDriver, "Initializing presenter");
-    liverpool = std::make_unique<BbCp::CommandProcessor>();
-    presenter = std::make_unique<Vulkan::Presenter>(*g_window, liverpool.get());
+    // bbport (native GPU process): in the game process the GPU core is bb-gpu's.
+    if (!BbRemote::FrontActive()) {
+        LOG_INFO(Lib_GnmDriver, "Initializing presenter");
+        liverpool = std::make_unique<BbCp::CommandProcessor>();
+        presenter = std::make_unique<Vulkan::Presenter>(*g_window, liverpool.get());
+    }
 
     s32 version = 0;
     sdk_version =
