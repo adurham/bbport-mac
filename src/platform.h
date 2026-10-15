@@ -10,7 +10,10 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #ifdef __APPLE__
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <sys/uio.h>
 #else
 #include <sys/random.h>
 #endif
@@ -115,6 +118,14 @@ static inline int bb_rwlock_timedlock(pthread_rwlock_t *r, int writer, const str
 #endif
 
 /* Condition variable whose timed waits use a CLOCK_MONOTONIC deadline (nanoseconds). */
+#ifdef __APPLE__
+/* macOS has no pthread_condattr_setclock: its condition variables take CLOCK_REALTIME deadlines
+ * (RUNTIME_COND_CLOCK, runtime.h), the only clock accepted here. */
+static inline int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock) {
+    (void)attr;
+    return clock == CLOCK_REALTIME ? 0 : EINVAL;
+}
+#endif
 static inline int bb_cond_init_monotonic(pthread_cond_t *c) {
 #ifdef __APPLE__
     return pthread_cond_init(c, NULL);
@@ -157,6 +168,36 @@ static inline void bb_sleep_until(const struct timespec *abs_monotonic) {
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, abs_monotonic, NULL)) {}
 #endif
 }
+
+#ifdef __APPLE__
+/* Linux functions the runtime calls that macOS lacks, as drop-in replacements. */
+/* Reads from this process only (the runtime's sole use), failing instead of faulting
+ * (runtime_macos.c: Mach, kept out of this header: its names clash with the runtime's). */
+ssize_t process_vm_readv(pid_t pid, const struct iovec *local, unsigned long local_count,
+                         const struct iovec *remote, unsigned long remote_count, unsigned long flags);
+static inline ssize_t getrandom(void *buffer, size_t size, unsigned flags) {
+    (void)flags;
+    arc4random_buf(buffer, size);
+    return (ssize_t)size;
+}
+/* An anonymous file (no memfd on macOS): an unlinked temporary file, which, unlike a POSIX shared
+ * memory object, can be written and read as well as mapped. */
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 1u
+#endif
+static inline int memfd_create(const char *name, unsigned flags) {
+    const char *dir = getenv("TMPDIR");
+    char path[1024];
+    (void)name;
+    snprintf(path, sizeof(path), "%s/bbport-XXXXXX", dir && *dir ? dir : "/tmp");
+    const int fd = mkstemp(path);
+    if (fd >= 0) {
+        unlink(path);
+        if (flags & MFD_CLOEXEC) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+    return fd;
+}
+#endif
 
 static inline int bb_random_bytes(void *out, size_t size) {
 #ifdef __APPLE__

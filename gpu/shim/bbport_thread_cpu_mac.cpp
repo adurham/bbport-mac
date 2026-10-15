@@ -60,7 +60,16 @@ const char* Owner(const std::string& name) {
 std::string ReportProcessThreads(double window_s) {
     thread_act_array_t threads = nullptr;
     mach_msg_type_number_t count = 0;
-    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS || window_s <= 0) {
+    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) {
+        return {};
+    }
+    if (window_s <= 0) {
+        // The thread ports and their array are still ours to release.
+        for (mach_msg_type_number_t i = 0; i < count; ++i) {
+            mach_port_deallocate(mach_task_self(), threads[i]);
+        }
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads),
+                      count * sizeof(threads[0]));
         return {};
     }
     std::unordered_map<std::uint64_t, ThreadSample> current;

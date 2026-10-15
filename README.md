@@ -16,7 +16,7 @@ upscaling up to 4K.
 
 ## Status (October 2026)
 
-**Experimental, playable.** Based on bbport 0.51 (online play isn't available on the Mac yet).
+**Experimental, playable.** Based on bbport 0.6-pre1 (online play isn't available on the Mac yet).
 
 - The whole game boots, plays, saves and loads, with sound, cutscenes, a DualSense or other
   controller, or the keyboard and mouse.

@@ -8,10 +8,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <thread>
+#ifndef _WIN32
 #include <sched.h>
 #include <sys/resource.h>
-#include <thread>
 #include <unistd.h>
+#endif
 #ifdef __APPLE__
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -32,20 +34,27 @@ inline unsigned long HostTid() {
 
 /// Hardware threads available to the process.
 inline unsigned Available() {
-#ifdef __linux__
+#ifdef _WIN32
+    return bb_win32_available_cpus();
+#elif defined(__APPLE__)
+    // bbport (macOS): no affinity masks; every core is available.
+    return std::max(1u, std::thread::hardware_concurrency());
+#else
     cpu_set_t set;
     CPU_ZERO(&set);
     if (sched_getaffinity(0, sizeof(set), &set) == 0) {
         return std::max(1, CPU_COUNT(&set));
     }
-#endif
     return std::max(1u, std::thread::hardware_concurrency());
+#endif
 }
 
 /// The calling thread only runs on otherwise idle cores (falls back to the lowest nice level).
 inline void MakeBackground() {
-#ifdef __APPLE__
-    // No SCHED_IDLE on macOS: the utility QoS class keeps helpers below the game's threads.
+#ifdef _WIN32
+    bb_win32_background_thread();
+#elif defined(__APPLE__)
+    // bbport (macOS): no SCHED_IDLE; the utility QoS class keeps helpers below the game's threads.
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #else
     sched_param param{};
@@ -63,5 +72,10 @@ bool CurrentThreadCpuUs(std::uint64_t& user_us, std::uint64_t& sys_us);
 /// and by owner (this port, the game, the system): where a native GPU process would help.
 std::string ReportProcessThreads(double window_s);
 #endif
+
+/// Helper threads of the GPU side that the GPU command thread's progress depends on (Vulkan
+/// recording threads, guest memory copy threads): a fault there must never wait for that thread
+/// (a read trap's copy back goes through it for the game's threads). Set once per thread.
+inline thread_local bool gpu_side_helper = false;
 
 } // namespace BbThreads

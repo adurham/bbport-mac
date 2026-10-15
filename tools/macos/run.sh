@@ -38,6 +38,10 @@ export BB_PREBUILT=1
 # contact the community server with BB_ONLINE=1 and the game still play offline.
 unset BB_ONLINE BB_NET_MODULE
 export BB_FPS=${BB_FPS:-30}
+# Memory model: 0.6 gives the new one to every GPU (run.sh). On the Mac it is untested (it needs
+# the game's memory imported into the GPU driver), so the 0.3 model stays the default here;
+# BB_PC_MODEL=1 tries the new one.
+export BB_PC_MODEL=${BB_PC_MODEL:-0}
 mkdir -p "$data/out"
 # FPS counter on by default, as the Linux launcher does; the overlay menu (F1, ` or §) toggles
 # it and saves the choice.
