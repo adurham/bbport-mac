@@ -235,7 +235,12 @@ KosmicKrisp its own shader cache.
   validates bytecode it loads. The 0.5 check against the x86 walker (`BB_SRT_CHECK`) did not come
   along.
 - 0.6's button prompts read the pad and the game's files from bb-gpu (table above); the pad's
-  mouse capture request is a counter in the control block.
+  mouse capture request is a counter in the control block, the Toy Pad's lights (settings menu)
+  three words there.
+- bb-gpu checks what it is sent before using it (inline submission lengths, compute queue rings
+  and read pointers in guest memory, queue numbers, display buffer counts); the bytecode walker
+  reads guest memory only, and a mapping removed under a walk ends that walk (no crash).
+- CI builds bb-gpu on the native branches (the arm64 libraries are cached like the x86-64 ones).
 
 **Phase 6, started (2026-10-08).**
 
