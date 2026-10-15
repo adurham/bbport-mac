@@ -115,6 +115,14 @@ static inline int bb_rwlock_timedlock(pthread_rwlock_t *r, int writer, const str
 #endif
 
 /* Condition variable whose timed waits use a CLOCK_MONOTONIC deadline (nanoseconds). */
+#ifdef __APPLE__
+/* macOS has no pthread_condattr_setclock: its condition variables take CLOCK_REALTIME deadlines
+ * (RUNTIME_COND_CLOCK, runtime.h), the only clock accepted here. */
+static inline int pthread_condattr_setclock(pthread_condattr_t *attr, clockid_t clock) {
+    (void)attr;
+    return clock == CLOCK_REALTIME ? 0 : EINVAL;
+}
+#endif
 static inline int bb_cond_init_monotonic(pthread_cond_t *c) {
 #ifdef __APPLE__
     return pthread_cond_init(c, NULL);
