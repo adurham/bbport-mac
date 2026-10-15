@@ -118,6 +118,7 @@ unsigned PadPromptGeneration();
 int PadPromptDevice();
 int PadMouseLook();
 int FileHostPath(const char* guest, char* out, u64 size);
+void ToyPadLights(std::uint32_t out[3]);
 /// The bytecode SRT walker's check (Shader::srt_guest_readable): guest memory only.
 bool GuestReadable(u64 address, u64 size);
 

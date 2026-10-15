@@ -1122,6 +1122,12 @@ void SetCpuWriteHook(GpuRange hook) {
     g.hook_cpu_write = hook;
 }
 
+void ToyPadLights(std::uint32_t out[3]) {
+    for (int i = 0; i < 3; ++i) {
+        out[i] = g.control->state.toypad_lights[i].load(std::memory_order_relaxed);
+    }
+}
+
 bool GuestReadable(u64 address, u64 size) {
     return g.table.Covered(address, size) || InAlias(address, size);
 }

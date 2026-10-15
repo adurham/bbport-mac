@@ -71,6 +71,7 @@ unsigned runtime_pad_prompt_generation(void);
 int runtime_pad_prompt_device(void);
 int runtime_pad_mouse_look(void);
 int runtime_file_host_path(const char* guest, char* out, size_t size);
+__attribute__((weak)) void runtime_toypad_lights(uint32_t out[3]); // runtime_toypad.c
 }
 
 namespace BbRemote {
@@ -398,8 +399,9 @@ void ProtectThread() {
     }
 }
 
-/// runtime_pad.c's prompt state for bb-gpu's button prompts (SharedState): once a frame.
-void PublishPromptState() {
+/// runtime_pad.c's prompt state for bb-gpu's button prompts and the Toy Pad's lights for its
+/// settings menu (SharedState): once a frame.
+void PublishPadState() {
     if (!g.control) {
         return;
     }
@@ -407,6 +409,13 @@ void PublishPromptState() {
     s.prompt_device.store(runtime_pad_prompt_device(), std::memory_order_relaxed);
     s.pad_mouse_look.store(runtime_pad_mouse_look(), std::memory_order_relaxed);
     s.prompt_generation.store(runtime_pad_prompt_generation(), std::memory_order_release);
+    if (runtime_toypad_lights) {
+        uint32_t lights[3] = {};
+        runtime_toypad_lights(lights);
+        for (int i = 0; i < 3; ++i) {
+            s.toypad_lights[i].store(lights[i], std::memory_order_relaxed);
+        }
+    }
 }
 
 /// Ends the game when bb-gpu ends (its window was closed, or it failed).
@@ -693,7 +702,7 @@ void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
 }
 
 void SubmitDone(u64 frame) {
-    PublishPromptState();
+    PublishPadState();
     const ValueArgs args{frame};
     g.channel->Send(MsgSubmitDone, &args, sizeof(args));
     // The game's System menu pages live in this process (their hooks are in the game's code), the

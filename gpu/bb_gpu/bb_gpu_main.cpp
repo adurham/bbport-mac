@@ -122,6 +122,9 @@ int runtime_pad_prompt_device(void) {
 int runtime_pad_mouse_look(void) {
     return Back::PadMouseLook();
 }
+void runtime_toypad_lights(uint32_t out[3]) {
+    Back::ToyPadLights(out);
+}
 int runtime_file_host_path(const char* guest, char* out, size_t size) {
     return Back::FileHostPath(guest, out, size);
 }

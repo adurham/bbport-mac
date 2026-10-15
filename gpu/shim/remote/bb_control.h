@@ -44,6 +44,8 @@ struct SharedState {
     alignas(64) std::atomic<std::uint32_t> prompt_generation{0};
     std::atomic<std::int32_t> prompt_device{0};
     std::atomic<std::int32_t> pad_mouse_look{0};
+    /// The Toy Pad's lights (runtime_toypad_lights), for bb-gpu's settings menu.
+    std::atomic<std::uint32_t> toypad_lights[3]{};
 };
 
 struct ControlBlock {
