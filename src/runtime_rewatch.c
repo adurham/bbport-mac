@@ -7,8 +7,8 @@
  * camera was found so. */
 #define _GNU_SOURCE
 #include <stdint.h>
-#ifdef _WIN32
-/* perf_event breakpoints are Linux's: none of these aids on Windows. */
+#if defined(_WIN32) || defined(__APPLE__)
+/* perf_event breakpoints are Linux's: none of these aids on Windows or macOS. */
 void runtime_re_watch_now(uint64_t address) { (void)address; }
 void runtime_re_watch_report(void) {}
 void runtime_re_watch(uint64_t address) { (void)address; }

@@ -216,7 +216,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
         char thread[32] = "?";
         pthread_getname_np(pthread_self(), thread, sizeof(thread));
         int at = snprintf(line, sizeof(line), "  thread %s; calls:", thread);
-        uintptr_t rbp = (uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
+        uintptr_t rbp = (uintptr_t)BB_CTX_RBP(uc); /* bbport: portable (platform.h) */
         for (int i = 0; i < 12 && rbp && at < (int)sizeof(line) - 24; ++i) {
             uintptr_t frame[2] = {0, 0};
             struct iovec local = {frame, sizeof(frame)}, remote = {(void *)rbp, sizeof(frame)};

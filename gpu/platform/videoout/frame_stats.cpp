@@ -15,8 +15,12 @@
 #include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 
 #include "bbport_heap_sites.h"
+#include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "bbport_wait_trace.h"
 #include "core/emulator_settings.h"
@@ -81,7 +85,16 @@ static void PrintMemory() {
         }
         std::fclose(statm);
     }
-    const u64 rss = u64(rss_pages) * u64(sysconf(_SC_PAGESIZE));
+    u64 rss = u64(rss_pages) * u64(sysconf(_SC_PAGESIZE));
+#ifdef __APPLE__
+    // bbport (macOS): no /proc; resident size from Mach (VRAM/GTT stay 0: unified memory).
+    mach_task_basic_info_data_t info{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info),
+                  &count) == KERN_SUCCESS) {
+        rss = info.resident_size;
+    }
+#endif
     const u64 device = BbStats::device_alloc_bytes.load() - BbStats::device_free_bytes.load();
     u64 vma_blocks = 0, vma_used = 0;
     Vulkan::VmaDeviceUsage(vma_blocks, vma_used);
@@ -159,6 +172,10 @@ void OnFlipStats() {
         timespec ts{};
         clock_gettime(static_cast<clockid_t>(clock), &ts);
         gpu_ns = u64(ts.tv_sec) * 1000000000ull + u64(ts.tv_nsec);
+    } else {
+        // bbport (macOS): no CPU clock for another thread; the GPU thread records its own CPU
+        // time after each submission (getrusage RUSAGE_THREAD, platform/macos), so use that.
+        gpu_ns = (BbStats::gpu_user_us.load() + BbStats::gpu_sys_us.load()) * 1000ull;
     }
     const u64 images = BbStats::images_registered.load();
     const u64 image_bytes = BbStats::image_upload_bytes.load();
@@ -446,6 +463,12 @@ void OnFlipStats() {
                         median, std::sqrt(std::max(0.0, sq / intervals.size() - mean * mean)),
                         sorted[std::min(sorted.size() - 1, sorted.size() * 99 / 100)], spikes);
         }
+#ifdef __APPLE__
+        // bbport (macOS): CPU time of every thread, by name and by owner (bbport_thread_cpu_mac).
+        if (const std::string threads = BbThreads::ReportProcessThreads(window); !threads.empty()) {
+            std::printf("%s\n", threads.c_str());
+        }
+#endif
         intervals.clear();
         window_start = now;
         frames = 0;

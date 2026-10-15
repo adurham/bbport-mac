@@ -10,7 +10,12 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #ifdef __APPLE__
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <sys/uio.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #else
 #include <sys/random.h>
 #endif
@@ -165,6 +170,46 @@ static inline void bb_sleep_until(const struct timespec *abs_monotonic) {
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, abs_monotonic, NULL)) {}
 #endif
 }
+
+#ifdef __APPLE__
+/* Linux functions the runtime calls that macOS lacks, as drop-in replacements. */
+/* Reads from this process only (the runtime's sole use), failing instead of faulting. */
+static inline ssize_t process_vm_readv(pid_t pid, const struct iovec *local, unsigned long local_count,
+                                       const struct iovec *remote, unsigned long remote_count,
+                                       unsigned long flags) {
+    if (pid != getpid() || flags || local_count != 1 || remote_count != 1) { errno = EINVAL; return -1; }
+    size_t n = local[0].iov_len < remote[0].iov_len ? local[0].iov_len : remote[0].iov_len;
+    mach_vm_size_t got = 0;
+    if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)remote[0].iov_base, n,
+                               (mach_vm_address_t)(uintptr_t)local[0].iov_base, &got) != KERN_SUCCESS) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (ssize_t)got;
+}
+static inline ssize_t getrandom(void *buffer, size_t size, unsigned flags) {
+    (void)flags;
+    arc4random_buf(buffer, size);
+    return (ssize_t)size;
+}
+/* An anonymous file (no memfd on macOS): an unlinked temporary file, which, unlike a POSIX shared
+ * memory object, can be written and read as well as mapped. */
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 1u
+#endif
+static inline int memfd_create(const char *name, unsigned flags) {
+    const char *dir = getenv("TMPDIR");
+    char path[1024];
+    (void)name;
+    snprintf(path, sizeof(path), "%s/bbport-XXXXXX", dir && *dir ? dir : "/tmp");
+    const int fd = mkstemp(path);
+    if (fd >= 0) {
+        unlink(path);
+        if (flags & MFD_CLOEXEC) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+    return fd;
+}
+#endif
 
 static inline int bb_random_bytes(void *out, size_t size) {
 #ifdef __APPLE__
