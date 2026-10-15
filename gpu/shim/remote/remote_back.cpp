@@ -6,6 +6,7 @@
 // served here from bb-gpu's own copy of the guest's mapping table (bb_gpu_main.cpp exports it).
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <atomic>
 #include <cerrno>
 #include <csetjmp>
@@ -165,6 +166,8 @@ bool MapZeros(u64 address, u64 size) {
 /// for guest-visible writes: labels must never be seen half written or written twice.
 void StoreOnce(u8* dst, const u8* src, u64 n) {
     if (n > 64) {
+        // Data: after what came before it, and before what comes after (a label).
+        std::atomic_thread_fence(std::memory_order_release);
         std::memcpy(dst, src, n);
         std::atomic_thread_fence(std::memory_order_release);
         return;
@@ -270,6 +273,19 @@ struct Alias {
 constexpr std::size_t MaxAliases = 16;
 std::array<Alias, MaxAliases> aliases{};
 std::atomic<std::size_t> alias_count{0};
+
+/// Where the bytecode SRT walker may read in this process: guest mappings (its copy of the
+/// table) and the game image data's second mapping. Nothing else of this process.
+bool InAlias(u64 address, u64 size) {
+    const std::size_t n = alias_count.load(std::memory_order_acquire);
+    for (std::size_t i = 0; i < n; ++i) {
+        const u64 begin = aliases[i].at, end = begin + (aliases[i].end - aliases[i].begin);
+        if (address >= begin && address <= end && size <= end - address) {
+            return true;
+        }
+    }
+    return false;
+}
 
 u64 TranslateGuest(u64 address) {
     const std::size_t n = alias_count.load(std::memory_order_acquire);
@@ -444,7 +460,7 @@ void SubmitGfx(const Message& message) {
             return {};
         }
         if (is_inline) {
-            if (used + dwords > available) {
+            if (dwords > available - used) { // (no wrap-around: used <= available)
                 return {};
             }
             const auto kept = InlineCommands(words + used, dwords);
@@ -507,6 +523,13 @@ void Handle(const Message& message, auto&& reply) {
         break;
     case MsgSubmitAsc: {
         const auto args = Payload<SubmitAscArgs>(message);
+        // Queues are numbered from 1 (DingDong); only mapped ones.
+        if (args.vqid == 0 || args.vqid >= BbCp::CommandProcessor::NumTotalQueues ||
+            !liverpool->asc_queues.is_allocated(Common::SlotId{args.vqid - 1})) {
+            std::fprintf(stderr, "GPU process: submission to compute queue %u refused\n",
+                         args.vqid);
+            break;
+        }
         liverpool->SubmitAsc(args.vqid, {reinterpret_cast<const u32*>(args.address), args.dwords});
         break;
     }
@@ -520,10 +543,26 @@ void Handle(const Message& message, auto&& reply) {
     }
     case MsgMapComputeQueue: {
         const auto args = Payload<ComputeQueueArgs>(message);
-        const auto id = liverpool->asc_queues.insert(
-            VAddr(args.ring_base), reinterpret_cast<u32*>(args.read_ptr), args.ring_size_dw,
-            args.pipe_id);
-        const ResultReply out{s32(id.index), 0};
+        // As sceGnmMapComputeQueue checks in the game process, and both in guest memory: the
+        // command processor writes the read pointer and reads the ring.
+        const u64 ring_bytes = u64(args.ring_size_dw) * 4;
+        const bool valid = args.ring_size_dw != 0 && std::has_single_bit(args.ring_size_dw) &&
+                           args.pipe_id < BbCp::CommandProcessor::NumComputePipes &&
+                           args.read_ptr % 4 == 0 && g.table.Covered(args.read_ptr, 4) &&
+                           g.table.Covered(args.ring_base, ring_bytes);
+        s32 index = -1;
+        if (valid) {
+            const auto id = liverpool->asc_queues.insert(
+                VAddr(args.ring_base), reinterpret_cast<u32*>(args.read_ptr), args.ring_size_dw,
+                args.pipe_id);
+            if (id.index + 1 < BbCp::CommandProcessor::NumTotalQueues) {
+                *liverpool->asc_queues[id].read_addr = 0;
+                index = s32(id.index);
+            } else {
+                liverpool->asc_queues.erase(id); // queue numbers past the command processor's
+            }
+        }
+        const ResultReply out{index, 0};
         reply(&out, sizeof(out));
         break;
     }
@@ -555,9 +594,13 @@ void Handle(const Message& message, auto&& reply) {
         for (u32 i = 0; i < MaxDisplayBuffers; ++i) {
             addresses[i] = reinterpret_cast<void*>(args.addresses[i]);
         }
-        const s32 count = std::clamp<s32>(args.count, 0, s32(MaxDisplayBuffers));
-        const s32 result = VO::Remote::RegisterBuffers(args.handle, args.start, addresses, count,
-                                                       &attribute);
+        // (Display::RegisterBuffers checks the range against the slots too.)
+        constexpr s32 ErrorInvalidValue = s32(0x80290001);
+        const s32 result =
+            args.count < 0 || args.count > s32(MaxDisplayBuffers)
+                ? ErrorInvalidValue
+                : VO::Remote::RegisterBuffers(args.handle, args.start, addresses, args.count,
+                                              &attribute);
         ReplyVo(reply, result, args.handle);
         break;
     }
@@ -1077,6 +1120,10 @@ void SetNoteWriteHook(GpuRange hook) {
 void SetCpuWriteHook(GpuRange hook) {
     std::scoped_lock lock{g.hook_mutex};
     g.hook_cpu_write = hook;
+}
+
+bool GuestReadable(u64 address, u64 size) {
+    return g.table.Covered(address, size) || InAlias(address, size);
 }
 
 u64 ProcessTimeCounter() {

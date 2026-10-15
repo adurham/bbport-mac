@@ -118,6 +118,8 @@ unsigned PadPromptGeneration();
 int PadPromptDevice();
 int PadMouseLook();
 int FileHostPath(const char* guest, char* out, u64 size);
+/// The bytecode SRT walker's check (Shader::srt_guest_readable): guest memory only.
+bool GuestReadable(u64 address, u64 size);
 
 // The runtime's GPU interface (runtime_memory_*, clocks), served from bb-gpu's own view.
 u64 MemoryClamp(uintptr_t address, u64 size);

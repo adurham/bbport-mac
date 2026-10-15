@@ -306,9 +306,10 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     g_sdk_version = config->sdk_version;
 #ifndef ARCH_X86_64
     // bbport (the macOS native GPU process): the bytecode SRT walker checks the guest pointers
-    // it follows. Tables can also sit in the game image's own data (not a runtime mapping):
-    // probed directly then.
-    Shader::srt_guest_readable = [](u64 address, u64 size) {
+    // it follows: there, guest memory and the game image's data only (remote_back.cpp). Elsewhere
+    // tables can also sit in the game image's own data (not a runtime mapping): probed then.
+    Shader::srt_guest_readable = BbRemote::BackActive() ? &BbRemote::Back::GuestReadable
+                                                        : +[](u64 address, u64 size) {
         if (Core::CachedMapped(address, size)) {
             return true;
         }

@@ -14,6 +14,7 @@
 // is bytecode instead, the same walk with the same slots, run by RunSrtWalker; an unreadable
 // load there gives 0 (srt_guest_readable).
 #include <algorithm>
+#include <csetjmp>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -41,6 +42,7 @@
 #include "common/signal_context.h"
 #include "core/emulator_settings.h"
 #include "core/signals.h"
+#include "bbport_toggles.h"
 #include "shader/ir/ir_emitter.h"
 #include "shader/ir/passes/ir_passes.h"
 #include "shader/ir/passes/srt.h"
@@ -1166,8 +1168,18 @@ bool (*srt_guest_readable)(u64 address, u64 size) = nullptr;
 u64 (*srt_guest_translate)(u64 address) = nullptr;
 
 void RunSrtWalker(const PersistentSrtInfo& srt, const u32* user_data, u32* flat) {
+    // A mapping removed between the check and the load faults: the walk stops there, as the x86
+    // walker's patched load reads 0 (bb-gpu's handler jumps back here, runtime_fault_recover).
+    sigjmp_buf recover;
+    sigjmp_buf* const outer = runtime_fault_recover;
+    if (sigsetjmp(recover, 0)) {
+        runtime_fault_recover = outer;
+        return;
+    }
+    runtime_fault_recover = &recover;
     InterpretSrt(reinterpret_cast<const u32*>(srt.walker_func), user_data, flat,
                  srt.flattened_bufsize_dw);
+    runtime_fault_recover = outer;
 }
 
 } // namespace Shader

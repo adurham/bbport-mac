@@ -615,7 +615,8 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
             if (!srt.walker_func || snapshot.flat_size == 0 || snapshot.user_data_size == 0) {
                 continue;
             }
-            std::vector<u32> flat(snapshot.flat_size);
+            // (Room for all the walker writes, should the snapshot hold fewer.)
+            std::vector<u32> flat(std::max<u32>(snapshot.flat_size, srt.flattened_bufsize_dw));
             std::memcpy(flat.data(), snapshot.user_data,
                         std::min(snapshot.user_data_size, snapshot.flat_size) * sizeof(u32));
             // Pointers in the tables may be stale by now: a fault only skips the check.

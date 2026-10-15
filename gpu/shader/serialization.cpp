@@ -53,6 +53,12 @@ void PersistentSrtInfo::Serialize(Serialization::Archive& ar) const {
 bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     Serialization::Reader reader{ar};
     reader.Read(this, sizeof(*this));
+    // bbport: the stored pointer means nothing in this run, and the flat buffer holds at least
+    // the user data registers (its slots are 16-bit).
+    walker_func = nullptr;
+    if (flattened_bufsize_dw < NUM_USER_DATA_REGS || flattened_bufsize_dw > 0x10000) {
+        throw Serialization::CorruptData{"damaged SRT walker size in the shader cache"};
+    }
     if (walker_func_size) {
         // The size is checked before the code is registered (it becomes executable): a file cut
         // short must not have bytes past its end run as the walker.

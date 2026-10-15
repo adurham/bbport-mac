@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -110,7 +111,7 @@ struct State {
     int pool_fd = -1;
     u64 pool_bytes = 0, host_offset = 0, host_next = 0, host_end = 0;
     pid_t child = -1;
-    VideoOutPort* port = nullptr;
+    std::atomic<VideoOutPort*> port{nullptr}; ///< set by the display, read by the reader thread
     u64 flip_version = 0; ///< newest flip status applied (under port->status_mutex)
     std::mutex asc_mutex;
     std::array<AscQueue, 64> asc{};
@@ -218,7 +219,13 @@ void ApplyVoState(const VoState& state) {
         std::memcpy(&port->flip_status, state.flip_status, FlipStatusBytes);
     }
     std::memcpy(port->buffers.data(), state.slots, sizeof(state.slots));
-    std::memcpy(port->groups.data(), state.groups, sizeof(state.groups));
+    // Field by field: is_occupied is a bool, and another process's byte may be anything.
+    for (std::size_t i = 0; i < MaxDisplayBufferGroups; ++i) {
+        const u8* group = state.groups + i * AttributeGroupBytes;
+        port->groups[i].is_occupied = group[offsetof(VO::BufferAttributeGroup, is_occupied)] != 0;
+        std::memcpy(&port->groups[i].attrib, group + offsetof(VO::BufferAttributeGroup, attrib),
+                    sizeof(VO::BufferAttribute));
+    }
     std::memcpy(&port->resolution, state.resolution, ResolutionBytes);
     port->is_open = state.is_open != 0;
 }
@@ -441,6 +448,16 @@ std::string ExecutableDir() {
     return slash == std::string::npos ? "." : dir.substr(0, slash);
 }
 
+/// A path for the log: the home folder as ~ (logs get shared).
+std::string ForLog(const std::string& path) {
+    const char* home = std::getenv("HOME");
+    const std::size_t n = home ? std::strlen(home) : 0;
+    if (n > 1 && path.compare(0, n, home) == 0 && (path.size() == n || path[n] == '/')) {
+        return "~" + path.substr(n);
+    }
+    return path;
+}
+
 bool Exists(const std::string& path) {
     struct stat info{};
     return stat(path.c_str(), &info) == 0;
@@ -455,7 +472,7 @@ bool Spawn() {
     if (!Exists(program)) {
         std::fprintf(stderr,
                      "GPU process: %s missing (build it with tools/macos/build_gpu_native.sh)\n",
-                     program.c_str());
+                     ForLog(program).c_str());
         return false;
     }
     // Its own libraries: the arm64 dependency prefix instead of the game process's x86-64 one.
@@ -519,7 +536,7 @@ bool Spawn() {
                                   envp.data());
 #endif
     if (error != 0) {
-        std::fprintf(stderr, "GPU process: cannot start %s: %s\n", program.c_str(),
+        std::fprintf(stderr, "GPU process: cannot start %s: %s\n", ForLog(program).c_str(),
                      std::strerror(error));
         return false;
     }
@@ -697,7 +714,14 @@ s32 MapComputeQueue(u64 ring_base, u32* read_ptr, u32 ring_size_dw, u32 pipe_id)
     const ComputeQueueArgs args{ring_base, reinterpret_cast<u64>(read_ptr), ring_size_dw, pipe_id};
     ResultReply result{-1, 0};
     g.channel->Call(MsgMapComputeQueue, &args, sizeof(args), &result, sizeof(result));
-    if (result.result >= 0 && std::size_t(result.result) < g.asc.size()) {
+    if (result.result < 0) {
+        return -1;
+    }
+    if (std::size_t(result.result) >= g.asc.size()) {
+        UnmapComputeQueue(u32(result.result)); // not expected: bb-gpu numbers fewer queues
+        return -1;
+    }
+    {
         std::scoped_lock lock{g.asc_mutex};
         g.asc[result.result] = {ring_base, ring_size_dw};
     }
