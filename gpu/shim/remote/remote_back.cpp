@@ -274,8 +274,29 @@ constexpr std::size_t MaxAliases = 16;
 std::array<Alias, MaxAliases> aliases{};
 std::atomic<std::size_t> alias_count{0};
 
-/// Where the bytecode SRT walker may read in this process: guest mappings (its copy of the
-/// table) and the game image data's second mapping. Nothing else of this process.
+/// The game image's data where it is mapped at its own address here (MapShared outside the
+/// table): the walker reads tables there, compute rings may sit there.
+std::array<std::pair<u64, u64>, MaxAliases> shared_in_place{};
+std::atomic<std::size_t> shared_in_place_count{0};
+
+bool InSharedInPlace(u64 address, u64 size) {
+    const std::size_t n = shared_in_place_count.load(std::memory_order_acquire);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto [begin, end] = shared_in_place[i];
+        if (address >= begin && address <= end && size <= end - address) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Guest memory as this process sees it: its copy of the table and the game image's data.
+bool GuestCovered(u64 address, u64 size) {
+    return g.table.Covered(address, size) || InSharedInPlace(address, size);
+}
+
+/// Where the bytecode SRT walker may read in this process: guest memory (GuestCovered) and the
+/// game image data's second mapping. Nothing else of this process.
 bool InAlias(u64 address, u64 size) {
     const std::size_t n = alias_count.load(std::memory_order_acquire);
     for (std::size_t i = 0; i < n; ++i) {
@@ -358,7 +379,13 @@ void MapMemory(const MapArgs& args) {
         return;
     }
     if (args.kind == MapShared) {
-        return; // the game's own data: not in the guest's mapping table
+        // The game's own data: not in the guest's mapping table.
+        const std::size_t n = shared_in_place_count.load(std::memory_order_relaxed);
+        if (n < shared_in_place.size()) {
+            shared_in_place[n] = {args.address, args.address + args.size};
+            shared_in_place_count.store(n + 1, std::memory_order_release);
+        }
+        return;
     }
     g.table.Map(args.address, args.address + args.size,
                 VmaEntry{args.address + args.size, args.kind, args.prot, args.type, args.offset});
@@ -548,8 +575,8 @@ void Handle(const Message& message, auto&& reply) {
         const u64 ring_bytes = u64(args.ring_size_dw) * 4;
         const bool valid = args.ring_size_dw != 0 && std::has_single_bit(args.ring_size_dw) &&
                            args.pipe_id < BbCp::CommandProcessor::NumComputePipes &&
-                           args.read_ptr % 4 == 0 && g.table.Covered(args.read_ptr, 4) &&
-                           g.table.Covered(args.ring_base, ring_bytes);
+                           args.read_ptr % 4 == 0 && GuestCovered(args.read_ptr, 4) &&
+                           GuestCovered(args.ring_base, ring_bytes);
         s32 index = -1;
         if (valid) {
             const auto id = liverpool->asc_queues.insert(
@@ -712,6 +739,13 @@ void WatchParent() {
 void FaultHandler(int sig, siginfo_t* info, void* context) {
     // The draw preparation workers read guest memory speculatively (runtime_fault_recover).
     if (runtime_fault_recover) {
+        // The recovery points don't save the signal mask (no system call per walk): the signal
+        // is unblocked here, or the thread's next fault would end the process.
+        sigset_t faults;
+        sigemptyset(&faults);
+        sigaddset(&faults, SIGSEGV);
+        sigaddset(&faults, SIGBUS);
+        pthread_sigmask(SIG_UNBLOCK, &faults, nullptr);
         siglongjmp(*runtime_fault_recover, 1);
     }
     char line[160];
@@ -1129,7 +1163,7 @@ void ToyPadLights(std::uint32_t out[3]) {
 }
 
 bool GuestReadable(u64 address, u64 size) {
-    return g.table.Covered(address, size) || InAlias(address, size);
+    return GuestCovered(address, size) || InAlias(address, size);
 }
 
 u64 ProcessTimeCounter() {
