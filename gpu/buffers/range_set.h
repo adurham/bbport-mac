@@ -37,7 +37,7 @@ public:
     void ForEachInRange(VAddr address, u64 size, auto&& func) const {
         const VAddr end = address + size;
         ranges.ForEachInRange(address, end, [&](const Interval& range) {
-            func(std::max(range.start, address), std::min(range.end, end));
+            func(std::max<VAddr>(range.start, address), std::min<VAddr>(range.end, end));
         });
     }
     /// func(start, size) for each part of [address, address + size) not in the set.

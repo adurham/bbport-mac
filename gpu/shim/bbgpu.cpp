@@ -403,6 +403,8 @@ extern "C" int bbgpu_mouse_captured(void) {
 extern "C" uint32_t bbgpu_mouse_buttons(void) {
     return bbgpu_mouse_captured() && SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetMouseState(nullptr, nullptr)
                                                                  : 0;
+}
+
 extern "C" void bbgpu_mouse_capture(void) {
     if (g_window) {
         g_window->RequestMouseCapture();

@@ -3653,7 +3653,7 @@ void BufferCache::Preupload(u64 budget) {
         }
         while (at < end && visited < MaxRegions) {
             const VAddr region = at & ~(BbMem::RegionSize - 1);
-            const VAddr stop = std::min(end, region + BbMem::RegionSize);
+            const VAddr stop = std::min<VAddr>(end, region + BbMem::RegionSize);
             ++visited;
             preupload_cursor = stop;
             if (memory_tracker->PreuploadCandidate(region, quiet_since, !full)) {

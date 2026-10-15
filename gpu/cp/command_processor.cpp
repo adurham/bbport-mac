@@ -382,7 +382,7 @@ void CommandProcessor::ReportStall(const char* why) {
     }
     std::fputs(out.c_str(), stdout);
     std::fflush(stdout);
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__) // bbport (macOS): no tgkill
     if (thread_tid != 0) {
         syscall(SYS_tgkill, getpid(), thread_tid, SIGUSR2);
     }
@@ -392,9 +392,11 @@ void CommandProcessor::ReportStall(const char* why) {
 void CommandProcessor::Run(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:GpuComm");
     BbSections::command_thread = true;
+#ifndef __APPLE__ // bbport (macOS): no clock for another thread's CPU time
     if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {
         BbStats::gpu_thread_clock.store(int(clock));
     }
+#endif
     thread_id = std::this_thread::get_id();
     thread_tid = u32(gettid());
 

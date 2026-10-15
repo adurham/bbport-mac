@@ -404,7 +404,7 @@ void Rasterizer::NoteCopyIntoMemory(VAddr address, u64 size) {
         return;
     }
     copies_begin = std::min(copies_begin, address);
-    copies_end = std::max(copies_end, address + size);
+    copies_end = std::max<VAddr>(copies_end, address + size);
 }
 
 // Program code the GPU copies into place (DMA in the stream before the draw): this thread decodes

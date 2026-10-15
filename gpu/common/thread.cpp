@@ -57,13 +57,13 @@ void SetThreadName(void* thread, const char* name) {
     if (reinterpret_cast<pthread_t>(thread) == pthread_self()) {
         SetCurrentThreadName(name);
     }
-    return;
-#endif
+#else
     // Linux takes at most 15 characters (and refuses longer names outright).
     char truncated[16];
     std::strncpy(truncated, name, sizeof(truncated) - 1);
     truncated[sizeof(truncated) - 1] = '\0';
     pthread_setname_np(reinterpret_cast<pthread_t>(thread), truncated);
+#endif
 }
 
 std::string GetCurrentThreadName() {

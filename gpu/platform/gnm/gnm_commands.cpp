@@ -4,6 +4,7 @@
 // console's: a NOP fills what a packet leaves of its reservation (its first dword zeroed, the rest
 // left as they are). The port is a base PS4: no PS4 Pro (Neo) layouts.
 
+#include <span>
 #include <cstring>
 
 #include "bbport_gnm_hooks.h"
