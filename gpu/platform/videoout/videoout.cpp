@@ -14,6 +14,7 @@
 #include "platform/videoout/display.h"
 #include "platform/videoout/videoout.h"
 #include "render/presenter.h"
+#include "remote/bb_remote.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 
@@ -138,6 +139,9 @@ s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate) {
     // With the frame rate free (bbport_frame_rate) a frame is shown as soon as it comes; the
     // game asks for every second vblank (30 FPS).
     port->flip_rate = BbFrameRate::Unlocked() ? 0 : rate;
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::VoSetFlipRate(handle, port->flip_rate); // bb-gpu's vblank thread uses it
+    }
     return BbErr::Ok;
 }
 
@@ -286,8 +290,10 @@ struct DeviceCapabilityInfo {
 
 s32 PS4_SYSV_ABI sceVideoOutGetDeviceCapabilityInfo(s32, DeviceCapabilityInfo* info) {
     // HDR when both the display and the game support it.
+    const bool display_hdr =
+        BbRemote::FrontActive() ? BbRemote::Front::VoIsHdrSupported() : presenter->IsHDRSupported();
     info->capability =
-        presenter->IsHDRSupported() && Common::ElfInfo::Instance().GetPSFAttributes().support_hdr
+        display_hdr && Common::ElfInfo::Instance().GetPSFAttributes().support_hdr
             ? CapabilityBt2020Pq
             : 0;
     return BbErr::Ok;
@@ -312,6 +318,10 @@ s32 PS4_SYSV_ABI sceVideoOutAdjustColor(s32 handle, const ColorSettings* setting
     }
     if (!display->GetPort(handle)) {
         return ErrorInvalidHandle;
+    }
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::VoSetGamma(settings->gamma);
+        return BbErr::Ok;
     }
     presenter->SetGamma(settings->gamma);
     return BbErr::Ok;
@@ -346,15 +356,19 @@ s32 PS4_SYSV_ABI sceVideoOutConfigureOutputMode_(s32 handle, u32 reserved, const
     switch (mode->colorimetry) {
     case ColorimetryAny:
         port->is_hdr = false;
-        return BbErr::Ok;
+        break;
     case ColorimetryBt2020Pq:
         if (Common::ElfInfo::Instance().GetPSFAttributes().support_hdr) {
             port->is_hdr = true;
         }
-        return BbErr::Ok;
+        break;
     default:
         return ErrorInvalidValue;
     }
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::VoSetHdr(handle, port->is_hdr); // bb-gpu presents
+    }
+    return BbErr::Ok;
 }
 
 s32 PS4_SYSV_ABI sceVideoOutSetWindowModeMargins(s32, s32, s32) {
@@ -371,14 +385,22 @@ s32 PS4_SYSV_ABI sceVideoOutGetBufferLabelAddress(s32 handle, uintptr_t* label_a
     if (!port) {
         return ErrorInvalidHandle;
     }
-    *label_addr = reinterpret_cast<uintptr_t>(port->buffer_labels.data());
+    *label_addr = reinterpret_cast<uintptr_t>(port->buffer_labels);
     return s32(MaxDisplayBuffers);
 }
 
-s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32, s64 flip_arg, void**) {
+s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void**) {
     Port* port = display->GetPort(handle);
     if (!port) {
         return ErrorInvalidHandle;
+    }
+    // bbport (native GPU process): the flip interrupt is raised in bb-gpu's command processor,
+    // which flips there, in its command stream order.
+    if (BbRemote::FrontActive()) {
+        return BbRemote::Front::VoSubmitEopFlip(handle, buf_id, mode, flip_arg);
+    }
+    if (buf_id >= MaxDisplayBuffers) {
+        return ErrorInvalidIndex;
     }
     BbIrq::Once(BbIrq::Line::GfxFlip, [port, buf_id, flip_arg](BbIrq::Line) {
         ASSERT_MSG(port->buffer_labels[buf_id] == 1, "flip interrupt out of order");
@@ -387,6 +409,31 @@ s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32, s64 flip_arg, void**) 
     });
     return BbErr::Ok;
 }
+
+namespace Remote {
+Port* GetPort(s32 handle) {
+    return display ? display->GetPort(handle) : nullptr;
+}
+s32 Open() {
+    return sceVideoOutOpen(0, BusTypeMain, 0, nullptr);
+}
+s32 Close(s32 handle) {
+    return sceVideoOutClose(handle);
+}
+s32 RegisterBuffers(s32 handle, s32 start, void* const* addresses, s32 count,
+                    const BufferAttribute* attribute) {
+    return sceVideoOutRegisterBuffers(handle, start, addresses, count, attribute);
+}
+s32 UnregisterBuffers(s32 handle, s32 group) {
+    return sceVideoOutUnregisterBuffers(handle, group);
+}
+s32 ChangeBufferAttribute(s32 handle, s32 group, const BufferAttribute* attribute) {
+    return sceVideoOutSubmitChangeBufferAttribute(handle, group, attribute);
+}
+s32 SubmitFlip(s32 handle, s32 index, s32 flip_mode, s64 flip_arg) {
+    return sceVideoOutSubmitFlip(handle, index, flip_mode, flip_arg);
+}
+} // namespace Remote
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     display = std::make_unique<Display>(EmulatorSettings.GetInternalScreenWidth(),

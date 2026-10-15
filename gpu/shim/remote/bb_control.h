@@ -24,7 +24,7 @@ inline constexpr std::uint64_t HostSpanBytes = 512ull << 20;
 
 /// State both processes read and write directly (no messages).
 struct SharedState {
-    alignas(64) std::uint64_t vo_labels[16]; ///< VideoOutPort::buffer_labels (guest-visible)
+    alignas(64) std::uint64_t vo_labels[16]; ///< BbVideoOut::Port::buffer_labels (guest-visible)
     alignas(64) std::atomic<std::uint32_t> overlay_captures_input{0}; ///< written by bb-gpu
     std::atomic<std::uint32_t> gpu_ready{0};
     /// The game window's keyboard (SDL scancodes, 1 while held), written by bb-gpu's window loop.
@@ -36,6 +36,14 @@ struct SharedState {
     std::atomic<std::uint32_t> mouse_captured{0}, mouse_buttons{0};
     /// The game's mouse_look setting for bb-gpu's window: 0 not said yet, 1 off, 2 on.
     std::atomic<std::uint32_t> mouse_look{0};
+    /// Requests from the game process's pad to capture the mouse (bbgpu_mouse_capture), counted:
+    /// bb-gpu's window loop takes them.
+    std::atomic<std::uint32_t> mouse_capture_requests{0};
+    /// The button prompts (bbport 0.6): runtime_pad.c's prompt state, published by the game
+    /// process once a frame for bb-gpu's texture uploads (bbport_button_prompts.cpp).
+    alignas(64) std::atomic<std::uint32_t> prompt_generation{0};
+    std::atomic<std::int32_t> prompt_device{0};
+    std::atomic<std::int32_t> pad_mouse_look{0};
 };
 
 struct ControlBlock {

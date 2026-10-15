@@ -43,39 +43,30 @@
 #include "bbport_toggles.h"
 #include "common/slot_vector.h"
 #include "common/thread.h"
-#include "core/libraries/videoout/driver.h"
-#include "core/libraries/videoout/video_out.h"
-#include "core/libraries/videoout/videoout_error.h"
 #include "core/memory.h"
-#include "core/platform.h"
+#include "cp/command_processor.h"
+#include "platform/interrupts.h"
+#include "platform/videoout/videoout.h"
 #include "remote/bb_control.h"
 #include "remote/bb_memory_mirror.h"
 #include "remote/bb_vma_table.h"
-#include "shader_recompiler/ir/passes/srt.h"
+#include "shader/ir/passes/srt.h"
 #include "remote/bb_protocol.h"
 #include "remote/bb_remote.h"
-#include "video_core/amdgpu/liverpool.h"
-#include "video_core/renderer_vulkan/vk_presenter.h"
-#include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "render/presenter.h"
+#include "render/rasterizer.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
-extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
-
-namespace Libraries::VideoOut {
-VideoOutPort* GetPortForRemote(s32 handle);
-s32 PS4_SYSV_ABI sceVideoOutSubmitChangeBufferAttribute(s32 handle, s32 attributeIndex,
-                                                        const BufferAttribute* attribute);
-s32 PS4_SYSV_ABI sceVideoOutUnregisterBuffers(s32 handle, s32 attributeIndex);
-} // namespace Libraries::VideoOut
+extern std::unique_ptr<BbCp::CommandProcessor> liverpool;
 
 namespace BbRemote::Back {
 
-namespace VO = Libraries::VideoOut;
+namespace VO = BbVideoOut;
 static_assert(sizeof(VO::FlipStatus) == FlipStatusBytes);
-static_assert(sizeof(VO::SceVideoOutVblankStatus) == VblankStatusBytes);
-static_assert(sizeof(VO::SceVideoOutResolutionStatus) == ResolutionBytes);
+static_assert(sizeof(VO::VblankStatus) == VblankStatusBytes);
+static_assert(sizeof(VO::ResolutionStatus) == ResolutionBytes);
 static_assert(sizeof(VO::BufferAttribute) == BufferAttributeBytes);
-static_assert(sizeof(VO::VideoOutBuffer) == VideoOutBufferBytes);
+static_assert(sizeof(VO::DisplayBuffer) == VideoOutBufferBytes);
 static_assert(sizeof(VO::BufferAttributeGroup) == AttributeGroupBytes);
 
 namespace {
@@ -206,14 +197,14 @@ void StoreOnce(u8* dst, const u8* src, u64 n) {
 
 VoState Snapshot(s32 handle) {
     VoState state{};
-    VO::VideoOutPort* port = VO::GetPortForRemote(handle);
+    VO::Port* port = VO::Remote::GetPort(handle);
     if (!port) {
         return state;
     }
-    std::scoped_lock lock{port->port_mutex};
+    std::scoped_lock lock{port->status_mutex};
     state.version = g.flip_version.load(std::memory_order_acquire);
     std::memcpy(state.flip_status, &port->flip_status, FlipStatusBytes);
-    std::memcpy(state.slots, port->buffer_slots.data(), sizeof(state.slots));
+    std::memcpy(state.slots, port->buffers.data(), sizeof(state.slots));
     std::memcpy(state.groups, port->groups.data(), sizeof(state.groups));
     std::memcpy(state.resolution, &port->resolution, ResolutionBytes);
     state.is_open = port->is_open ? 1 : 0;
@@ -302,7 +293,9 @@ bool MapAlias(const MapArgs& args) {
     }
     aliases[n] = {args.address, args.address + args.size, reinterpret_cast<u64>(at)};
     alias_count.store(n + 1, std::memory_order_release);
-    Shader::srt_guest_translate = TranslateGuest;
+#ifndef ARCH_X86_64
+    Shader::srt_guest_translate = TranslateGuest; // the bytecode SRT walker reads it directly
+#endif
     std::printf("GPU process: the game's data at %#llx+%#llx is read at %p here\n",
                 static_cast<unsigned long long>(args.address),
                 static_cast<unsigned long long>(args.size), at);
@@ -534,18 +527,22 @@ void Handle(const Message& message, auto&& reply) {
         reply(&out, sizeof(out));
         break;
     }
-    case MsgUnmapComputeQueue:
-        liverpool->asc_queues.erase(Common::SlotId{u32(Payload<ValueArgs>(message).value)});
+    case MsgUnmapComputeQueue: {
+        const Common::SlotId slot{u32(Payload<ValueArgs>(message).value)};
+        if (liverpool->asc_queues.is_allocated(slot)) {
+            liverpool->asc_queues.erase(slot);
+        }
         break;
+    }
 
     case MsgVoOpen: {
-        const s32 handle = VO::sceVideoOutOpen(0, VO::SCE_VIDEO_OUT_BUS_TYPE_MAIN, 0, nullptr);
+        const s32 handle = VO::Remote::Open();
         ReplyVo(reply, handle, handle > 0 ? handle : 1);
         break;
     }
     case MsgVoClose: {
         const auto args = Payload<VoArgs>(message);
-        VO::sceVideoOutClose(args.handle);
+        VO::Remote::Close(args.handle);
         const ResultReply out{0, 0};
         reply(&out, sizeof(out));
         break;
@@ -558,14 +555,15 @@ void Handle(const Message& message, auto&& reply) {
         for (u32 i = 0; i < MaxDisplayBuffers; ++i) {
             addresses[i] = reinterpret_cast<void*>(args.addresses[i]);
         }
-        const s32 result = VO::sceVideoOutRegisterBuffers(args.handle, args.start, addresses,
-                                                          args.count, &attribute);
+        const s32 count = std::clamp<s32>(args.count, 0, s32(MaxDisplayBuffers));
+        const s32 result = VO::Remote::RegisterBuffers(args.handle, args.start, addresses, count,
+                                                       &attribute);
         ReplyVo(reply, result, args.handle);
         break;
     }
     case MsgVoUnregisterBuffers: {
         const auto args = Payload<VoArgs>(message);
-        ReplyVo(reply, VO::sceVideoOutUnregisterBuffers(args.handle, args.value), args.handle);
+        ReplyVo(reply, VO::Remote::UnregisterBuffers(args.handle, args.value), args.handle);
         break;
     }
     case MsgVoChangeAttribute: {
@@ -573,14 +571,14 @@ void Handle(const Message& message, auto&& reply) {
         VO::BufferAttribute attribute{};
         std::memcpy(&attribute, args.attribute, sizeof(attribute));
         ReplyVo(reply,
-                VO::sceVideoOutSubmitChangeBufferAttribute(args.handle, args.index, &attribute),
+                VO::Remote::ChangeBufferAttribute(args.handle, args.index, &attribute),
                 args.handle);
         break;
     }
     case MsgVoSubmitFlip: {
         const auto args = Payload<VoFlipArgs>(message);
         const s32 result =
-            VO::sceVideoOutSubmitFlip(args.handle, args.index, s32(args.mode), args.flip_arg);
+            VO::Remote::SubmitFlip(args.handle, args.index, s32(args.mode), args.flip_arg);
         ReplyVo(reply, result == 0 ? 1 : 0, args.handle);
         break;
     }
@@ -593,12 +591,15 @@ void Handle(const Message& message, auto&& reply) {
     }
     case MsgVoSetFlipRate: {
         const auto args = Payload<VoArgs>(message);
-        VO::sceVideoOutSetFlipRate(args.handle, args.value);
+        // The game process applied the frame rate settings (BbFrameRate) already.
+        if (auto* port = VO::Remote::GetPort(args.handle)) {
+            port->flip_rate = std::clamp(args.value, 0, 15);
+        }
         break;
     }
     case MsgVoSetHdr: {
         const auto args = Payload<VoArgs>(message);
-        if (auto* port = VO::GetPortForRemote(args.handle)) {
+        if (auto* port = VO::Remote::GetPort(args.handle)) {
             port->is_hdr = args.value != 0;
         }
         break;
@@ -610,7 +611,7 @@ void Handle(const Message& message, auto&& reply) {
     }
     case MsgVoSetGamma:
         if (presenter) {
-            presenter->GetPPSettingsRef().gamma = Payload<GammaArgs>(message).gamma;
+            presenter->SetGamma(std::clamp(Payload<GammaArgs>(message).gamma, 0.1f, 2.0f));
         }
         break;
 
@@ -830,7 +831,7 @@ int Main(int argc, char** argv) {
             }
         }).detach();
     }
-    Platform::IrqController::forward = [](Platform::InterruptId irq) { Irq(u32(irq)); };
+    BbIrq::forward = [](BbIrq::Line line) { Irq(u32(line)); };
     std::printf("GPU process: native (page size %ld), guest memory reserved\n",
                 sysconf(_SC_PAGESIZE));
     std::thread(ReaderThread).detach();
@@ -869,7 +870,7 @@ void VoFlipStatus(const VO::FlipStatus& status, bool flip_event, s64 flip_arg) {
     g.channel->Send(MsgVoFlipStatus, &args, sizeof(args));
 }
 
-void VoVblank(const VO::SceVideoOutVblankStatus& status, u64 event_count) {
+void VoVblank(const VO::VblankStatus& status, u64 event_count) {
     VoVblankArgs args{};
     std::memcpy(args.status, &status, VblankStatusBytes);
     args.event_count = event_count;
@@ -896,6 +897,9 @@ void PublishWindowState() {
     if (const u32 look = s.mouse_look.load(std::memory_order_relaxed)) {
         bbgpu_mouse_look_enable(look == 2 ? 1 : 0);
     }
+    if (s.mouse_capture_requests.exchange(0, std::memory_order_relaxed) != 0) {
+        bbgpu_mouse_capture();
+    }
     double dx = 0, dy = 0;
     int up = 0, down = 0;
     bbgpu_mouse_take(&dx, &dy, &up, &down);
@@ -921,6 +925,49 @@ void PublishWindowState() {
 void GameStats(double window_s, double frames) {
     const StatsArgs args{window_s, frames};
     g.channel->Send(MsgGameStats, &args, sizeof(args));
+}
+
+int PadPrompt(const char* name, int prefer_mouse, char* label, int size) {
+    if (!name || !label || size < 2) {
+        return 0;
+    }
+    label[0] = 0;
+    PadPromptArgs args{};
+    std::snprintf(args.name, sizeof(args.name), "%s", name);
+    args.prefer_mouse = prefer_mouse;
+    PadPromptReply out{};
+    g.channel->Call(MsgPadPrompt, &args, sizeof(args), &out, sizeof(out));
+    out.label[sizeof(out.label) - 1] = 0;
+    std::snprintf(label, std::size_t(size), "%s", out.label);
+    return out.kind;
+}
+
+unsigned PadPromptGeneration() {
+    return g.control->state.prompt_generation.load(std::memory_order_acquire);
+}
+
+int PadPromptDevice() {
+    return g.control->state.prompt_device.load(std::memory_order_relaxed);
+}
+
+int PadMouseLook() {
+    return g.control->state.pad_mouse_look.load(std::memory_order_relaxed);
+}
+
+int FileHostPath(const char* guest, char* out, u64 size) {
+    if (!guest || !out || size == 0) {
+        return -1;
+    }
+    PathArgs args{};
+    std::snprintf(args.path, sizeof(args.path), "%s", guest);
+    PathReply reply{-1, 0, {}};
+    g.channel->Call(MsgFileHostPath, &args, sizeof(args), &reply, sizeof(reply));
+    reply.path[sizeof(reply.path) - 1] = 0;
+    if (reply.result != 0) {
+        return reply.result;
+    }
+    std::snprintf(out, std::size_t(size), "%s", reply.path);
+    return 0;
 }
 
 void RequestRestart() {

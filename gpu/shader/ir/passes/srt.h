@@ -4,6 +4,7 @@
 // buffer, and that buffer's size.
 #pragma once
 
+#include "common/arch.h"
 #include "common/types.h"
 
 namespace Serialization {
@@ -33,7 +34,13 @@ struct PersistentSrtInfo {
     bool Deserialize(Serialization::Archive& ar);
 };
 
-/// bbport: runs the walker: x86 code on x86-64, bytecode elsewhere (flatten pass).
+/// bbport: runs the walker: x86 code on x86-64, bytecode elsewhere (the macOS native GPU process,
+/// docs/macos-native-gpu.md; flatten pass).
+#ifdef ARCH_X86_64
+inline void RunSrtWalker(const PersistentSrtInfo& srt, const u32* user_data, u32* flat) {
+    srt.walker_func(user_data, flat);
+}
+#else
 void RunSrtWalker(const PersistentSrtInfo& srt, const u32* user_data, u32* flat);
 
 /// bbport: set by the GPU library to check guest pointers the bytecode walker follows.
@@ -41,7 +48,8 @@ extern bool (*srt_guest_readable)(u64 address, u64 size);
 /// bbport (native GPU process): where this process sees a guest address the walker loads from
 /// (the game image's data sits elsewhere there). Null: the address itself.
 extern u64 (*srt_guest_translate)(u64 address);
-/// bbport: keeps a copy of portable walker bytecode for the rest of the run.
+/// bbport: keeps a copy of walker bytecode for the rest of the run.
 const u32* RegisterSrtBytecode(const u32* words, size_t count);
+#endif
 
 } // namespace Shader

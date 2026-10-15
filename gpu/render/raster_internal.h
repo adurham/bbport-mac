@@ -4,7 +4,6 @@
 #pragma once
 
 #include <dlfcn.h>
-#include <x86intrin.h>
 
 #include <bit>
 #include <csetjmp>
@@ -15,6 +14,7 @@
 #include <xxhash.h>
 
 #include "bbport_ce_stats.h"
+#include "bbport_cpu.h"
 #include "bbport_free_check.h"
 #include "bbport_guest_memory.h"
 #include "bbport_sections.h"

@@ -105,8 +105,38 @@ jobs:
             !deps-x86_64/src
           key: ${{ steps.deps.outputs.cache-primary-key }}
 
+      # The native GPU process branches (docs/macos-native-gpu.md): the same libraries for arm64,
+      # kept the same way, and bb-gpu built against them (not packaged: a build check).
+      - name: Restore arm64 dependencies
+        id: deps_arm64
+        if: hashFiles('tools/macos/build_gpu_native.sh') != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps-arm64
+            !deps-arm64/src
+          key: deps-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/macos/setup_deps.sh', 'tools/macos/kosmickrisp-patches/**') }}
+
+      - name: Dependencies (arm64)
+        if: hashFiles('tools/macos/build_gpu_native.sh') != ''
+        run: BB_ARCH=arm64 bash tools/macos/setup_deps.sh
+
+      - name: Save arm64 dependencies
+        if: hashFiles('tools/macos/build_gpu_native.sh') != '' && steps.deps_arm64.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            deps-arm64
+            !deps-arm64/src
+          key: ${{ steps.deps_arm64.outputs.cache-primary-key }}
+
       - name: Build
         run: bash tools/macos/build.sh
+
+      # build.sh only warns when bb-gpu does not build (the game runs without it); here it fails.
+      - name: Native GPU process (arm64)
+        if: hashFiles('tools/macos/build_gpu_native.sh') != ''
+        run: bash tools/macos/build_gpu_native.sh
 
       - name: Package
         run: bash tools/macos/package.sh "${{ steps.version.outputs.version }}"
@@ -126,7 +156,8 @@ jobs:
         run: |
           # Up to 8 annotations of 80 lines per log: the errors stay readable from the API
           # (check-run annotations) when the full log isn't.
-          for log in out/gpu-errors.txt out/loader-build.log; do
+          for log in out/gpu-errors.txt out/loader-build.log out/gpu-arm64-errors.txt \
+                     out/gpu-arm64-configure.log deps-arm64/setup.log; do
             [[ -f $log ]] || continue
             { [[ $log == *errors.txt ]] && cat "$log" || grep -E 'error' "$log"; } | head -640 |
               split -l 80 - "/tmp/annotation-$(basename "$log")-"
@@ -138,11 +169,14 @@ jobs:
           # as one.
           token=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
           echo "::stop-commands::$token"
-          for log in out/gpu-errors.txt out/loader-build.log deps-x86_64/setup.log; do
+          for log in out/gpu-errors.txt out/loader-build.log out/gpu-arm64-errors.txt \
+                     out/gpu-arm64-configure.log deps-x86_64/setup.log deps-arm64/setup.log; do
             [[ -f $log ]] && { echo "=== $log"; tail -150 "$log"; }
           done
-          ls deps-x86_64/logs 2>/dev/null | while read -r log; do
-            echo "=== deps-x86_64/logs/$log"; tail -40 "deps-x86_64/logs/$log"
+          for deps in deps-x86_64 deps-arm64; do
+            ls "$deps/logs" 2>/dev/null | while read -r log; do
+              echo "=== $deps/logs/$log"; tail -40 "$deps/logs/$log"
+            done
           done
           echo "::$token::"
           true

@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 #include <vector>
 #ifdef __APPLE__
@@ -35,10 +36,10 @@
 #include "common/rdtsc.h"
 #include "common/signal_context.h"
 #include "common/thread.h"
-#include "core/libraries/kernel/equeue.h"
-#include "core/libraries/videoout/driver.h"
-#include "core/libraries/videoout/video_out.h"
-#include "core/platform.h"
+#include "platform/gnm/gnm.h"
+#include "platform/interrupts.h"
+#include "platform/kernel/event_queue.h"
+#include "platform/videoout/videoout.h"
 #include "remote/bb_control.h"
 #include "remote/bb_protocol.h"
 #include "remote/bb_remote.h"
@@ -63,24 +64,30 @@ uint64_t runtime_process_time_counter(void);
 uint64_t runtime_tsc_frequency(void);
 void runtime_restart(void);
 void runtime_wait_report(double frames);
+// runtime_pad.c / runtime_file.c: the button prompts' state (bb-gpu draws them).
+int runtime_pad_prompt(const char* name, int prefer_mouse, char* label, int size);
+unsigned runtime_pad_prompt_generation(void);
+int runtime_pad_prompt_device(void);
+int runtime_pad_mouse_look(void);
+int runtime_file_host_path(const char* guest, char* out, size_t size);
 }
-
-namespace Libraries::GnmDriver {
-void NoteFramesRetired(u64 frames);
-void ReleaseSubmissionLock();
-} // namespace Libraries::GnmDriver
 
 namespace BbRemote {
 
-using Libraries::VideoOut::VideoOutPort;
-namespace VO = Libraries::VideoOut;
+namespace VO = BbVideoOut;
+using VideoOutPort = BbVideoOut::Port;
 
 static_assert(sizeof(VO::FlipStatus) == FlipStatusBytes);
-static_assert(sizeof(VO::SceVideoOutVblankStatus) == VblankStatusBytes);
-static_assert(sizeof(VO::SceVideoOutResolutionStatus) == ResolutionBytes);
+static_assert(sizeof(VO::VblankStatus) == VblankStatusBytes);
+static_assert(sizeof(VO::ResolutionStatus) == ResolutionBytes);
 static_assert(sizeof(VO::BufferAttribute) == BufferAttributeBytes);
-static_assert(sizeof(VO::VideoOutBuffer) == VideoOutBufferBytes);
+static_assert(sizeof(VO::DisplayBuffer) == VideoOutBufferBytes);
 static_assert(sizeof(VO::BufferAttributeGroup) == AttributeGroupBytes);
+static_assert(std::is_trivially_copyable_v<VO::FlipStatus> &&
+              std::is_trivially_copyable_v<VO::VblankStatus> &&
+              std::is_trivially_copyable_v<VO::ResolutionStatus> &&
+              std::is_trivially_copyable_v<VO::DisplayBuffer> &&
+              std::is_trivially_copyable_v<VO::BufferAttributeGroup>);
 static_assert(VO::MaxDisplayBuffers == MaxDisplayBuffers &&
               VO::MaxDisplayBufferGroups == MaxDisplayBufferGroups);
 
@@ -104,7 +111,7 @@ struct State {
     u64 pool_bytes = 0, host_offset = 0, host_next = 0, host_end = 0;
     pid_t child = -1;
     VideoOutPort* port = nullptr;
-    u64 flip_version = 0; ///< newest flip status applied (under port->port_mutex)
+    u64 flip_version = 0; ///< newest flip status applied (under port->status_mutex)
     std::mutex asc_mutex;
     std::array<AscQueue, 64> asc{};
     std::mutex share_mutex;
@@ -188,18 +195,29 @@ bool Shared(const void* data, u64 bytes) {
 
 // ---- VideoOut port --------------------------------------------------------------------------
 
-/// The port's state from bb-gpu (port_mutex taken here).
+/// As display.cpp's TriggerEvents: the hint is the event id in the low byte, the flip argument or
+/// vblank count from bit 16.
+void TriggerEvents(const std::vector<s64>& queues, VO::InternalEvent event, u64 payload) {
+    for (const s64 handle : queues) {
+        if (auto* queue = BbKernel::FindQueue(handle)) {
+            queue->Trigger(u64(event), BbKernel::Event::VideoOut,
+                           reinterpret_cast<void*>(u64(event) | (payload << 16)));
+        }
+    }
+}
+
+/// The port's state from bb-gpu (status_mutex taken here).
 void ApplyVoState(const VoState& state) {
     VideoOutPort* port = g.port;
     if (!port) {
         return;
     }
-    std::scoped_lock lock{port->port_mutex};
+    std::scoped_lock lock{port->status_mutex};
     if (state.version > g.flip_version) {
         g.flip_version = state.version;
         std::memcpy(&port->flip_status, state.flip_status, FlipStatusBytes);
     }
-    std::memcpy(port->buffer_slots.data(), state.slots, sizeof(state.slots));
+    std::memcpy(port->buffers.data(), state.slots, sizeof(state.slots));
     std::memcpy(port->groups.data(), state.groups, sizeof(state.groups));
     std::memcpy(&port->resolution, state.resolution, ResolutionBytes);
     port->is_open = state.is_open != 0;
@@ -211,7 +229,7 @@ void ApplyFlipStatus(const VoStatusArgs& args) {
         return;
     }
     {
-        std::scoped_lock lock{port->port_mutex};
+        std::scoped_lock lock{port->status_mutex};
         if (args.version > g.flip_version) {
             g.flip_version = args.version;
             std::memcpy(&port->flip_status, args.flip_status, FlipStatusBytes);
@@ -220,16 +238,8 @@ void ApplyFlipStatus(const VoStatusArgs& args) {
     if (!args.flip_event) {
         return;
     }
-    // As VideoOutDriver::Flip does in-process.
-    for (auto event : port->flip_events) {
-        if (auto* equeue = Libraries::Kernel::GetEqueue(event)) {
-            equeue->TriggerEvent(
-                static_cast<u64>(VO::OrbisVideoOutInternalEventId::Flip),
-                Libraries::Kernel::OrbisKernelEvent::Filter::VideoOut,
-                reinterpret_cast<void*>(static_cast<u64>(VO::OrbisVideoOutInternalEventId::Flip) |
-                                        (args.flip_arg << 16)));
-        }
-    }
+    // As Display::Flip does in-process.
+    TriggerEvents(port->flip_queues, VO::InternalEvent::Flip, u64(args.flip_arg));
 }
 
 void ApplyVblank(const VoVblankArgs& args) {
@@ -237,35 +247,56 @@ void ApplyVblank(const VoVblankArgs& args) {
     if (!port) {
         return;
     }
-    // As VideoOutDriver::PresentThread does in-process.
-    std::scoped_lock lock{port->vo_mutex};
-    for (auto event : port->vblank_events) {
-        if (auto* equeue = Libraries::Kernel::GetEqueue(event)) {
-            equeue->TriggerEvent(
-                static_cast<u64>(VO::OrbisVideoOutInternalEventId::Vblank),
-                Libraries::Kernel::OrbisKernelEvent::Filter::VideoOut,
-                reinterpret_cast<void*>(static_cast<u64>(VO::OrbisVideoOutInternalEventId::Vblank) |
-                                        (args.event_count << 16)));
-        }
-    }
+    // As Display::VblankThread does in-process.
+    std::scoped_lock lock{port->vblank_mutex};
+    TriggerEvents(port->vblank_queues, VO::InternalEvent::Vblank, args.event_count);
     std::memcpy(&port->vblank_status, args.status, VblankStatusBytes);
     port->vblank_cv.notify_all();
 }
 
 // ---- messages from bb-gpu -------------------------------------------------------------------
 
+/// The button prompts' label for an input (runtime_pad_prompt), for bb-gpu. On the reader thread,
+/// not the protection thread: a guest thread holding the pad's or the file table's lock may wait
+/// on a write fault, whose protections that thread applies.
+void PadPrompt(const Message& message, auto&& reply) {
+    auto args = Payload<PadPromptArgs>(message);
+    args.name[sizeof(args.name) - 1] = 0;
+    PadPromptReply out{};
+    out.kind = runtime_pad_prompt(args.name, args.prefer_mouse, out.label, int(sizeof(out.label)));
+    out.label[sizeof(out.label) - 1] = 0;
+    reply(&out, sizeof(out));
+}
+
+/// Where a game file is on this computer (runtime_file_host_path), for bb-gpu: only the game's
+/// own files (/app0/), nothing else of the guest's file system.
+void FileHostPath(const Message& message, auto&& reply) {
+    auto args = Payload<PathArgs>(message);
+    args.path[sizeof(args.path) - 1] = 0;
+    PathReply out{-1, 0, {}};
+    if (std::strncmp(args.path, "/app0/", 6) == 0 && !std::strstr(args.path, "..")) {
+        out.result = runtime_file_host_path(args.path, out.path, sizeof(out.path));
+        out.path[sizeof(out.path) - 1] = 0;
+    }
+    reply(&out, sizeof(out));
+}
+
+
 /// The reader thread never calls bb-gpu itself.
 void Handle(const Message& message, auto&& reply) {
     switch (message.type) {
-    case MsgIrq:
-        Platform::IrqC::Instance()->Signal(
-            static_cast<Platform::InterruptId>(Payload<ValueArgs>(message).value));
+    case MsgIrq: {
+        const u64 line = Payload<ValueArgs>(message).value;
+        if (line < BbIrq::LineCount) {
+            BbIrq::Raise(BbIrq::Line(line));
+        }
         break;
+    }
     case MsgFramesRetired:
-        Libraries::GnmDriver::NoteFramesRetired(Payload<ValueArgs>(message).value);
+        BbGnm::NoteFramesRetired(Payload<ValueArgs>(message).value);
         break;
     case MsgReleaseSubmissionLock:
-        Libraries::GnmDriver::ReleaseSubmissionLock();
+        BbGnm::ReleaseSubmissionLock();
         break;
     case MsgVoFlipStatus:
         ApplyFlipStatus(Payload<VoStatusArgs>(message));
@@ -291,7 +322,7 @@ void Handle(const Message& message, auto&& reply) {
                         BbStats::gnm_frame_waits.exchange(0) / frames,
                         BbStats::gnm_frame_wait_ns.exchange(0) / (1e6 * frames));
         }
-        Libraries::Kernel::ReportEqueueWaits(args.frames);
+        BbKernel::ReportEqueueWaits(args.frames);
         runtime_wait_report(args.frames);
 #ifdef __APPLE__
         if (const std::string threads = BbThreads::ReportProcessThreads(args.window_s);
@@ -301,6 +332,12 @@ void Handle(const Message& message, auto&& reply) {
 #endif
         break;
     }
+    case MsgPadPrompt:
+        PadPrompt(message, reply);
+        break;
+    case MsgFileHostPath:
+        FileHostPath(message, reply);
+        break;
     case MsgGpuFailed: {
         const auto args = Payload<TextArgs>(message);
         std::fprintf(stderr, "GPU process: %.*s\n", int(sizeof(args.text)), args.text);
@@ -352,6 +389,17 @@ void ProtectThread() {
             },
             [] { return false; });
     }
+}
+
+/// runtime_pad.c's prompt state for bb-gpu's button prompts (SharedState): once a frame.
+void PublishPromptState() {
+    if (!g.control) {
+        return;
+    }
+    auto& s = g.control->state;
+    s.prompt_device.store(runtime_pad_prompt_device(), std::memory_order_relaxed);
+    s.pad_mouse_look.store(runtime_pad_mouse_look(), std::memory_order_relaxed);
+    s.prompt_generation.store(runtime_pad_prompt_generation(), std::memory_order_release);
 }
 
 /// Ends the game when bb-gpu ends (its window was closed, or it failed).
@@ -628,6 +676,7 @@ void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
 }
 
 void SubmitDone(u64 frame) {
+    PublishPromptState();
     const ValueArgs args{frame};
     g.channel->Send(MsgSubmitDone, &args, sizeof(args));
     // The game's System menu pages live in this process (their hooks are in the game's code), the
@@ -693,7 +742,7 @@ void VoClose(s32 handle) {
 }
 
 int VoRegisterBuffers(s32 start, void* const* addresses, s32 count,
-                      const VO::BufferAttribute* attribute) {
+                      const BbVideoOut::BufferAttribute* attribute) {
     VoRegisterArgs args{};
     args.handle = 1;
     args.start = start;
@@ -716,7 +765,7 @@ int VoUnregisterBuffers(s32 attribute_index) {
     return reply.result;
 }
 
-int VoChangeBufferAttribute(s32 attribute_index, const VO::BufferAttribute* attribute) {
+int VoChangeBufferAttribute(s32 attribute_index, const BbVideoOut::BufferAttribute* attribute) {
     VoAttributeArgs args{};
     args.handle = 1;
     args.index = attribute_index;
@@ -867,6 +916,12 @@ int MouseCaptured() {
 
 u32 MouseButtons() {
     return g.control ? g.control->state.mouse_buttons.load(std::memory_order_relaxed) : 0;
+}
+
+void MouseCapture() {
+    if (g.control) {
+        g.control->state.mouse_capture_requests.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void MouseLookEnable(int enabled) {

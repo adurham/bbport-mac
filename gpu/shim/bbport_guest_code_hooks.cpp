@@ -18,12 +18,37 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#if defined(__x86_64__)
 #include <xbyak/xbyak.h>
 #include <Zydis/Zydis.h>
 
 #include "common/decoder.h"
+#endif
 
 namespace Core {
+namespace {
+
+std::atomic<bool> code_writable{false};
+
+} // namespace
+
+int GuestCodeProtection() {
+    return code_writable.load(std::memory_order_acquire) ? PROT_READ | PROT_WRITE | PROT_EXEC
+                                                         : PROT_READ | PROT_EXEC;
+}
+
+void KeepGuestCodeWritable() {
+    code_writable.store(true, std::memory_order_release);
+}
+
+#if !defined(__x86_64__)
+// bbport (the macOS native GPU process, arm64): the game's code runs in the game process; hooks
+// are installed there.
+bool InstallGuestCodeHook(void*, std::span<const std::uint8_t>, std::uint64_t, GuestCodeHook,
+                          const std::uint8_t*) {
+    return false;
+}
+#else
 namespace {
 
 using namespace Xbyak::util;
@@ -123,18 +148,7 @@ void WriteCode(std::uint8_t* code, const std::uint8_t* bytes, std::size_t size) 
     mprotect(first, span, GuestCodeProtection());
 }
 
-std::atomic<bool> code_writable{false};
-
 } // namespace
-
-int GuestCodeProtection() {
-    return code_writable.load(std::memory_order_acquire) ? PROT_READ | PROT_WRITE | PROT_EXEC
-                                                         : PROT_READ | PROT_EXEC;
-}
-
-void KeepGuestCodeWritable() {
-    code_writable.store(true, std::memory_order_release);
-}
 
 bool InstallGuestCodeHook(void* address, std::span<const std::uint8_t> expected, std::uint64_t tag,
                           GuestCodeHook hook, const std::uint8_t* skip_flag) {
@@ -267,5 +281,7 @@ bool InstallGuestCodeHook(void* address, std::span<const std::uint8_t> expected,
     hooked_sites.insert(begin);
     return true;
 }
+
+#endif // __x86_64__
 
 } // namespace Core

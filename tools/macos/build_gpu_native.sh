@@ -43,6 +43,7 @@ missing=$(comm -23 \
     <(nm -m out/gpu-arm64/libbbgpu.dylib | sed -n 's/.* \(_[^ ]*\) (dynamically looked up).*/\1/p' | sort -u) \
     <(nm -gU out/gpu-arm64/bb-gpu | awk '{print $3}' | sort -u))
 if [[ -n $missing ]]; then
+    echo "error: bb-gpu does not provide what libbbgpu imports from it:" $missing > out/gpu-arm64-errors.txt
     echo "STOP: bb-gpu does not provide what libbbgpu imports from it:" $missing >&2
     exit 1
 fi

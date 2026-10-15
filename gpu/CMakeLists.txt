@@ -272,7 +272,7 @@ endif()
 # view of guest memory (shim/remote/remote_back.cpp). Built on demand
 # (tools/macos/build_gpu_native.sh).
 add_executable(bb-gpu EXCLUDE_FROM_ALL bb_gpu/bb_gpu_main.cpp)
-target_include_directories(bb-gpu PRIVATE shim shadps4 third_party/gcn/include)
+target_include_directories(bb-gpu PRIVATE . shim third_party/gcn/include)
 target_link_libraries(bb-gpu PRIVATE bbgpu)
 if (APPLE)
     target_link_options(bb-gpu PRIVATE -Wl,-export_dynamic)

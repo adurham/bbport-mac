@@ -11,7 +11,7 @@
 
 namespace BbRemote {
 
-inline constexpr std::uint32_t ProtocolVersion = 6;
+inline constexpr std::uint32_t ProtocolVersion = 7;
 
 enum Msg : std::uint32_t {
     // ---- game process -> GPU process ----
@@ -51,23 +51,26 @@ enum Msg : std::uint32_t {
 
     // ---- GPU process -> game process ----
     MsgProtect = 100,       ///< call: ProtectArgs -> ResultReply (the game process applies it)
-    MsgIrq = 101,           ///< ValueArgs: Platform::InterruptId
-    MsgFramesRetired = 102, ///< ValueArgs (Libraries::GnmDriver::NoteFramesRetired)
+    MsgIrq = 101,           ///< ValueArgs: BbIrq::Line
+    MsgFramesRetired = 102, ///< ValueArgs (BbGnm::NoteFramesRetired)
     MsgReleaseSubmissionLock = 103,
     MsgVoFlipStatus = 104,  ///< VoStatusArgs: flip status changed (and maybe a flip event)
     MsgVoVblank = 105,      ///< VoVblankArgs
     MsgRestart = 106,       ///< the settings menu asked for a restart
     MsgGpuFailed = 107,     ///< TextArgs: the GPU process is about to exit
     MsgGameStats = 108,     ///< StatsArgs: frame stats were printed; print the game process's
+    // bbport 0.6's button prompts (rare: when the prompts change).
+    MsgPadPrompt = 110,     ///< call: PadPromptArgs -> PadPromptReply (runtime_pad_prompt)
+    MsgFileHostPath = 111,  ///< call: PathArgs -> PathReply (runtime_file_host_path, /app0/ only)
 };
 
 /// Sizes of the guest structures carried as raw bytes (checked against the real types).
-inline constexpr std::uint32_t FlipStatusBytes = 64;      ///< Libraries::VideoOut::FlipStatus
-inline constexpr std::uint32_t VblankStatusBytes = 40;    ///< SceVideoOutVblankStatus
-inline constexpr std::uint32_t ResolutionBytes = 48;      ///< SceVideoOutResolutionStatus
-inline constexpr std::uint32_t BufferAttributeBytes = 40; ///< BufferAttribute
-inline constexpr std::uint32_t VideoOutBufferBytes = 24;  ///< VideoOutBuffer
-inline constexpr std::uint32_t AttributeGroupBytes = 48;  ///< BufferAttributeGroup
+inline constexpr std::uint32_t FlipStatusBytes = 64;      ///< BbVideoOut::FlipStatus
+inline constexpr std::uint32_t VblankStatusBytes = 40;    ///< BbVideoOut::VblankStatus
+inline constexpr std::uint32_t ResolutionBytes = 48;      ///< BbVideoOut::ResolutionStatus
+inline constexpr std::uint32_t BufferAttributeBytes = 40; ///< BbVideoOut::BufferAttribute
+inline constexpr std::uint32_t VideoOutBufferBytes = 24;  ///< BbVideoOut::DisplayBuffer
+inline constexpr std::uint32_t AttributeGroupBytes = 48;  ///< BbVideoOut::BufferAttributeGroup
 inline constexpr std::uint32_t MaxDisplayBuffers = 16, MaxDisplayBufferGroups = 4;
 
 struct HelloArgs {
@@ -225,6 +228,24 @@ struct StatsArgs {
     double window_s; ///< seconds the frame stats covered
     double frames;   ///< frames in them
 };
+struct PadPromptArgs {
+    char name[32]; ///< runtime_pad.c's input name
+    std::int32_t prefer_mouse;
+    std::uint32_t pad;
+};
+struct PadPromptReply {
+    std::int32_t kind; ///< runtime_pad_prompt's result
+    std::uint32_t pad;
+    char label[64];
+};
+struct PathArgs {
+    char path[1024];
+};
+struct PathReply {
+    std::int32_t result; ///< 0: found
+    std::uint32_t pad;
+    char path[1024];
+};
 
 static_assert(sizeof(HelloArgs) == 80 && sizeof(HelloReply) == 16 + 16 * MaxTakenRanges &&
               sizeof(MapArgs) == 40 &&
@@ -241,5 +262,7 @@ static_assert(sizeof(VoArgs) == 8 && sizeof(VoRegisterArgs) == 16 + 40 + 128 &&
               sizeof(GammaArgs) == 8);
 static_assert(sizeof(TextInputArgs) <= 4096 && sizeof(TextInputReply) <= 4096 &&
               sizeof(TextArgs) == 512 && sizeof(StatsArgs) == 16);
+static_assert(sizeof(PadPromptArgs) == 40 && sizeof(PadPromptReply) == 72 &&
+              sizeof(PathArgs) == 1024 && sizeof(PathReply) == 1032);
 
 } // namespace BbRemote

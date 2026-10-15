@@ -29,4 +29,8 @@ void Once(Line line, Handler handler);
 /// Runs the line's handlers (on the raising thread).
 void Raise(Line line);
 
+/// bbport (native GPU process, docs/macos-native-gpu.md): in bb-gpu, every interrupt also goes to
+/// the game process, whose listeners (Gnm's event queues) run there. Set once, before any raise.
+inline void (*forward)(Line) = nullptr;
+
 } // namespace BbIrq

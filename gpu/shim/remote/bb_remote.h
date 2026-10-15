@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: the native GPU process split (docs/macos-native-gpu.md), as the rest of the GPU library
 // sees it. With BB_NATIVE_GPU=1 the game process (bb-probe, x86-64) keeps the HLE libraries
-// (GnmDriver, VideoOut, event queues) and forwards what reaches the GPU core to bb-gpu (arm64),
-// which runs that core: Liverpool, the caches, the shader recompiler, the presenter and the window.
+// (Gnm, VideoOut, event queues) and forwards what reaches the GPU core to bb-gpu (arm64), which
+// runs that core: the command processor, the caches, the shader recompiler, the presenter and the
+// window.
 // In-process (the default) both flags stay false and none of this runs.
 #pragma once
 
@@ -12,12 +13,12 @@
 #include "../../bbgpu.h"
 #include "common/types.h"
 
-namespace Libraries::VideoOut {
-struct VideoOutPort;
+namespace BbVideoOut {
+struct Port;
 struct BufferAttribute;
 struct FlipStatus;
-struct SceVideoOutVblankStatus;
-} // namespace Libraries::VideoOut
+struct VblankStatus;
+} // namespace BbVideoOut
 
 namespace BbRemote {
 
@@ -52,16 +53,16 @@ s32 MapComputeQueue(u64 ring_base, u32* read_ptr, u32 ring_size_dw, u32 pipe_id)
 void UnmapComputeQueue(u32 index);
 AscQueue GetAscQueue(u32 index);
 
-/// The game process's VideoOut port (the driver's main_port): kept in step with bb-gpu's.
-void SetVideoOutPort(Libraries::VideoOut::VideoOutPort* port);
+/// The game process's VideoOut port (the display's main_port): kept in step with bb-gpu's.
+void SetVideoOutPort(BbVideoOut::Port* port);
 u64* VideoOutLabels();
 int VoOpen();
 void VoClose(s32 handle);
 int VoRegisterBuffers(s32 start, void* const* addresses, s32 count,
-                      const Libraries::VideoOut::BufferAttribute* attribute);
+                      const BbVideoOut::BufferAttribute* attribute);
 int VoUnregisterBuffers(s32 attribute_index);
 int VoChangeBufferAttribute(s32 attribute_index,
-                            const Libraries::VideoOut::BufferAttribute* attribute);
+                            const BbVideoOut::BufferAttribute* attribute);
 bool VoSubmitFlip(s32 index, s64 flip_arg);
 s32 VoSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg);
 void VoSetFlipRate(s32 handle, s32 rate);
@@ -85,6 +86,7 @@ void MouseTake(double* dx, double* dy, int* wheel_up, int* wheel_down);
 int MouseCaptured();
 u32 MouseButtons();
 void MouseLookEnable(int enabled);
+void MouseCapture();
 int TextInputBegin(const char* initial, const char* prompt);
 int TextInputPoll(char* out, u64 size);
 } // namespace Front
@@ -97,17 +99,25 @@ int Main(int argc, char** argv);
 void FramesRetired(u64 frames);
 void ReleaseSubmissionLock();
 void Irq(u32 irq);
-/// Called with the port's port_mutex held, after flip_status changed; `flip_event`: a flip
+/// Called with the port's status_mutex held, after flip_status changed; `flip_event`: a flip
 /// completed (the game process triggers its flip events with `flip_arg`).
-void VoFlipStatus(const Libraries::VideoOut::FlipStatus& status, bool flip_event, s64 flip_arg);
-/// Called with vo_mutex held after a vblank: `status` after it, `event_count` the events' count.
-void VoVblank(const Libraries::VideoOut::SceVideoOutVblankStatus& status, u64 event_count);
+void VoFlipStatus(const BbVideoOut::FlipStatus& status, bool flip_event, s64 flip_arg);
+/// Called with vblank_mutex held after a vblank: `status` after it, `event_count` the events'
+/// count.
+void VoVblank(const BbVideoOut::VblankStatus& status, u64 event_count);
 u64* VideoOutLabels();
 /// From the window loop: state the game process reads directly (settings menu open...).
 void PublishWindowState();
 void RequestRestart();
 /// After the frame stats: the game process prints its threads' CPU time and the guest's waits.
 void GameStats(double window_s, double frames);
+// The game process's pad and files for the button prompts (runtime_pad_prompt*,
+// runtime_pad_mouse_look, runtime_file_host_path there).
+int PadPrompt(const char* name, int prefer_mouse, char* label, int size);
+unsigned PadPromptGeneration();
+int PadPromptDevice();
+int PadMouseLook();
+int FileHostPath(const char* guest, char* out, u64 size);
 
 // The runtime's GPU interface (runtime_memory_*, clocks), served from bb-gpu's own view.
 u64 MemoryClamp(uintptr_t address, u64 size);

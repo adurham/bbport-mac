@@ -304,6 +304,19 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     StartProfileWriter();
 #endif
     g_sdk_version = config->sdk_version;
+#ifndef ARCH_X86_64
+    // bbport (the macOS native GPU process): the bytecode SRT walker checks the guest pointers
+    // it follows. Tables can also sit in the game image's own data (not a runtime mapping):
+    // probed directly then.
+    Shader::srt_guest_readable = [](u64 address, u64 size) {
+        if (Core::CachedMapped(address, size)) {
+            return true;
+        }
+        u8 probe[8];
+        return size <= sizeof(probe) &&
+               BbPortable::ReadSelf(probe, reinterpret_cast<const void*>(address), size);
+    };
+#endif
     if (config->user_dir) setenv("BB_GPU_USER_DIR", config->user_dir, 0);
     Common::ElfInfo::Instance().Set(config->serial ? config->serial : "UNKNOWN",
                                     config->title ? config->title : "", config->sdk_version,
@@ -331,8 +344,8 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         });
 #endif
         Core::Loader::SymbolsResolver resolver;
-        Libraries::GnmDriver::RegisterLib(&resolver);
-        Libraries::VideoOut::RegisterLib(&resolver);
+        BbGnm::RegisterLib(&resolver);
+        BbVideoOut::RegisterLib(&resolver);
         return 0;
     }
     const std::string title = config->title ? config->title : "Bloodborne";
@@ -474,6 +487,10 @@ extern "C" uint32_t bbgpu_mouse_buttons(void) {
 }
 
 extern "C" void bbgpu_mouse_capture(void) {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::MouseCapture(); // bb-gpu's window
+        return;
+    }
     if (g_window) {
         g_window->RequestMouseCapture();
     }

@@ -30,6 +30,7 @@
 #include "memory/fault_sites.h"
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
+#include "remote/bb_remote.h"
 
 extern "C" void runtime_sleep_stats(uint64_t* calls, uint64_t* ns);
 extern "C" void runtime_wait_report(double frames);
@@ -400,14 +401,21 @@ void OnFlipStats() {
         if (BbStats::range_allocators[0].load()) {
             std::printf("\n");
         }
-        std::printf("Gnm: %.1f sceGnmSubmitDone/frame, %.1f sceGnmAreSubmitsAllowed/frame, %.1f refused/frame; "
-                    "guest waited for the previous frame %.1fx %.2f ms/frame; %.1f compute queue submissions/frame\n",
-                    BbStats::submit_done_calls.exchange(0) / double(frames),
-                    BbStats::submits_allowed_queries.exchange(0) / double(frames),
-                    BbStats::submits_refused.exchange(0) / double(frames),
-                    BbStats::gnm_frame_waits.exchange(0) / double(frames),
-                    BbStats::gnm_frame_wait_ns.exchange(0) / (1e6 * double(frames)),
-                    BbStats::asc_submits.exchange(0) / double(frames));
+        // Native GPU process: the guest's Gnm calls are counted in the game process
+        // (MsgGameStats prints them there).
+        if (!BbRemote::BackActive()) {
+            std::printf("Gnm: %.1f sceGnmSubmitDone/frame, %.1f sceGnmAreSubmitsAllowed/frame, %.1f refused/frame; "
+                        "guest waited for the previous frame %.1fx %.2f ms/frame; %.1f compute queue submissions/frame\n",
+                        BbStats::submit_done_calls.exchange(0) / double(frames),
+                        BbStats::submits_allowed_queries.exchange(0) / double(frames),
+                        BbStats::submits_refused.exchange(0) / double(frames),
+                        BbStats::gnm_frame_waits.exchange(0) / double(frames),
+                        BbStats::gnm_frame_wait_ns.exchange(0) / (1e6 * double(frames)),
+                        BbStats::asc_submits.exchange(0) / double(frames));
+        } else {
+            std::printf("Gnm: %.1f compute queue submissions/frame\n",
+                        BbStats::asc_submits.exchange(0) / double(frames));
+        }
         std::printf("EOP fences: %llu decoded, %llu labels written, %lld pending; %.1f labels/frame "
                     "written by the GPU\n",
                     (unsigned long long)BbStats::eop_decoded.load(),
@@ -466,9 +474,12 @@ void OnFlipStats() {
 #ifdef __APPLE__
         // bbport (macOS): CPU time of every thread, by name and by owner (bbport_thread_cpu_mac).
         if (const std::string threads = BbThreads::ReportProcessThreads(window); !threads.empty()) {
-            std::printf("%s\n", threads.c_str());
+            std::printf("%s%s\n", BbRemote::BackActive() ? "GPU process: " : "", threads.c_str());
         }
 #endif
+        if (BbRemote::BackActive()) {
+            BbRemote::Back::GameStats(window, frames);
+        }
         intervals.clear();
         window_start = now;
         frames = 0;

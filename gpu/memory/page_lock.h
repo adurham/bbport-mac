@@ -6,6 +6,7 @@
 
 #include <atomic>
 
+#include "bbport_cpu.h"
 #include "common/types.h"
 
 namespace BbMem {
@@ -32,7 +33,7 @@ public:
 private:
     void LockSlow() noexcept {
         for (int spin = 0; spin < 128; ++spin) {
-            __builtin_ia32_pause();
+            BbCpu::Pause();
             u32 expected = 0;
             if (state.load(std::memory_order_relaxed) == 0 &&
                 state.compare_exchange_weak(expected, 1, std::memory_order_acquire)) {

@@ -111,8 +111,12 @@ enum class InternalEvent : u64 {
 struct Port {
     ResolutionStatus resolution;
     std::array<DisplayBuffer, MaxDisplayBuffers> buffers;
+    std::array<u64, MaxDisplayBuffers> own_labels{};
     /// One label per buffer: 1 while a flip to it is queued (the GPU waits on it to draw again).
-    std::array<u64, MaxDisplayBuffers> buffer_labels{};
+    /// Contiguous. bbport: own_labels, or with the native GPU process the memory both processes
+    /// share (docs/macos-native-gpu.md): the guest's GPU commands write them. Stores to them are
+    /// release stores (StoreLabel): the guest polls them in the game process.
+    u64* buffer_labels = own_labels.data();
     std::array<BufferAttributeGroup, MaxDisplayBufferGroups> groups{};
     FlipStatus flip_status;
     VblankStatus vblank_status;
@@ -135,6 +139,9 @@ struct Port {
     bool IsVoLabel(const u64* address) const {
         return address >= &buffer_labels[0] && address <= &buffer_labels[MaxDisplayBuffers - 1];
     }
+    void StoreLabel(std::size_t index, u64 value) {
+        __atomic_store_n(&buffer_labels[index], value, __ATOMIC_RELEASE);
+    }
     void WaitVoLabel(auto&& ready) {
         std::unique_lock lock{vblank_mutex};
         label_cv.wait(lock, ready);
@@ -152,5 +159,18 @@ s32 PS4_SYSV_ABI sceVideoOutGetBufferLabelAddress(s32 handle, uintptr_t* label_a
 s32 sceVideoOutSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg, void** unk);
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
+
+/// bbport (native GPU process, docs/macos-native-gpu.md): bb-gpu's message handlers call the
+/// library as the game does in-process.
+namespace Remote {
+Port* GetPort(s32 handle);
+s32 Open();
+s32 Close(s32 handle);
+s32 RegisterBuffers(s32 handle, s32 start, void* const* addresses, s32 count,
+                    const BufferAttribute* attribute);
+s32 UnregisterBuffers(s32 handle, s32 group);
+s32 ChangeBufferAttribute(s32 handle, s32 group, const BufferAttribute* attribute);
+s32 SubmitFlip(s32 handle, s32 index, s32 flip_mode, s64 flip_arg);
+} // namespace Remote
 
 } // namespace BbVideoOut

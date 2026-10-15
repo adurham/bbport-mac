@@ -18,6 +18,7 @@
 #include "render/vk_frame_capture.h"
 #include "cp/command_processor.h"
 #include "render/presenter.h"
+#include "remote/bb_remote.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern std::unique_ptr<BbCp::CommandProcessor> liverpool;
@@ -82,6 +83,16 @@ Display::Display(u32 width, u32 height) {
     main_port.resolution.full_height = s32(height);
     main_port.resolution.pane_width = s32(width);
     main_port.resolution.pane_height = s32(height);
+    // bbport (native GPU process, docs/macos-native-gpu.md): the labels live in memory both
+    // processes share. In the game process this display only forwards: bb-gpu presents.
+    if (BbRemote::FrontActive()) {
+        main_port.buffer_labels = BbRemote::Front::VideoOutLabels();
+        BbRemote::Front::SetVideoOutPort(&main_port);
+        return;
+    }
+    if (BbRemote::BackActive()) {
+        main_port.buffer_labels = BbRemote::Back::VideoOutLabels();
+    }
     const char* separate = std::getenv("BB_PRESENT_THREAD");
     separate_present = !(separate && separate[0] == '0');
     if (separate_present) {
@@ -96,21 +107,35 @@ s32 Display::Open() {
     if (main_port.is_open) {
         return ErrorResourceBusy;
     }
+    if (BbRemote::FrontActive()) {
+        return BbRemote::Front::VoOpen();
+    }
     main_port.is_open = true;
     liverpool->SetVoPort(&main_port);
     return 1;
 }
 
 void Display::Close() {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::VoClose(1); // then this copy of the port is cleared as below
+    }
     std::scoped_lock lock{request_mutex};
     Port& port = main_port;
     port.is_open = false;
     port.flip_rate = 0;
     port.prev_index = -1;
-    port.buffer_labels.fill(0);
+    for (std::size_t i = 0; i < MaxDisplayBuffers; ++i) {
+        port.StoreLabel(i, 0);
+    }
     port.groups = {};
     port.vblank_status = {};
-    port.flip_status = {};
+    {
+        std::scoped_lock status_lock{port.status_mutex};
+        port.flip_status = {};
+        if (BbRemote::BackActive()) {
+            BbRemote::Back::VoFlipStatus(port.flip_status, false, 0);
+        }
+    }
     port.buffers.fill({});
     RemoveEvents(port.flip_queues, InternalEvent::Flip);
     RemoveEvents(port.vblank_queues, InternalEvent::Vblank);
@@ -122,6 +147,9 @@ Port* Display::GetPort(s32 handle) {
 
 s32 Display::RegisterBuffers(Port* port, s32 start, void* const* addresses, s32 count,
                              const BufferAttribute* attribute) {
+    if (BbRemote::FrontActive()) {
+        return BbRemote::Front::VoRegisterBuffers(start, addresses, count, attribute);
+    }
     const auto free_group = std::ranges::find_if(
         port->groups, [](const BufferAttributeGroup& group) { return !group.is_occupied; });
     if (free_group == port->groups.end()) {
@@ -152,7 +180,9 @@ s32 Display::RegisterBuffers(Port* port, s32 start, void* const* addresses, s32 
         const auto address = reinterpret_cast<uintptr_t>(addresses[i]);
         port->buffers[start + i] = {group_index, address, 0};
         Vulkan::FrameCapture::AddDisplayBuffer(address);
-        port->buffer_labels[start + i] = 0;
+        // bbport: a release store: the guest polls the labels (in the game process, with the
+        // native GPU process), and what came before must be visible first.
+        port->StoreLabel(start + i, 0);
         port->SignalVoLabel();
         presenter->RegisterVideoOutSurface(group, address);
     }
@@ -160,6 +190,9 @@ s32 Display::RegisterBuffers(Port* port, s32 start, void* const* addresses, s32 
 }
 
 s32 Display::UnregisterBuffers(Port* port, s32 group) {
+    if (BbRemote::FrontActive()) {
+        return BbRemote::Front::VoUnregisterBuffers(group);
+    }
     if (group < 0 || std::size_t(group) >= MaxDisplayBufferGroups ||
         !port->groups[group].is_occupied) {
         LOG_ERROR(Lib_VideoOut, "no display buffer group {}", group);
@@ -175,6 +208,9 @@ s32 Display::UnregisterBuffers(Port* port, s32 group) {
 }
 
 s32 Display::ChangeBufferAttribute(Port* port, s32 group, const BufferAttribute* attribute) {
+    if (BbRemote::FrontActive()) {
+        return BbRemote::Front::VoChangeBufferAttribute(group, attribute);
+    }
     if (group < 0 || std::size_t(group) >= MaxDisplayBufferGroups ||
         !port->groups[group].is_occupied) {
         LOG_ERROR(Lib_VideoOut, "no display buffer group {}", group);
@@ -189,6 +225,9 @@ s32 Display::ChangeBufferAttribute(Port* port, s32 group, const BufferAttribute*
 }
 
 bool Display::SubmitFlip(Port* port, s32 index, s64 flip_arg, bool at_eop) {
+    if (BbRemote::FrontActive()) {
+        return BbRemote::Front::VoSubmitFlip(index, flip_arg);
+    }
     {
         std::scoped_lock lock{port->status_mutex};
         if (index != -1 && port->flip_status.flip_pending_num > 16) {
@@ -200,6 +239,9 @@ bool Display::SubmitFlip(Port* port, s32 index, s64 flip_arg, bool at_eop) {
         }
         ++port->flip_status.flip_pending_num; // queued and GPU-side flips together
         port->flip_status.submit_tsc = Libraries::Kernel::sceKernelReadTsc();
+        if (BbRemote::BackActive()) {
+            BbRemote::Back::VoFlipStatus(port->flip_status, false, 0);
+        }
     }
     if (at_eop) {
         QueueFlip(port, index, flip_arg, true);
@@ -247,7 +289,7 @@ void Display::QueueFlip(Port* port, s32 index, s64 flip_arg, bool at_eop) {
         if (ahead && port->last_queued >= 0 && port->last_queued != index) {
             released = port->last_queued;
             ++port->released_ahead[released];
-            port->buffer_labels[released] = 0;
+            port->StoreLabel(released, 0);
         }
         port->last_queued = index;
     }
@@ -331,6 +373,10 @@ void Display::Flip(const Request& request) {
             --status.gc_queue_num;
         }
         --status.flip_pending_num;
+        if (BbRemote::BackActive()) {
+            // The game process triggers its flip events (the queues below are its own).
+            BbRemote::Back::VoFlipStatus(status, true, request.flip_arg);
+        }
     }
     TriggerEvents(port->flip_queues, InternalEvent::Flip, u64(request.flip_arg));
     // The buffer shown before is free again.
@@ -341,7 +387,7 @@ void Display::Flip(const Request& request) {
             if (ahead != 0) {
                 --ahead; // given back when its flip was queued
             } else {
-                port->buffer_labels[port->prev_index] = 0;
+                port->StoreLabel(port->prev_index, 0);
             }
         }
         port->label_cv.notify_all();
@@ -398,11 +444,15 @@ void Display::VblankThread(std::stop_token stop) {
         {
             // sceVideoOutGetVblankStatus reads it concurrently.
             std::scoped_lock lock{port.vblank_mutex};
-            TriggerEvents(port.vblank_queues, InternalEvent::Vblank, port.vblank_status.count);
+            const u64 event_count = port.vblank_status.count; // bbport: native GPU process
+            TriggerEvents(port.vblank_queues, InternalEvent::Vblank, event_count);
             port.vblank_status.count++;
             port.vblank_status.process_time = Libraries::Kernel::sceKernelGetProcessTime();
             port.vblank_status.tsc = Libraries::Kernel::sceKernelReadTsc();
             port.vblank_cv.notify_all();
+            if (BbRemote::BackActive()) {
+                BbRemote::Back::VoVblank(port.vblank_status, event_count);
+            }
         }
         if (!immediate_flips || port.flip_rate != 0) {
             timer.End();

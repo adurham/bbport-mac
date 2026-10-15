@@ -35,7 +35,7 @@ talk through shared-memory queues.
 ```
  bb-probe (x86-64, Rosetta)                    bb-gpu (arm64, native)
  ┌──────────────────────────────┐              ┌──────────────────────────────────┐
- │ game code, runtime (src/*.c) │  guest       │ Liverpool (PM4), rasterizer,     │
+ │ game code, runtime (src/*.c) │  guest       │ command processor, rasterizer,   │
  │ HLE: Gnm command builders,   │  memory      │ buffer/texture caches, shader    │
  │ VideoOut, event queues,      │◄────────────►│ recompiler, presenter, overlay   │
  │ AvPlayer, audio              │  (one shm,   │ KosmicKrisp (native) → Metal      │
@@ -70,8 +70,8 @@ Frontend → backend (bb-probe → bb-gpu):
 | Init (config, shm fd) | `bbgpu_init` | fd passed at spawn |
 | Map / Unmap / Invalidate | runtime hooks | Map carries the physical offset and protection so bb-gpu mirrors it |
 | Asset write / CPU write | note-write and cpu-write hooks | asynchronous |
-| SubmitGfx / SubmitAsc / SubmitDone / MapComputeQueue | `Liverpool::*` from Gnm HLE | asynchronous; the command buffers are read from shared memory |
-| VideoOut Open/Close/RegisterBuffers/SubmitFlip/ChangeBufferAttribute | `VideoOutDriver` | the port state becomes a shared struct |
+| SubmitGfx / SubmitAsc / SubmitDone / MapComputeQueue | `BbCp::CommandProcessor` from Gnm (`gpu/platform/gnm`) | asynchronous; the command buffers are read from shared memory |
+| VideoOut Open/Close/RegisterBuffers/SubmitFlip/ChangeBufferAttribute | `BbVideoOut::Display` | the port state becomes a shared struct |
 | Write fault (address) | `bbgpu_handle_fault` | synchronous: bb-gpu marks the page and asks to unprotect |
 
 Backend → frontend:
@@ -80,8 +80,9 @@ Backend → frontend:
 |---|---|---|
 | Protect (range, read, write) | `runtime_memory_gpu_protect` | synchronous; the frontend applies it (Rosetta emulates 4 KiB protection, only it can) |
 | Write trap (range, reason, on) | `runtime_memory_trap` (bbport 0.5) | as Protect (a `ProtectArgs` with `ProtectTrap`); the game process keeps the reasons that count, bb-gpu a copy for `runtime_memory_trap_reasons`, cleared on Map/Unmap |
-| Interrupt (EOP, compute, flip, vblank) | `Platform::IrqC` → event queues | asynchronous, triggers guest events |
+| Interrupt (EOP, compute, flip, vblank) | `BbIrq::Raise` → event queues | asynchronous, triggers guest events |
 | Pad and keyboard state | `runtime_pad.c` reads SDL | shared struct; the window and its events belong to bb-gpu |
+| Button prompts (bbport 0.6) | `runtime_pad_prompt*`, `runtime_file_host_path` | the prompt state is a shared struct the game process updates once a frame; a prompt's label and the game's icon file are calls (rare: when the prompts change), answered by the game process's reader thread |
 
 Labels, readbacks and fences are written by bb-gpu straight into shared guest memory: its mapping has
 no write protection, the same thing the "write backing" path does today. Those writes need release
@@ -195,10 +196,10 @@ cleared (or be passed explicitly) before bb-gpu is spawned.
   the runtime's lock. A fault from a thread that holds that lock itself (inside the runtime) gets
   its protections back in the reply instead and applies them. Invalidations, file-read notes and
   decoded movie frames are messages.
-- GnmDriver stays in the game process; submissions, `SubmitDone`, the idle check and compute queues
-  go through a small facade in `gnmdriver.cpp` (host-memory init sequences travel inline). Frames
-  retired, the submission lock and every interrupt come back (`IrqController::forward`).
-- VideoOut: bb-gpu runs the driver and presents; the game process's driver keeps a copy of the port
+- Gnm stays in the game process; submissions, `SubmitDone`, the idle check and compute queues
+  go through a small facade in `gnm_driver.cpp` (`Gpu::`; host-memory init sequences travel
+  inline). Frames retired, the submission lock and every interrupt come back (`BbIrq::forward`).
+- VideoOut: bb-gpu runs the display and presents; the game process's display keeps a copy of the port
   (buffer slots and flip status follow bb-gpu's, with a version so a late copy never replaces a
   newer one) and triggers the guest's flip and vblank events when bb-gpu reports them. EOP flips are
   registered in bb-gpu, whose command processor raises the flip interrupt in stream order.
@@ -218,6 +219,23 @@ cleared (or be passed explicitly) before bb-gpu is spawned.
 
 The first native run compiles every shader again: the arm64 build keeps its own pipeline cache and
 KosmicKrisp its own shader cache.
+
+**bbport 0.6 (2026-10-15).** Upstream rewrote the GPU side (`gpu/shadps4` became `gpu/cp`,
+`gpu/render`, `gpu/platform/...`); the split was carried over onto the new code:
+
+- `gpu/platform/gnm/gnm_driver.cpp`: the `Gpu::` facade (submissions, idle check, compute queues);
+  `RegisterLib` creates the command processor and presenter only in-process or in bb-gpu.
+- `gpu/platform/videoout/{display,videoout}.cpp`: the forwarding and the port's copy as before;
+  `Port::buffer_labels` points into the control block, and every store to a label is a release
+  store (`StoreLabel`), the new early buffer release (`BB_FLIP_AHEAD`) included. bb-gpu's message
+  handlers call the library through `BbVideoOut::Remote`.
+- `gpu/platform/interrupts.cpp`: `BbIrq::forward`, set in bb-gpu.
+- The SRT walker (`gpu/shader/ir/passes/flatten_extended_userdata_pass.cpp`): the x86 builder's
+  walk again as bytecode on arm64 (same traversal, same slots), run by `RunSrtWalker`; the cache
+  validates bytecode it loads. The 0.5 check against the x86 walker (`BB_SRT_CHECK`) did not come
+  along.
+- 0.6's button prompts read the pad and the game's files from bb-gpu (table above); the pad's
+  mouse capture request is a counter in the control block.
 
 **Phase 6, started (2026-10-08).**
 

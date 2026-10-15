@@ -38,8 +38,14 @@ void BlobStore::Open() {
     if (opened) {
         return;
     }
-    dir = Common::FS::GetUserPath(Common::FS::PathType::CacheDir) /
-          Common::ElfInfo::Instance().GameSerial();
+    // bbport: the cache holds host code (the SRT walkers: x86 code, bytecode elsewhere): another
+    // architecture keeps its own (the macOS native GPU process, docs/macos-native-gpu.md).
+#if defined(__x86_64__)
+    const std::string name{Common::ElfInfo::Instance().GameSerial()};
+#else
+    const std::string name = std::string{Common::ElfInfo::Instance().GameSerial()} + "-arm64";
+#endif
+    dir = Common::FS::GetUserPath(Common::FS::PathType::CacheDir) / name;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     writer = std::jthread([this](std::stop_token stop) { Writer(stop); });

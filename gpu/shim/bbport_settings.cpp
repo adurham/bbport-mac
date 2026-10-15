@@ -372,6 +372,7 @@ void ReloadLive() {
     v.sharpness = fresh.sharpness.load();
     v.show_fps = fresh.show_fps.load();
     v.model_lod = fresh.model_lod.load();
+    v.aspect = fresh.aspect.load();
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = fresh.effects[e].load();
     }

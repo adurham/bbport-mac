@@ -106,6 +106,26 @@ int runtime_memory_exclude(uintptr_t, uintptr_t) {
     return -1;
 }
 
+// The guest code hooks' notes: the hooks run in the game process.
+void runtime_memory_note_write(uintptr_t, uint64_t) {}
+void runtime_re_watch(uint64_t) {}
+// The button prompts (bbport 0.6): the pad and the game's files are the game process's.
+int runtime_pad_prompt(const char* name, int prefer_mouse, char* label, int size) {
+    return Back::PadPrompt(name, prefer_mouse, label, size);
+}
+unsigned runtime_pad_prompt_generation(void) {
+    return Back::PadPromptGeneration();
+}
+int runtime_pad_prompt_device(void) {
+    return Back::PadPromptDevice();
+}
+int runtime_pad_mouse_look(void) {
+    return Back::PadMouseLook();
+}
+int runtime_file_host_path(const char* guest, char* out, size_t size) {
+    return Back::FileHostPath(guest, out, size);
+}
+
 uint64_t runtime_process_time_us(void) {
     return Back::ProcessTimeUs();
 }

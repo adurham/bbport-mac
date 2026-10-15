@@ -5,7 +5,7 @@
 
 #include <atomic>
 
-#include <immintrin.h>
+#include "bbport_cpu.h"
 
 namespace Common {
 
@@ -18,7 +18,7 @@ public:
     void lock() {
         while (locked.exchange(true, std::memory_order_acquire)) {
             while (locked.load(std::memory_order_relaxed)) {
-                _mm_pause();
+                BbCpu::Pause(); // bbport: x86-64 and arm64
             }
         }
     }

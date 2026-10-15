@@ -59,6 +59,9 @@ void Raise(Line line) {
         state.once.pop_front();
         handler(line);
     }
+    if (forward) {
+        forward(line);
+    }
 }
 
 } // namespace BbIrq
