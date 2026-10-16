@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_settings.h"
+#include "bbport_confirm.h"
 #include <cmath>
 
 #include <algorithm>
@@ -391,7 +392,15 @@ void ReloadLive() {
     }
     std::fclose(file);
     auto& v = Get();
-    v.output_res = fresh.output_res.load();
+    // The window mode and the output size ask first (BbConfirm): a menu change to either becomes
+    // a question over the game — nothing here moves until the player answers. The menu already
+    // saved the file; the answer applies the change or writes the kept value back.
+    if (fresh.window_mode.load() != v.window_mode.load()) {
+        BbConfirm::Request(BbConfirm::Kind::WindowMode, fresh.window_mode.load(), v.window_mode.load());
+    }
+    if (fresh.output_res.load() != v.output_res.load()) {
+        BbConfirm::Request(BbConfirm::Kind::OutputRes, fresh.output_res.load(), v.output_res.load());
+    }
     v.upscaler = fresh.upscaler.load();
     v.preset = fresh.preset.load();
     v.sharpen = fresh.sharpen.load();
@@ -399,10 +408,7 @@ void ReloadLive() {
     v.show_fps = fresh.show_fps.load();
     v.model_lod = fresh.model_lod.load();
     v.aspect = fresh.aspect.load();
-    // The game menu's window-mode row (and the frame-rate keys, for this process's copy): the
-    // apply after this reload reads window_mode, so leaving it out made the row look dead —
-    // bbport.ini said fullscreen while the apply read the stale "windowed".
-    v.window_mode = fresh.window_mode.load();
+    // The frame-rate keys, for this process's copy (the hooks live in the game process).
     v.fps_mode = fresh.fps_mode.load();
     v.fps_limit = fresh.fps_limit.load();
     for (int e = 0; e < EffectCount; ++e) {

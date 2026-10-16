@@ -936,6 +936,11 @@ void FramesRetired(u64 frames) {
     g.channel->Send(MsgFramesRetired, &args, sizeof(args));
 }
 
+void WindowModeKept(int mode) {
+    const ValueArgs args{u64(mode)};
+    g.channel->Send(MsgWindowModeKept, &args, sizeof(args));
+}
+
 void ReleaseSubmissionLock() {
     g.channel->Send(MsgReleaseSubmissionLock, nullptr, 0);
 }

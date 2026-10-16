@@ -97,6 +97,8 @@ int Main(int argc, char** argv);
 
 // Calls from the GPU core that the game process must hear of.
 void FramesRetired(u64 frames);
+/// The player kept the current window mode: the game process's copy of the settings follows.
+void WindowModeKept(int mode);
 void ReleaseSubmissionLock();
 void Irq(u32 irq);
 /// Called with the port's status_mutex held, after flip_status changed; `flip_event`: a flip

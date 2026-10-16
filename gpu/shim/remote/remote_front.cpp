@@ -44,6 +44,7 @@
 #include "remote/bb_control.h"
 #include "remote/bb_protocol.h"
 #include "remote/bb_remote.h"
+#include "bbport_settings.h"
 
 extern char** environ;
 
@@ -302,6 +303,12 @@ void Handle(const Message& message, auto&& reply) {
     }
     case MsgFramesRetired:
         BbGnm::NoteFramesRetired(Payload<ValueArgs>(message).value);
+        break;
+    case MsgWindowModeKept:
+        // The settings menu asked to switch window modes and the player kept the current one:
+        // the answer already went back to bbport.ini; this process's copy follows (so a later
+        // menu save cannot resurrect the kept one).
+        BbSettings::Get().window_mode = int(Payload<ValueArgs>(message).value);
         break;
     case MsgReleaseSubmissionLock:
         BbGnm::ReleaseSubmissionLock();
