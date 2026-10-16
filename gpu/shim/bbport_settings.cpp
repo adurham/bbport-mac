@@ -98,7 +98,15 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         if (std::sscanf(value.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 200 && w <= 16384 &&
             h <= 16384) {
             v.output_res = PackSize({w, h});
+            v.output_res_chosen = true;
         }
+    } else if (key == "layer_opaque") {
+        v.layer_opaque = value == "keep" || value.empty() ? -1 : (i != 0);
+    } else if (key == "layer_colorspace") {
+        v.layer_colorspace = value == "nil" || value == "none" ? 0
+                             : value == "srgb"                 ? 1
+                             : value == "display"              ? 2
+                                                               : -1;
     } else if (key == "aspect_ratio") {
         v.aspect = AspectAuto;
         for (int a = 0; a < AspectCount; ++a) {
@@ -291,6 +299,7 @@ void Load() {
         {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
         {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
+        {"BB_LAYER_OPAQUE", "layer_opaque"},       {"BB_LAYER_COLORSPACE", "layer_colorspace"},
     };
     // Frame generation is hidden in the menu until its artifacts are fixed: only BB_FRAME_GEN turns
     // it on, a saved setting does not.

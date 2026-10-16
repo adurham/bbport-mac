@@ -123,6 +123,15 @@ struct Values {
     std::atomic<int> aspect{AspectAuto};
     /// The chosen output resolution (PackSize; CurrentOutput fits it to the aspect ratio).
     std::atomic<std::uint32_t> output_res{PackSize(OutputDefault)};
+    /// bbport.ini has an output_res (a valid one): unset, the window takes the display's native
+    /// pixel size as the default (window.cpp).
+    std::atomic<bool> output_res_chosen{false};
+    /// macOS presentation experiments (bbport_layer.mm), bbport.ini layer_opaque /
+    /// layer_colorspace, BB_LAYER_OPAQUE / BB_LAYER_COLORSPACE override: what the swapchain's
+    /// CAMetalLayer gets after the Vulkan driver configured it. -1 leaves the driver's value;
+    /// opaque 0/1; colorspace 0 nil (no colour matching), 1 sRGB, 2 the display's own.
+    std::atomic<int> layer_opaque{-1};
+    std::atomic<int> layer_colorspace{-1};
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};

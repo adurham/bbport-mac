@@ -10,6 +10,11 @@
 #include "vulkan/instance.h"
 #include "vulkan/platform.h"
 
+#ifdef __APPLE__
+// bbport_layer.mm: the CAMetalLayer's presentation overrides and its one-shot dump.
+extern "C" void bb_layer_after_swapchain(void* metal_layer);
+#endif
+
 namespace Vulkan {
 
 namespace {
@@ -38,6 +43,9 @@ vk::PresentModeKHR RequestedPresentMode() {
 
 Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& window)
     : instance{instance_}, surface{CreateSurface(instance.GetInstance(), window)} {
+    if (window.GetWindowInfo().type == Frontend::WindowSystemType::Metal) {
+        metal_layer = window.GetWindowInfo().render_surface;
+    }
     ChooseFormat();
     ChoosePresentMode();
     Create(u32(window.GetWidth()), u32(window.GetHeight()));
@@ -145,6 +153,11 @@ void Swapchain::Create(u32 width_, u32 height_) {
     if (old) {
         device.destroySwapchainKHR(old);
     }
+#ifdef __APPLE__
+    // The driver configured the layer just now (opaque, colour space, drawable size): the
+    // settings' presentation experiments go on top, and the layer is logged (Direct checks).
+    bb_layer_after_swapchain(metal_layer);
+#endif
 
     images = Check<"get swapchain images">(device.getSwapchainImagesKHR(swapchain));
     image_count = u32(images.size());
