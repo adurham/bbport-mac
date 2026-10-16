@@ -25,7 +25,8 @@
 
 // bbgpu.cpp: the game window (a warm run asks it to quit after the caches are compiled).
 extern Frontend::WindowSDL* g_window;
-namespace Vulkan { std::uint64_t PipelinesCreated(); } // pipeline.cpp (warm runs watch it)
+namespace Vulkan { std::uint64_t PipelinesCreated(); }    // pipeline.cpp (warm runs watch it)
+namespace Vulkan { std::uint64_t PipelinesPreloaded(); }   // pipeline.cpp (of the above, restored)
 
 namespace Vulkan {
 
@@ -700,9 +701,13 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
         }
     }
     // BB_WARM_ONLY: a hidden warm run quits once the shader compiles have stopped — no pipeline
-    // created for 30 s, at least 45 s in — and at the latest at BB_WARM_SECONDS (default 420: a
-    // ceiling for unusually slow boots; leftovers compile on the next run). The window thread
-    // closes the game; what compiled is already written to the caches.
+    // compiled for BB_WARM_QUIET seconds (default 30), at least 45 s in — and at the latest at
+    // BB_WARM_SECONDS (default 420: a ceiling for unusually slow boots; leftovers compile on the
+    // next run). The window thread closes the game; what compiled is already written to the caches.
+    // BB_WARM_QUIET=0: never quit early, the run ends at BB_WARM_SECONDS. A run driven through the
+    // game (BB_PAD_FILE or BB_PAD_REPLAY) needs that: the title screen and a loading screen are long
+    // compile lulls, so the default would quit the run before it ever reaches gameplay and its areas
+    // (tools/macos/warm_route.sh).
     {
         static const int warm_cap = [] {
             const char* warm = std::getenv("BB_WARM_ONLY");
@@ -715,25 +720,38 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
             return 420;
         }();
         if (warm_cap > 0) {
+            static const int warm_quiet = [] {
+                if (const char* quiet = std::getenv("BB_WARM_QUIET"); quiet && *quiet) {
+                    return std::atoi(quiet);
+                }
+                return 30;
+            }();
             using Clock = std::chrono::steady_clock;
             static const Clock::time_point warm_start = Clock::now();
-            static std::uint64_t last_created = 0;
+            static const std::uint64_t preloaded = PipelinesPreloaded();
+            static std::uint64_t last_compiled = 0;
             static Clock::time_point last_change = warm_start;
             static bool warm_asked = false;
             const auto now = Clock::now();
-            const std::uint64_t created = PipelinesCreated();
-            if (created != last_created) {
-                last_created = created;
+            // What this run compiled, without the pipelines the cache on disk restored at start:
+            // a warm run that only preloads has warmed nothing, and the preload burst would
+            // otherwise read as compiles that just stopped.
+            const std::uint64_t compiled = PipelinesCreated() - preloaded;
+            if (compiled != last_compiled) {
+                last_compiled = compiled;
                 last_change = now;
             }
-            const bool quiet = now - last_change >= std::chrono::seconds(30);
+            const bool quiet =
+                warm_quiet > 0 && now - last_change >= std::chrono::seconds(warm_quiet);
             const bool started = now - warm_start >= std::chrono::seconds(45);
             const bool capped = now - warm_start >= std::chrono::seconds(warm_cap);
             if (!warm_asked && ((quiet && started) || capped)) {
                 warm_asked = true;
                 std::printf(
-                    "Warm run: %llu pipelines created; compiles %s - asking the game to quit\n",
-                    static_cast<unsigned long long>(created),
+                    "Warm run: %llu pipelines created this run, %llu preloaded from the cache; "
+                    "compiles %s - asking the game to quit\n",
+                    static_cast<unsigned long long>(compiled),
+                    static_cast<unsigned long long>(preloaded),
                     quiet ? "stopped" : "still running at the time limit");
                 std::fflush(stdout);
                 if (g_window) {
