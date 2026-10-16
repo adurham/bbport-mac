@@ -274,3 +274,28 @@ gcc -c -std=c11 -D_GNU_SOURCE -w -O1 -g -fsanitize=thread -Isrc -I. src/runtime_
 g++ -std=c++20 -O1 -g -fsanitize=thread -Igpu/shim tests/test_remote_concurrent.cpp /tmp/rm-tsan.o -lpthread -o /tmp/concurrent-tsan && setarch -R /tmp/concurrent-tsan
 g++ -std=c++20 -O1 -g -fsanitize=thread -pthread -Igpu/shim tests/test_remote_channel.cpp -o /tmp/channel-tsan && setarch -R /tmp/channel-tsan
 ```
+
+## Display mode and Direct presentation (2026-10-16)
+
+The Metal HUD's **Direct** means the WindowServer scans the game's drawable out unchanged;
+**Composited** costs a full-screen copy and a frame of latency. What decides it, as logged:
+
+- **Display mode (window.cpp).** Fullscreen sets an explicit display mode derived from the output
+  resolution: `mode = pick(window_mode, output_res)`, picked again whenever the output (a confirmed
+  resolution) or the window's display changes. The picker compares *pixels* (SDL lists macOS modes
+  in points with a density: "looks like 3440x1440" is 3440x1440 @2.0 = 6880x2880 pixels), takes
+  1x modes first, then the closest size, then the highest refresh. Log lines:
+  `Display mode: 3440x1440 pixels (SDL 3440x1440, pixel density 1.00, 240.00 Hz) for output ...`
+  and, after the switch, `Display mode (entered fullscreen): display N now 3440x1440 pixels ...`
+  (CGDisplayCopyDisplayMode). A warm run (`BB_WARM_ONLY=1`) never switches: it logs the picks with
+  `- warm run: not applied`.
+- **Output default.** Without `output_res` in bbport.ini (or, in fullscreen, with one no display
+  mode has) the output is the display's native pixel size (the CoreGraphics native-flagged mode),
+  saved so run.sh's startup patch reads the same value.
+- **The layer (bbport_layer.mm).** After every swapchain: `Layer dump: CAMetalLayer opaque ...
+  colorspace ... drawableSize ...`, the display mode against the drawable, the window's views and
+  the on-screen windows over the display. KosmicKrisp's WSI sets `opaque = NO` on hardware devices
+  (deliberately: a Metal 4 workaround, `wsi_common_metal.c`) and tags the layer sRGB. Overrides,
+  applied after the driver and logged as `Layer: override (...)`:
+  - `layer_opaque=1` / `BB_LAYER_OPAQUE=1` (0, keep)
+  - `layer_colorspace=nil` / `BB_LAYER_COLORSPACE=nil` (srgb, display, keep)
