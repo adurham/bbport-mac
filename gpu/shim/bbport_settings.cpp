@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_settings.h"
+#include "bbport_confirm.h"
 #include <cmath>
 
 #include <algorithm>
@@ -90,6 +91,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.frame_generation = i != 0;
     } else if (key == "live_resolution") {
         v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
+    } else if (key == "retina") {
+        v.retina = i != 0;
     } else if (key == "output_res") {
         int w = 0, h = 0;
         if (std::sscanf(value.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 200 && w <= 16384 &&
@@ -284,6 +287,7 @@ void Load() {
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_SHOW_FPS", "show_fps"},
         {"BB_WINDOW_MODE", "window_mode"},
+        {"BB_RETINA", "retina"},
         {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
         {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
@@ -309,6 +313,7 @@ void Load() {
         if (output && std::sscanf(output, "%dx%d", &w, &h) == 2) v.startup_output = {w, h};
     }
     v.startup_live_resolution = v.live_resolution;
+    v.startup_retina = v.retina;
     // Apple's Metal performance HUD for the game process: Metal reads MTL_HUD_ENABLED when it
     // creates its first device (the window and the driver come later), so this is early enough.
     if (v.metal_hud) {
@@ -370,6 +375,51 @@ bool ResolutionNeedsRestart() {
          (v.upscaler == UpscalerTaa) != (v.startup_upscaler == UpscalerTaa));
 }
 
+void ReloadLive() {
+    Values fresh;
+    for (int e = 0; e < EffectCount; ++e) {
+        fresh.effects[e] = Effects[e].default_on;
+    }
+    FILE* file = std::fopen(Path(), "r");
+    if (!file) {
+        return;
+    }
+    char line[256];
+    while (std::fgets(line, sizeof(line), file)) {
+        std::string text{line};
+        text.erase(text.find_last_not_of(" \t\r\n") + 1);
+        const auto eq = text.find('=');
+        if (text.empty() || text[0] == '#' || eq == std::string::npos) {
+            continue;
+        }
+        Set(fresh, text.substr(0, eq), text.substr(eq + 1));
+    }
+    std::fclose(file);
+    auto& v = Get();
+    // The window mode and the output size ask first (BbConfirm): a menu change to either becomes
+    // a question over the game — nothing here moves until the player answers. The menu already
+    // saved the file; the answer applies the change or writes the kept value back.
+    if (fresh.window_mode.load() != v.window_mode.load()) {
+        BbConfirm::Request(BbConfirm::Kind::WindowMode, fresh.window_mode.load(), v.window_mode.load());
+    }
+    if (fresh.output_res.load() != v.output_res.load()) {
+        BbConfirm::Request(BbConfirm::Kind::OutputRes, fresh.output_res.load(), v.output_res.load());
+    }
+    v.upscaler = fresh.upscaler.load();
+    v.preset = fresh.preset.load();
+    v.sharpen = fresh.sharpen.load();
+    v.sharpness = fresh.sharpness.load();
+    v.show_fps = fresh.show_fps.load();
+    v.model_lod = fresh.model_lod.load();
+    v.aspect = fresh.aspect.load();
+    // The frame-rate keys, for this process's copy (the hooks live in the game process).
+    v.fps_mode = fresh.fps_mode.load();
+    v.fps_limit = fresh.fps_limit.load();
+    for (int e = 0; e < EffectCount; ++e) {
+        v.effects[e] = fresh.effects[e].load();
+    }
+}
+
 void Save() {
     const auto& v = Get();
     // The keys the menu writes, in this order; the rest of the file stays as it is: the
@@ -408,6 +458,7 @@ void Save() {
     put("output_res", SizeText(CurrentOutput()));
     // Read by run.sh at start.
     put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
+    put("retina", flag(v.retina));
     put("frame_generation", flag(v.frame_generation));
     put("window_mode", v.window_mode == WindowBorderless ? "borderless"
                             : v.window_mode == WindowFullscreen ? "fullscreen" : "windowed");

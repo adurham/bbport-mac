@@ -126,6 +126,10 @@ struct Values {
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};
+    /// Retina-density window (macOS: SDL high pixel density; BB_RETINA overrides). On a display
+    /// that is already scaled, "on" makes the window's surface twice the panel and the compositor
+    /// scales it back — heavy and never Direct. Off matches the display's pixels.
+    std::atomic<bool> retina{true};
     /// The game window's mode (WindowMode; window.cpp applies it at creation and live). The
     /// legacy BB_FULLSCREEN=1 asks for fullscreen when the file does not choose a mode.
     std::atomic<int> window_mode{WindowWindowed};
@@ -161,6 +165,7 @@ struct Values {
     /// The output the startup patch was made for (BB_OUTPUT_RES), else 0x0.
     OutputSize startup_output{0, 0};
     int startup_live_resolution = 0;
+    int startup_retina = 1;
 };
 
 Values& Get();
@@ -179,6 +184,10 @@ int RenderPreset();
 bool ResolutionNeedsRestart();
 /// Writes the file (menu changes).
 void Save();
+/// bbport (macOS native GPU process): reads bbport.ini again into the values the game's System menu
+/// pages change (output, upscaler, preset, sharpening, FPS counter, model detail, effects), so
+/// that the process which did not make a change follows it. Startup values stay.
+void ReloadLive();
 
 /// Render resolution divisor of a preset (1.0 native, 1.5 quality, ...).
 float PresetScale(int preset);
