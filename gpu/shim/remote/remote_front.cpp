@@ -482,6 +482,13 @@ bool Exists(const std::string& path) {
 bool Spawn() {
     const std::string dir = ExecutableDir();
     std::string program = dir + "/gpu-arm64/bb-gpu";
+    // A bundled engine (tools/macos/make_engine_app.sh) carries the game's identity for macOS:
+    // Game Mode only reaches processes that live in a registered game bundle. Its libraries
+    // resolve by absolute path, so running from inside the bundle changes nothing else.
+    if (const std::string wrapped = dir + "/gpu-arm64/bb-gpu.app/Contents/MacOS/bb-gpu";
+        Exists(wrapped)) {
+        program = wrapped;
+    }
     if (const char* env = std::getenv("BB_GPU_PROCESS")) {
         program = env;
     }

@@ -81,3 +81,8 @@ if [[ -z ${BB_SKIP_GPU:-} && -f deps-arm64/env.sh ]]; then
     bash tools/macos/build_gpu_native.sh ||
         echo "warning: native GPU process not built (out/gpu-arm64-errors.txt)" >&2
 fi
+# The engine's game identity for macOS (Game Mode): re-wrap after every build so the copy
+# inside out/gpu-arm64/bb-gpu.app never goes stale (tools/macos/make_engine_app.sh).
+if [[ -x out/gpu-arm64/bb-gpu ]]; then
+    bash tools/macos/make_engine_app.sh
+fi
