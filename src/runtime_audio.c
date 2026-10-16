@@ -5,7 +5,9 @@
  * play stale halves - a click every 10.7 ms. The lowest SDL queue level of
  * each window is steered to two buffers (silence prefill on underrun, ±3%
  * cadence corrections), which also absorbs device clock drift. Without an audio device (headless runs, BB_AUDIO=none)
- * ports only follow the clock. */
+ * ports only follow the clock. BB_AUDIO_DEVICE=1 opens the device even in a warm run (sound
+ * diagnostics that must stay hidden); BB_AUDIO_STATS=1 prints queue stats, BB_AUDIO_DUMP=<path>
+ * dumps each port's post-gain PCM. */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "platform.h"
@@ -39,6 +41,7 @@ typedef struct {
     uint64_t last_output_us;
     pthread_mutex_t lock;
     FILE *dump;                     /* BB_AUDIO_DUMP: raw converted PCM per port */
+    uint64_t push_bytes, silence_bytes; /* bytes queued to the device, of which silence */
     int stats;
     uint64_t stat_start_ns, stat_last_ns, stat_max_gap_ns; /* BB_AUDIO_STATS */
     unsigned stat_starved, stat_buffers; int stat_min_queued;
@@ -63,6 +66,31 @@ static int sdl_audio(void) {
         printf("Runtime: audio backend %s\n", sdl_ready ? SDL_GetCurrentAudioDriver() : "timer (silent)");
     }
     return sdl_ready;
+}
+/* Which sink a port feeds. A warm run (BB_WARM_ONLY) keeps the timer sink: an invisible compile
+ * pass must not play the game. BB_AUDIO_DEVICE overrides that: "1" opens the real device even in
+ * a warm run (so the sound path can be exercised without a visible launch), "none"/"0" forces
+ * the timer sink. */
+static int audio_want_device(void) {
+    const char *override_=getenv("BB_AUDIO_DEVICE");
+    if (override_ && override_[0]) return strcmp(override_,"none") && strcmp(override_,"0");
+    const char *warm=getenv("BB_WARM_ONLY");
+    return !(warm && warm[0]=='1');
+}
+/* A paused stream never plays: SDL_OpenAudioDeviceStream hands the device back paused, so the
+ * resume below matters. Naming the sink catches a stream that landed on the wrong device. */
+static void report_audio_device(int id, SDL_AudioStream *stream) {
+    SDL_AudioDeviceID dev=SDL_GetAudioStreamDevice(stream);
+    const char *name=SDL_GetAudioDeviceName(dev);
+    SDL_AudioSpec got, native;
+    int have_got=SDL_GetAudioStreamFormat(stream,NULL,&got);
+    printf("Runtime: audio port %d -> device '%s' (id %u), paused=%s\n",id,name ? name : "?",(unsigned)dev,
+           SDL_AudioDevicePaused(dev) ? "yes (silent until resumed)" : "no");
+    if (have_got) printf("Runtime: audio port %d: stream %d Hz, %d ch, format %s\n",
+                         id,got.freq,got.channels,got.format==SDL_AUDIO_F32 ? "F32" : "other");
+    if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&native,NULL))
+        printf("Runtime: audio port %d: default device natively %d Hz, %d ch, %s\n",
+               id,native.freq,native.channels,native.format==SDL_AUDIO_F32 ? "F32" : "other");
 }
 static int port_range(int type, int *first, int *last) {
     switch (type) {
@@ -113,14 +141,17 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     // A warm run (BB_WARM_ONLY) boots the game hidden to compile its pipelines: no output
     // device — the ports below keep the timer sink (writes are paced and dropped), so the
     // warm-up runs silently instead of playing the game out of an invisible window.
-    const char *warm=getenv("BB_WARM_ONLY");
-    if (warm && warm[0]=='1') {
+    if (!audio_want_device()) {
         printf("Runtime: warm run: port %d keeps the timer sink (no audio device)\n",id);
     } else if (sdl_audio()) {
         SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->channels, 48000};
         p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
-        if (p->stream) SDL_ResumeAudioStreamDevice(p->stream);
-        else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+        if (p->stream) {
+            SDL_ResumeAudioStreamDevice(p->stream);
+            report_audio_device(id,p->stream);
+        } else {
+            fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+        }
     }
     p->stats=getenv("BB_AUDIO_STATS")!=NULL;
     const char *dump=getenv("BB_AUDIO_DUMP");
@@ -140,6 +171,12 @@ static ABI int32_t audio_close(int32_t handle) {
     Port *p=port_of(handle,&error);
     if (p) {
         pthread_mutex_lock(&p->lock);
+        /* What the device took: bytes queued minus what is still waiting is what CoreAudio
+           consumed, which is the only host-side proof that the sink is live. */
+        if (p->stream)
+            printf("Runtime: audio port %d closed: %llu bytes queued (incl. %llu silence), %d still queued, starved %u\n",
+                   (int)(p-ports),(unsigned long long)p->push_bytes,(unsigned long long)p->silence_bytes,
+                   SDL_GetAudioStreamQueued(p->stream),p->stat_starved);
         if (p->stream) SDL_DestroyAudioStream(p->stream);
         if (p->dump) fclose(p->dump);
         p->dump=NULL;
@@ -182,9 +219,11 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 if (queued==0) ++p->stat_starved;
             }
             if (now-p->stat_start_ns>=5000000000u) {
-                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u\n",
+                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u%s%s\n",
                        (int)(p-ports),p->stat_buffers,(unsigned)(5u*48000u/(unsigned)p->frames),p->stat_max_gap_ns/1e6,
-                       p->stat_min_queued,p->stat_starved);
+                       p->stat_min_queued,p->stat_starved,
+                       p->stream ? ", stream " : " (timer sink)",
+                       p->stream ? (SDL_AudioDevicePaused(SDL_GetAudioStreamDevice(p->stream)) ? "PAUSED" : "running") : "");
                 p->stat_start_ns=now; p->stat_max_gap_ns=0; p->stat_starved=0; p->stat_buffers=0; p->stat_min_queued=1<<30;
             }
         }
@@ -200,7 +239,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
             int low=2*(int)bytes, queued=SDL_GetAudioStreamQueued(p->stream);
             if (queued<(int)bytes) {
                 static const unsigned char silence[2048*8*4];
-                SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)bytes ? low-queued : (int)bytes);
+                int pad=low-queued<(int)bytes ? low-queued : (int)bytes;
+                SDL_PutAudioStreamData(p->stream,silence,pad);
+                p->silence_bytes+=(uint64_t)pad;
                 queued=low;
             }
             if (!p->window_count || queued<p->window_min) p->window_min=queued;
@@ -210,6 +251,7 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
             }
             p->next_deadline_ns+=(uint64_t)p->adjust_ns;
             SDL_PutAudioStreamData(p->stream,converted,(int)bytes);
+            p->push_bytes+=(uint64_t)bytes;
         }
         ++buffers_out;
     }
