@@ -224,6 +224,18 @@ private:
     /// instead of the game standing still for the driver (18 ms a pipeline on a GTX 1060, 1-4 s
     /// hitches on a first session). Other passes (one-time renders) compile at once.
     struct PendingPipeline;
+public:
+    /// BB_ASYNC_POLICY (pipeline_cache.cpp, ReadAsyncPolicy): which draws may go without their
+    /// pipeline while it compiles: a render target drawn in the last `min_streak` frames, after a
+    /// frame of `min_draws`+ draws. Full-screen and indirect draws always wait.
+    struct AsyncPolicy {
+        const char* name;
+        u32 min_streak;
+        u64 min_draws;
+    };
+
+private:
+    AsyncPolicy async_policy{"wide", 2, 0};
     /// Per render target (its address): the frames in a row draws went to it.
     struct TargetStreak {
         u32 last_frame = ~0u;

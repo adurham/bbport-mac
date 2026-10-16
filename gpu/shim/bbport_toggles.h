@@ -232,6 +232,10 @@ struct WaitTimer {
 inline std::atomic<std::uint64_t> t_translate{0}, translates{0}, t_pipeline_sync{0},
     pipelines_sync{0}, async_skips{0}, t_descriptors{0}, descriptor_batches{0}, t_ipc_call{0},
     ipc_calls{0}, gpu_idle_total_ns{0};
+/// bb-gpu's side of the game's page faults (MsgWriteFault, remote_back.cpp): the whole handler,
+/// and in it the wait for the draw pipe to drain (Rasterizer::OnWriteFault/ReadMemory).
+inline std::atomic<std::uint64_t> t_fault_handler{0}, fault_handlers{0}, t_fault_drain{0},
+    fault_drains{0};
 /// Adds the time since `start` to `total` and one to `count`, with BB_FRAME_STATS.
 struct PhaseTimer {
     std::atomic<std::uint64_t>& total;

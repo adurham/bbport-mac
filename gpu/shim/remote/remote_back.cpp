@@ -435,6 +435,7 @@ void CallHook(GpuRange State::*which, const RangeArgs& args) {
 
 void WriteFault(const Message& message, auto&& reply) {
     const auto args = Payload<FaultArgs>(message);
+    BbStats::PhaseTimer timer{BbStats::t_fault_handler, BbStats::fault_handlers};
     std::vector<ProtectArgs> protects;
     collected_protects = args.lock_held ? &protects : nullptr;
     int handled = 0;

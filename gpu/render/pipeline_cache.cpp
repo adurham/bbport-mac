@@ -263,6 +263,48 @@ Shader::Profile MakeProfile(const Instance& instance, u32 sparse_page_shift) {
 
 } // namespace
 
+namespace {
+/// BB_ASYNC_POLICY: which draws may go without their pipeline while it compiles in the background.
+///  wide (default): the render target was drawn to in the previous frame too (a streak of 2:
+///    a pass that runs every frame, but also loading screens, cutscenes and an area's first frames,
+///    where the narrow policy compiled at once and the game stood still), any number of draws.
+///  narrow: the policy before (the target drawn to in each of the last 8 frames, and the frame
+///    before this one at least 300 draws: loading screens and first-visit passes compiled at once).
+/// Both keep a full-screen pass and an indirect draw waiting for their pipeline (going without one
+/// left whole frames grey), and a one-time render (a target new this frame) compiling at once.
+/// BB_ASYNC_STREAK=N and BB_ASYNC_MIN_DRAWS=N override the policy's two numbers.
+PipelineCache::AsyncPolicy ReadAsyncPolicy(bool vertex_input_dynamic) {
+    using AsyncPolicy = PipelineCache::AsyncPolicy;
+    const char* off = std::getenv("BB_ASYNC_PIPELINES");
+    const bool enabled = !(off && off[0] == '0');
+    const char* env = std::getenv("BB_ASYNC_POLICY");
+    const bool narrow = env && std::strcmp(env, "narrow") == 0;
+    AsyncPolicy policy = narrow ? AsyncPolicy{"narrow", 8, 300} : AsyncPolicy{"wide", 2, 0};
+    if (const char* streak = std::getenv("BB_ASYNC_STREAK"); streak && *streak) {
+        policy.min_streak = std::max<u32>(1, u32(std::strtoul(streak, nullptr, 10)));
+        policy.name = "custom";
+    }
+    if (const char* draws = std::getenv("BB_ASYNC_MIN_DRAWS"); draws && *draws) {
+        policy.min_draws = std::strtoull(draws, nullptr, 10);
+        policy.name = "custom";
+    }
+    // Named once at start, so every log says which policy the run had.
+    if (!enabled) {
+        std::printf("GPU: async pipeline compiles off (BB_ASYNC_PIPELINES=0): every new pipeline "
+                    "compiles on the GPU thread\n");
+    } else if (!vertex_input_dynamic) {
+        std::printf("GPU: async pipeline compiles off: no VK_EXT_vertex_input_dynamic_state\n");
+    } else {
+        std::printf("GPU: async pipeline policy %s: a draw may go without its new pipeline when its "
+                    "target was drawn in the last %u frames and the frame before had %llu+ draws; "
+                    "full-screen and indirect draws always wait (BB_ASYNC_POLICY=wide|narrow, "
+                    "BB_ASYNC_STREAK, BB_ASYNC_MIN_DRAWS, BB_ASYNC_PIPELINES=0)\n",
+                    policy.name, policy.min_streak, (unsigned long long)policy.min_draws);
+    }
+    return policy;
+}
+} // namespace
+
 /// BB_ASYNC_PIPELINES: worker threads creating graphics pipelines (the driver's compile,
 /// vkCreateGraphicsPipelines, with its own VkPipelineCache synchronization). Jobs start in order.
 class PipelineCompiler {
@@ -331,6 +373,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
                vk::to_string(cache_result));
     pipeline_cache = std::move(cache);
+    async_policy = ReadAsyncPolicy(instance.IsVertexInputDynamicState());
     WarmUp();
 }
 
@@ -782,36 +825,6 @@ const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey&
     return slot.get();
 }
 
-namespace {
-/// BB_ASYNC_POLICY: which draws may go without their pipeline while it compiles in the background.
-///  wide (default): the render target was drawn to in the previous frame too (a streak of 2:
-///    a pass that runs every frame, but also loading screens, cutscenes and an area's first frames,
-///    where the narrow policy compiled at once and the game stood still), any number of draws.
-///  narrow: the policy before (the target drawn to in each of the last 8 frames, and the frame
-///    before this one at least 300 draws: loading screens and first-visit passes compiled at once).
-/// Both keep a full-screen pass and an indirect draw waiting for their pipeline (going without one
-/// left whole frames grey), and a one-time render (a target new this frame) compiling at once.
-/// BB_ASYNC_STREAK=N and BB_ASYNC_MIN_DRAWS=N override the policy's two numbers.
-struct AsyncPolicy {
-    const char* name;
-    u32 min_streak;
-    u64 min_draws;
-};
-AsyncPolicy ReadAsyncPolicy() {
-    const char* env = std::getenv("BB_ASYNC_POLICY");
-    const bool narrow = env && std::strcmp(env, "narrow") == 0;
-    AsyncPolicy policy = narrow ? AsyncPolicy{"narrow", 8, 300} : AsyncPolicy{"wide", 2, 0};
-    if (const char* streak = std::getenv("BB_ASYNC_STREAK"); streak && *streak) {
-        policy.min_streak = std::max<u32>(1, u32(std::strtoul(streak, nullptr, 10)));
-        policy.name = "custom";
-    }
-    if (const char* draws = std::getenv("BB_ASYNC_MIN_DRAWS"); draws && *draws) {
-        policy.min_draws = std::strtoull(draws, nullptr, 10);
-        policy.name = "custom";
-    }
-    return policy;
-}
-} // namespace
 
 bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indirect) {
     // Only a pass drawn frame after frame may go without a draw for a frame or two (its render
@@ -822,23 +835,7 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
         const char* env = std::getenv("BB_ASYNC_PIPELINES");
         return !(env && env[0] == '0');
     }();
-    static const AsyncPolicy policy = [this] {
-        const AsyncPolicy read = ReadAsyncPolicy();
-        if (!enabled) {
-            std::printf("GPU: async pipeline compiles off (BB_ASYNC_PIPELINES=0): every new "
-                        "pipeline compiles on the GPU thread\n");
-        } else if (!instance.IsVertexInputDynamicState()) {
-            std::printf("GPU: async pipeline compiles off: no VK_EXT_vertex_input_dynamic_state\n");
-        } else {
-            std::printf("GPU: async pipeline policy %s: a draw may go without its new pipeline "
-                        "when its target was drawn in the last %u frames and the frame before had "
-                        "%llu+ draws; full-screen and indirect draws always wait "
-                        "(BB_ASYNC_POLICY=narrow|wide, BB_ASYNC_STREAK, BB_ASYNC_MIN_DRAWS, "
-                        "BB_ASYNC_PIPELINES=0)\n",
-                        read.name, read.min_streak, (unsigned long long)read.min_draws);
-        }
-        return read;
-    }();
+    const AsyncPolicy& policy = async_policy;
     if (!enabled || !instance.IsVertexInputDynamicState() || !selection.regs) {
         return false;
     }
