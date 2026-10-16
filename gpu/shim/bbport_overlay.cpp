@@ -773,6 +773,14 @@ void Menu() {
         }
         ImGui::EndCombo();
     }
+    Checkbox(BbSettings::MenuText("Retina-density window (restart required)",
+                                  "Окно в Retina-плотности (после перезапуска)"),
+             s.retina);
+    Hint(BbSettings::MenuText(
+        "On a display macOS already scales, on makes the window's surface twice the panel and the "
+        "compositor scales it back (heavy, and never Direct). Off matches the panel's pixels.",
+        "На дисплее, который macOS уже масштабирует, «вкл» делает поверхность окна вдвое больше панели "
+        "и композитор масштабирует её обратно (дорого и никогда не Direct). «выкл» совпадает с пикселями панели."));
     Hint(BbSettings::MenuText(
         "On: output resolution and preset change without restarting, but game post-processing "
         "stays at 1080p, which is noticeably slower on Steam Deck and older GPUs. "
@@ -895,7 +903,8 @@ void Menu() {
 
     bool restart =
         s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
-        s.live_resolution != s.startup_live_resolution || BbSettings::ResolutionNeedsRestart();
+        s.live_resolution != s.startup_live_resolution || s.retina != s.startup_retina ||
+        BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         restart |= s.effects[e] != s.startup_effects[e];
     }

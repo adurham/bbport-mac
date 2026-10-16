@@ -154,12 +154,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
 #ifdef __APPLE__
-    // bbport (macOS): a Retina-resolution drawable. Without it the CAMetalLayer is sized in
-    // points (half the panel's pixels), so the frame was drawn at e.g. 1512x850 and macOS
-    // stretched it 2x. BB_RETINA=0 restores that (diagnostics).
+    // bbport (macOS): a Retina-resolution drawable — twice the pixels of a scaled display, which
+    // the compositor then scales back down (heavy, and never Direct). The setting (bbport.ini
+    // retina; BB_RETINA overrides) turns it off so the surface matches the panel's pixels.
     const char* retina = std::getenv("BB_RETINA");
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
-                           !retina || retina[0] != '0');
+                           retina ? retina[0] != '0' : BbSettings::Get().retina.load());
 #endif
     // The window mode (bbport.ini window_mode / BB_WINDOW_MODE; BB_FULLSCREEN=1 is legacy):
     // applied at creation and, for changes from the menu, live (SetWindowMode below).

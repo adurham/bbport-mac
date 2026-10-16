@@ -39,12 +39,17 @@ struct ContentView: View {
             model.refreshChecks()
         }
         .onAppear {
-            // P.T.'s shape: the app opens and the game starts; the window stays behind it for
-            // setup and logs. The "Start on open" box by Play turns this off for good — the
-            // setting is remembered, so there are no hidden gestures anywhere. play() checks
-            // everything itself and quietly does nothing if the setup is not ready.
+            // P.T.'s shape: the app opens and the game starts, and this window gets out of the
+            // way — a Dock click brings it back (it is setup and logs). The "Start on open" box
+            // by Play turns the whole thing off for good; no hidden gestures anywhere. play()
+            // checks everything itself and quietly does nothing if the setup is not ready.
             if model.prefs.startOnOpen {
                 model.play()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    if model.isRunning {
+                        NSApplication.shared.hide(nil)
+                    }
+                }
             }
         }
     }

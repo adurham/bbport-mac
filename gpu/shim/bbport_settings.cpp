@@ -91,6 +91,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.frame_generation = i != 0;
     } else if (key == "live_resolution") {
         v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
+    } else if (key == "retina") {
+        v.retina = i != 0;
     } else if (key == "output_res") {
         int w = 0, h = 0;
         if (std::sscanf(value.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 200 && w <= 16384 &&
@@ -285,6 +287,7 @@ void Load() {
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_SHOW_FPS", "show_fps"},
         {"BB_WINDOW_MODE", "window_mode"},
+        {"BB_RETINA", "retina"},
         {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
         {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
@@ -310,6 +313,7 @@ void Load() {
         if (output && std::sscanf(output, "%dx%d", &w, &h) == 2) v.startup_output = {w, h};
     }
     v.startup_live_resolution = v.live_resolution;
+    v.startup_retina = v.retina;
     // Apple's Metal performance HUD for the game process: Metal reads MTL_HUD_ENABLED when it
     // creates its first device (the window and the driver come later), so this is early enough.
     if (v.metal_hud) {
@@ -454,6 +458,7 @@ void Save() {
     put("output_res", SizeText(CurrentOutput()));
     // Read by run.sh at start.
     put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
+    put("retina", flag(v.retina));
     put("frame_generation", flag(v.frame_generation));
     put("window_mode", v.window_mode == WindowBorderless ? "borderless"
                             : v.window_mode == WindowFullscreen ? "fullscreen" : "windowed");
