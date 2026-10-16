@@ -565,7 +565,13 @@ void Presenter::RecordPresent(vk::CommandBuffer cmdbuf, const Frame* frame, vk::
     };
     cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &after_transfer});
     if (overlay) {
-        BbOverlay::Render(cmdbuf, swapchain.ImageView(), extent);
+        // The image's own format, not the SDR one the overlay was made with: with HDR10 on
+        // (swapchain.SetHDR, the game's HDR option) the images are A2B10G10R10, and the capture
+        // hotkey has to know that to leave the screenshot out (bbport_overlay.cpp).
+        const vk::Format presented_format = swapchain.GetHDR()
+                                                ? vk::Format::eA2B10G10R10UnormPack32
+                                                : swapchain.GetSurfaceFormat().format;
+        BbOverlay::Render(cmdbuf, swapchain.Image(), presented_format, swapchain.ImageView(), extent);
         const vk::ImageMemoryBarrier2 to_present{
             .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,

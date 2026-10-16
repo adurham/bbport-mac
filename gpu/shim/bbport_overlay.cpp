@@ -18,6 +18,7 @@
 #include "bbport_settings.h"
 #include "bbport_frame_rate.h"
 #include "bbport_confirm.h"
+#include "bbport_capture.h"
 #include "sdl_window.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
@@ -953,6 +954,15 @@ void Menu() {
     }
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
     Hint(BbSettings::MenuText(
+        "Ctrl+Shift+C saves a screenshot of the frame (out/screenshots) and, to the log and the "
+        "frame log (BB_FRAME_LOG), the state a \"wonky resolution\" or graphical glitch report "
+        "needs: display mode, output and scene resolution, the swapchain layer's opacity and "
+        "colour space, and the confirmation's state.",
+        "Ctrl+Shift+C сохраняет снимок кадра (out/screenshots) и записывает в журнал и в журнал "
+        "кадров (BB_FRAME_LOG) состояние для отчёта о «странном разрешении» или графическом "
+        "глюке: режим экрана, разрешение вывода и сцены, прозрачность и цветовое пространство "
+        "слоя, состояние подтверждения."));
+    Hint(BbSettings::MenuText(
         "A resolution change that lands on the display's native 1x mode applies without a "
         "question (confirm_native_mode in bbport.ini, 0 asks again).",
         "Смена разрешения на нативный режим 1x экрана применяется без вопроса (confirm_native_mode "
@@ -1087,6 +1097,158 @@ void ScriptedKeys() {
     }
 }
 
+// ---- The capture hotkey's screenshot (window.cpp, Ctrl+Shift+C) ------------------------------
+//
+// The frame that is on screen is the swapchain image the presenter hands Render (bbport_overlay.h,
+// RequestCapture). Nothing here reads the screen itself: a CoreGraphics window capture would ask
+// for the screen-recording permission and could catch another window's frame; this copies the
+// image the port is about to present, so the file is the frame the owner saw.
+std::atomic<bool> capture_requested{false}; ///< window thread asked: copy the next frame
+std::atomic<bool> capture_recorded{false};  ///< the copy is in the frame being presented: read it
+std::mutex capture_mutex;
+std::string capture_path; ///< where the PNG goes (RequestCapture)
+
+/// The device the readback runs on, from Init (the overlay has no other use for them).
+vk::Device capture_device{};
+vk::PhysicalDevice capture_physical{};
+vk::Buffer capture_buffer{};
+vk::DeviceMemory capture_memory{};
+vk::Extent2D capture_extent{};    ///< the size the buffer was made for
+bool capture_bgra = true;         ///< the bytes' order, as the frame's format says
+
+/// The buffer the presented image is copied into; remade when the frame size changes. False when
+/// the device has no host-visible coherent memory (then there is no screenshot, and the log says
+/// so) or the frame is not a plain 8-bit B,G,R,A image (HDR10's A2B10G10R10 has no simple bytes:
+/// the owner's reports are about the default SDR path).
+bool MakeCaptureBuffer(vk::Format format, vk::Extent2D extent) {
+    const bool bgra8 = format == vk::Format::eB8G8R8A8Unorm ||
+                       format == vk::Format::eB8G8R8A8Srgb;
+    const bool rgba8 = format == vk::Format::eR8G8B8A8Unorm ||
+                       format == vk::Format::eR8G8B8A8Srgb;
+    if (!capture_device || (!bgra8 && !rgba8)) {
+        // HDR10 (A2B10G10R10, swapchain.SetHDR) has no plain 8-bit bytes: a screenshot of it
+        // would be a file of nonsense, so it is left out and said so.
+        std::printf("Capture: no screenshot: the presented image is format %d (only 8-bit B,G,R,A "
+                    "is read back)\n",
+                    int(format));
+        std::fflush(stdout);
+        return false;
+    }
+    capture_bgra = bgra8;
+    if (capture_buffer && capture_extent == extent) {
+        return true;
+    }
+    if (capture_buffer) {
+        capture_device.destroyBuffer(capture_buffer);
+        capture_device.freeMemory(capture_memory);
+        capture_buffer = nullptr;
+        capture_memory = nullptr;
+    }
+    const vk::DeviceSize size = vk::DeviceSize(extent.width) * extent.height * 4;
+    const auto result = capture_device.createBuffer(vk::BufferCreateInfo{
+        .size = size, .usage = vk::BufferUsageFlagBits::eTransferDst});
+    if (result.result != vk::Result::eSuccess) {
+        return false;
+    }
+    capture_buffer = result.value;
+    const auto properties = capture_physical.getMemoryProperties();
+    const auto wanted = vk::MemoryPropertyFlagBits::eHostVisible |
+                        vk::MemoryPropertyFlagBits::eHostCoherent;
+    u32 type = ~0u;
+    for (u32 i = 0; i < properties.memoryTypeCount; ++i) {
+        if ((properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
+            type = i;
+            break;
+        }
+    }
+    const auto allocated =
+        type != ~0u
+            ? capture_device.allocateMemory(vk::MemoryAllocateInfo{.allocationSize = size,
+                                                                   .memoryTypeIndex = type})
+            : vk::ResultValue<vk::DeviceMemory>{vk::Result::eErrorOutOfDeviceMemory, {}};
+    if (allocated.result != vk::Result::eSuccess) {
+        capture_device.destroyBuffer(capture_buffer);
+        capture_buffer = nullptr;
+        return false;
+    }
+    capture_memory = allocated.value;
+    capture_device.bindBufferMemory(capture_buffer, capture_memory, 0);
+    capture_extent = extent;
+    return true;
+}
+
+/// The image is the swapchain's, whose layout the presenter set to ColorAttachmentOptimal just
+/// before Render (presenter.cpp): the copy takes it to TransferSrcOptimal and puts it back there,
+/// so the presenter's own barrier to PresentSrcKHR still sees what it expects. Copies cannot be
+/// recorded inside a render pass, so this is recorded before the overlay's own BeginRendering.
+void RecordCapture(vk::CommandBuffer cmdbuf, vk::Image image, vk::Format format,
+                    vk::Extent2D extent) {
+    if (!image || !MakeCaptureBuffer(format, extent)) {
+        capture_recorded.store(false, std::memory_order_relaxed); // nothing to read back
+        return;
+    }
+    const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    const vk::ImageMemoryBarrier2 to_source{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .image = image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_source});
+    const vk::BufferImageCopy region{
+        .bufferOffset = 0,
+        .bufferRowLength = 0, // tightly packed: width * 4 bytes per row
+        .bufferImageHeight = 0,
+        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {extent.width, extent.height, 1},
+    };
+    cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, capture_buffer, region);
+    const vk::ImageMemoryBarrier2 back{
+        .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentRead |
+                         vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .image = image,
+        .subresourceRange = range,
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &back});
+}
+
+/// The frame RecordCapture copied has been presented: map the buffer and hand the bytes to the
+/// PNG writer. The copy belongs to a submission this thread does not own, so the wait is on the
+/// device (one frame's idle, once per hotkey press).
+void ReadBackCapture() {
+    capture_recorded.store(false, std::memory_order_relaxed);
+    if (!capture_buffer || !capture_memory || capture_extent.width == 0) {
+        return;
+    }
+    std::string path;
+    {
+        std::scoped_lock lock{capture_mutex};
+        path = capture_path;
+    }
+    const vk::DeviceSize size =
+        vk::DeviceSize(capture_extent.width) * capture_extent.height * 4;
+    capture_device.waitIdle();
+    const auto mapped = capture_device.mapMemory(capture_memory, 0, size);
+    if (mapped.result != vk::Result::eSuccess) {
+        std::printf("Capture: could not map the frame's buffer\n");
+        std::fflush(stdout);
+        return;
+    }
+    bb_capture_write_png_async(path.c_str(), mapped.value, int(capture_extent.width),
+                               int(capture_extent.height), long(capture_extent.width) * 4,
+                               capture_bgra);
+    capture_device.unmapMemory(capture_memory);
+}
 
 } // namespace
 
@@ -1139,6 +1301,9 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
                     "Garamond, %d KB embedded)\n",
                     int((bb_serif_font_ttf_end - bb_serif_font_ttf) / 1024));
     }
+    // The capture hotkey reads the presented frame back (RecordCapture): the device it needs.
+    capture_device = instance.GetDevice();
+    capture_physical = instance.GetPhysicalDevice();
 
     const vk::Instance vk_instance = instance.GetInstance();
     ImGui_ImplVulkan_LoadFunctions(
@@ -1324,8 +1489,20 @@ void SetBanner(const char* text) {
 }
 
 bool Visible() {
+    // The capture hotkey's frame too: with nothing else drawn the presenter still has to call
+    // Render for the copy to be recorded and read back (bbport_overlay.h, RequestCapture).
     return initialized && (menu_open || prompt_active || banner_active ||
-                           BbSettings::Get().show_fps || Warming() || BbConfirm::Active());
+                           BbSettings::Get().show_fps || Warming() || BbConfirm::Active() ||
+                           capture_requested.load(std::memory_order_relaxed) ||
+                           capture_recorded.load(std::memory_order_relaxed));
+}
+
+void RequestCapture(const char* path) {
+    {
+        std::scoped_lock lock{capture_mutex};
+        capture_path = path ? path : "";
+    }
+    capture_requested.store(true, std::memory_order_relaxed);
 }
 
 bool MenuOpen() {
@@ -1340,7 +1517,8 @@ bool CapturesInput() {
     return menu_open || prompt_active || BbConfirm::Active() || BbConfirm::PadConsumed();
 }
 
-void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
+void Render(vk::CommandBuffer cmdbuf, vk::Image presented, vk::Format presented_format,
+            vk::ImageView view, vk::Extent2D extent) {
 
     // Present interval for the FPS readout (measured also while nothing is drawn).
     const auto now = std::chrono::steady_clock::now();
@@ -1369,6 +1547,11 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (std::getenv("BB_MENU_KEYS_FILE") && initialized) {
         std::scoped_lock lock{imgui_mutex};
         ScriptedKeys();
+    }
+    if (capture_recorded.load(std::memory_order_acquire)) {
+        // The frame the capture hotkey asked for has been presented (RecordCapture recorded the
+        // copy in that frame's command buffer): take its pixels now.
+        ReadBackCapture();
     }
     if (!Visible()) {
         return;
@@ -1568,6 +1751,18 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
     }
     cmdbuf.endRendering();
+    if (capture_requested.exchange(false, std::memory_order_acq_rel)) {
+        // The capture hotkey (window.cpp, Ctrl+Shift+C): copy the frame that is about to be
+        // presented into host memory. It is the swapchain image and this is after the overlay's
+        // own draw, so the file is the frame on screen with the port's menu, counter or question
+        // over it, exactly as the owner saw it. Copies cannot be recorded inside a render pass,
+        // which is why this is here and not with the drawing; the image goes back to the layout
+        // the presenter's barrier to PresentSrcKHR expects, and the pixels are taken next frame.
+        RecordCapture(cmdbuf, presented, presented_format, extent);
+        if (capture_buffer) {
+            capture_recorded.store(true, std::memory_order_release);
+        }
+    }
 }
 
 } // namespace BbOverlay

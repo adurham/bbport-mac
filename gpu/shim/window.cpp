@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <string>
 #include "bbgpu.h"
 #include <SDL3/SDL.h>
 #ifdef __APPLE__
@@ -15,6 +17,8 @@
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
 #include "bbport_confirm.h"
+#include "bbport_capture.h"                  // the capture hotkey: the PNG and the layer's state
+#include "platform/videoout/frame_stats.h"   // bb_frame_log_marker: the marker in the frame log
 #if __has_include("remote/bb_remote.h")
 #include "remote/bb_remote.h" // the native GPU process: bb-gpu's window opens the modal's pads itself
 #define BBPORT_WINDOW_REMOTE 1
@@ -319,6 +323,11 @@ namespace {
 /// The window the display-mode picker works on — this process has exactly one (window.cpp's
 /// bb_output_is_native_mode and the capture hotkey ask for it from outside these functions).
 SDL_Window* last_window = nullptr;
+#ifdef __APPLE__
+/// Its swapchain's CAMetalLayer, taken out of the window in the constructor: the capture's log
+/// line asks it for its opacity and colour space, as bbport_layer.mm's own dump does.
+void* window_metal_layer = nullptr;
+#endif
 
 } // namespace
 
@@ -392,6 +401,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         // MoltenVK presents through a CAMetalLayer (as upstream shadPS4 on macOS).
         window_info.type = WindowSystemType::Metal;
         window_info.render_surface = SDL_Metal_GetLayer(SDL_Metal_CreateView(window));
+        window_metal_layer = window_info.render_surface; // the capture's log line asks it for its state
 #endif
     } else {
         UNREACHABLE_MSG("Unsupported SDL video driver {}", driver ? driver : "(none)");
@@ -595,6 +605,106 @@ extern "C" int bb_output_is_native_mode(int width, int height) {
     return native_1x ? 1 : 0;
 }
 
+namespace {
+
+/// Where a capture goes: out/screenshots (BB_CAPTURE_DIR overrides it), made if it is missing.
+std::string CaptureDirectory() {
+    const char* env = std::getenv("BB_CAPTURE_DIR");
+    const std::string directory = env && env[0] ? env : "out/screenshots";
+    if (!SDL_CreateDirectory(directory.c_str())) {
+        std::printf("Capture: cannot use %s (%s)\n", directory.c_str(), SDL_GetError());
+        std::fflush(stdout);
+    }
+    return directory;
+}
+
+/// A fresh name: the same second twice (or a capture from a previous session) gets a suffix.
+std::string CapturePath() {
+    const std::string directory = CaptureDirectory();
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    localtime_r(&now, &local);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+    std::string path = directory + "/capture-" + stamp + ".png";
+    for (int n = 2; FILE* existing = std::fopen(path.c_str(), "rb"); ++n) {
+        std::fclose(existing);
+        path = directory + "/capture-" + stamp + "-" + std::to_string(n) + ".png";
+    }
+    return path;
+}
+
+/// What the confirmation modal is asking right now, for the capture's log line.
+std::string ConfirmStateText() {
+    BbConfirm::Kind kind{};
+    int value = 0;
+    if (!BbConfirm::Pending(kind, value)) {
+        return "none";
+    }
+    char text[96];
+    if (kind == BbConfirm::Kind::WindowMode) {
+        std::snprintf(text, sizeof(text), "window mode %d asked for, %d s left", value,
+                      BbConfirm::SecondsLeft());
+    } else {
+        const auto size = BbSettings::UnpackSize(std::uint32_t(value));
+        std::snprintf(text, sizeof(text), "resolution %d x %d asked for, %d s left", size.width,
+                      size.height, BbConfirm::SecondsLeft());
+    }
+    return text;
+}
+
+} // namespace
+
+/// The owner's bug report (Ctrl+Shift+C): the frame that is on screen as a PNG in out/screenshots,
+/// a marker line in the frame log, and one line carrying everything a "wonky resolution" or
+/// graphical glitch report needs — the display mode as the display itself reports it, the output
+/// and the scene's render size, the swapchain layer's opacity and colour space, and the
+/// confirmation modal's state. Pressed at the moment of the glitch, so the numbers are that frame's.
+void CaptureBugReport(SDL_Window* window) {
+    if (!window) {
+        return;
+    }
+    const std::string path = CapturePath();
+    BbOverlay::RequestCapture(path.c_str()); // the presented frame is written there (bbport_overlay)
+
+    int window_w = 0, window_h = 0;
+    SDL_GetWindowSizeInPixels(window, &window_w, &window_h);
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode* mode = SDL_GetWindowFullscreenMode(window);
+    if (!mode) {
+        mode = SDL_GetDesktopDisplayMode(display); // windowed or borderless: the desktop's mode
+    }
+    const auto& s = BbSettings::Get();
+    const auto output = BbSettings::CurrentOutput();
+    const char* window_mode = applied_window_mode == BbSettings::WindowBorderless ? "borderless"
+                              : applied_window_mode == BbSettings::WindowFullscreen ? "fullscreen"
+                                                                                   : "windowed";
+    BbCapture::LayerState layer{};
+    bb_capture_layer_state(window_metal_layer, &layer);
+    const std::string confirm = ConfirmStateText();
+    char state[768];
+    std::snprintf(state, sizeof(state),
+                  "window %dx%d pixels (density %.2f, %.2f Hz, %s, display %u); output %s "
+                  "(aspect %s), scene render %dx%d (preset %s); layer opaque %d colorspace %s "
+                  "drawable %dx%d pixelFormat %d contentsScale %.2f framebufferOnly %d; "
+                  "confirm: %s",
+                  window_w, window_h, SDL_GetWindowPixelDensity(window),
+                  mode ? mode->refresh_rate : 0.0f, window_mode, unsigned(display),
+                  BbSettings::SizeText(output).c_str(), BbSettings::AspectKey(s.aspect.load()),
+                  s.active_render_width.load(), s.active_render_height.load(),
+                  BbSettings::PresetName(BbSettings::RenderPreset()), layer.opaque,
+                  layer.colorspace[0] ? layer.colorspace : "(none)", layer.drawable_width,
+                  layer.drawable_height, layer.pixel_format, layer.contents_scale,
+                  layer.framebuffer_only, confirm.c_str());
+#ifdef __APPLE__
+    bb_log_display_mode(CocoaWindow(window), "capture"); // the mode CoreGraphics reports now
+#endif
+    std::printf("Capture: %s\nCapture: %s\n", path.c_str(), state);
+    std::fflush(stdout);
+    const std::string marker = path + " | " + state;
+    bb_frame_log_marker(marker.c_str()); // "# CAPTURE ..." inside the frame log's own stream
+}
+
 void WindowSDL::SetWindowMode(int mode) {
     // A change the player makes asks first: the overlay shows the question, and nothing moves
     // until it is answered (BbConfirm). At startup there is no one to ask: the boot mode queues
@@ -722,6 +832,17 @@ bool WindowSDL::PollEvents() {
     // The pad's buttons, as the gamepad events below are read: what is down now is what a question
     // that has just appeared must not take its answer from (BbConfirm::PadHeld).
     BbConfirm::PadHeld(ConfirmPadsDown());
+    // BB_CAPTURE_AT=<seconds>: a capture that long after the start, once. The hotkey's own path,
+    // without a hand on the keyboard: a hidden warm run (BB_WARM_ONLY) presses nothing.
+    static const double capture_at = [] {
+        const char* env = std::getenv("BB_CAPTURE_AT");
+        return env && env[0] ? std::atof(env) : 0.0;
+    }();
+    static bool captured_at_start = false;
+    if (capture_at > 0.0 && !captured_at_start && double(SDL_GetTicks()) >= capture_at * 1000.0) {
+        captured_at_start = true;
+        CaptureBugReport(window);
+    }
     // BB_CONFIRM_AT=<seconds>: put a question up that long after the start, once — how the modal
     // is drawn is then checked without a hand on the game's own menu (BB_CAPTURE_AT photographs it).
     // A size that is not the display's native one: the case that keeps its question.
@@ -737,6 +858,15 @@ bool WindowSDL::PollEvents() {
     }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // The capture hotkey (Ctrl+Shift+C): the frame that is on screen, its state in the log and
+        // a marker in the frame log — the owner presses it at the moment of a glitch. F9 is taken
+        // by the pad route recorder (src/runtime_pad.c, BB_PAD_RECORD); the port's menu keys are
+        // F1, ` , § and Escape, and the game keeps C, Shift and Ctrl free (L3, R3 alone).
+        if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.key == SDLK_C &&
+            (event.key.mod & SDL_KMOD_CTRL) != 0 && (event.key.mod & SDL_KMOD_SHIFT) != 0) {
+            CaptureBugReport(window);
+            continue;
+        }
         if (BbConfirm::Active() &&
             (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)) {
             // A change is asking first: Enter applies it, Escape keeps the current setting.

@@ -197,11 +197,12 @@ add_dependencies(bbgpu host_shaders)
 # bbport: MetalFX temporal upscaler, Metal side (Objective-C++ with ARC). MetalFX.framework is
 # opened at run time (dlopen), so a missing x86-64 slice cannot break the link or the start.
 if (APPLE)
-    target_sources(bbgpu PRIVATE shim/bbport_metalfx.mm shim/bbport_appnap.mm shim/bbport_layer.mm)
+    target_sources(bbgpu PRIVATE shim/bbport_metalfx.mm shim/bbport_appnap.mm shim/bbport_layer.mm shim/bbport_capture.mm)
     set_source_files_properties(shim/bbport_metalfx.mm shim/bbport_layer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(bbgpu PRIVATE "-framework Metal" "-framework Foundation"
                                         "-framework CoreFoundation" "-framework AppKit"
-                                        "-framework QuartzCore" "-framework CoreGraphics")
+                                        "-framework QuartzCore" "-framework CoreGraphics"
+                                        "-framework ImageIO")
 endif()
 # In-game settings menu: Dear ImGui (third_party/imgui, MIT) with its Vulkan backend, and an
 # embedded Cyrillic font (third_party/fonts).
