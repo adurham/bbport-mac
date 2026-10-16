@@ -40,6 +40,10 @@ const vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo Wave64{
     .requiredSubgroupSize = 64,
 };
 
+/// Pipelines created so far (any thread): warm runs (BB_WARM_ONLY) watch it to quit once the
+/// compiles have stopped (presenter.cpp; PipelinesCreated below).
+std::atomic<std::uint64_t> created_pipelines{0};
+
 /// A cached pipeline the driver rejects is a damaged cache entry: the cache is rebuilt
 /// (PipelineCache::WarmUp) instead of stopping the game at every start.
 template <typename Result>
@@ -50,10 +54,15 @@ vk::UniquePipeline CheckPipeline(Result result, bool preloading, const char* kin
     }
     ASSERT_MSG(result.result == vk::Result::eSuccess, "Failed to create {} pipeline: {}", kind,
                vk::to_string(result.result));
+    created_pipelines.fetch_add(1, std::memory_order_relaxed);
     return std::move(result.value);
 }
 
 } // namespace
+
+std::uint64_t PipelinesCreated() {
+    return created_pipelines.load(std::memory_order_relaxed);
+}
 
 // Pipeline
 

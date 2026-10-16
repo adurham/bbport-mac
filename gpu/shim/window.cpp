@@ -14,6 +14,10 @@
 #include "sdl_window.h"
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
+#ifdef __APPLE__
+// bbport_appnap.mm: keeps a hidden warm run out of App Nap (its compiles at full speed).
+extern "C" void bb_warm_disable_app_nap(void);
+#endif
 
 
 namespace {
@@ -165,6 +169,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     // presenter.cpp asks the game to quit after BB_WARM_SECONDS.
     if (const char* warm = std::getenv("BB_WARM_ONLY"); warm && warm[0] == '1') {
         SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+#ifdef __APPLE__
+        bb_warm_disable_app_nap(); // a hidden process is App-Napped: compiles would be throttled
+#endif
         std::printf("Warm run: hidden window (BB_WARM_ONLY)\n");
     }
     base_title = title;

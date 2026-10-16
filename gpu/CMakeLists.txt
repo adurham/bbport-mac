@@ -197,7 +197,7 @@ add_dependencies(bbgpu host_shaders)
 # bbport: MetalFX temporal upscaler, Metal side (Objective-C++ with ARC). MetalFX.framework is
 # opened at run time (dlopen), so a missing x86-64 slice cannot break the link or the start.
 if (APPLE)
-    target_sources(bbgpu PRIVATE shim/bbport_metalfx.mm)
+    target_sources(bbgpu PRIVATE shim/bbport_metalfx.mm shim/bbport_appnap.mm)
     set_source_files_properties(shim/bbport_metalfx.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(bbgpu PRIVATE "-framework Metal" "-framework Foundation"
                                         "-framework CoreFoundation")
