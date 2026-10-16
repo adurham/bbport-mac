@@ -45,6 +45,9 @@ public:
     /// From any thread: the window thread takes the mouse at its next poll (unless a menu or a
     /// text prompt wants the cursor).
     void RequestMouseCapture() { capture_requested.store(true, std::memory_order_relaxed); }
+    /// From any thread: asks the window thread to close the game (the window's own close path).
+    /// Warm runs (BB_WARM_ONLY) use it to quit once the caches are compiled.
+    void RequestQuit() { quit_requested.store(true, std::memory_order_relaxed); }
 
 private:
     std::atomic<s32> width, height;
@@ -69,6 +72,7 @@ private:
     int wheel_up{}, wheel_down{};
     std::atomic<bool> mouse_captured{false};
     std::atomic<bool> capture_requested{false};
+    std::atomic<bool> quit_requested{false}; ///< RequestQuit (a warm run's exit)
     static inline std::atomic<bool> mouse_look{true};
     SDL_Window* window{};
     WindowSystemInfo window_info{};

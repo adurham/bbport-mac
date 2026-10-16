@@ -23,6 +23,9 @@
 #include "render/rasterizer.h"
 #include "vulkan/platform.h"
 
+// bbgpu.cpp: the game window (a warm run asks it to quit after the caches are compiled).
+extern Frontend::WindowSDL* g_window;
+
 namespace Vulkan {
 
 namespace {
@@ -693,6 +696,35 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
         if (!swapchain.Present()) {
             swapchain.Recreate(width, height);
             return false;
+        }
+    }
+    // BB_WARM_ONLY: a hidden warm run quits BB_WARM_SECONDS after the first frame it presents
+    // (the window thread closes the game; what was compiled is already written to the caches).
+    // BB_WARM_SECONDS overrides the default 240 s. See window.cpp (the hidden window).
+    {
+        static const int warm_seconds = [] {
+            const char* warm = std::getenv("BB_WARM_ONLY");
+            if (!warm || warm[0] != '1') {
+                return 0;
+            }
+            if (const char* seconds = std::getenv("BB_WARM_SECONDS"); seconds && *seconds) {
+                return std::atoi(seconds);
+            }
+            return 240;
+        }();
+        if (warm_seconds > 0) {
+            static const auto warm_start = std::chrono::steady_clock::now();
+            static bool warm_asked = false;
+            if (!warm_asked && std::chrono::steady_clock::now() - warm_start >=
+                                   std::chrono::seconds(warm_seconds)) {
+                warm_asked = true;
+                std::printf("Warm run: %d s of frames presented; asking the game to quit\n",
+                            warm_seconds);
+                std::fflush(stdout);
+                if (g_window) {
+                    g_window->RequestQuit();
+                }
+            }
         }
     }
     return true;
