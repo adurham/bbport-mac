@@ -399,6 +399,12 @@ void ReloadLive() {
     v.show_fps = fresh.show_fps.load();
     v.model_lod = fresh.model_lod.load();
     v.aspect = fresh.aspect.load();
+    // The game menu's window-mode row (and the frame-rate keys, for this process's copy): the
+    // apply after this reload reads window_mode, so leaving it out made the row look dead —
+    // bbport.ini said fullscreen while the apply read the stale "windowed".
+    v.window_mode = fresh.window_mode.load();
+    v.fps_mode = fresh.fps_mode.load();
+    v.fps_limit = fresh.fps_limit.load();
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = fresh.effects[e].load();
     }
