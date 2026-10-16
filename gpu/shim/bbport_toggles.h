@@ -222,6 +222,33 @@ struct WaitTimer {
                         std::memory_order_relaxed);
     }
 };
+/// Frame phases (BB_FRAME_STATS: the long-frame lines and BB_FRAME_LOG's columns), running totals
+/// (ns and counts; frame_stats takes per-frame deltas). Which of them owns a long frame that has no
+/// compiles: the port's translation to SPIR-V (CompileModule) and the driver's pipeline creation on
+/// the GPU thread (a synchronous compile or a wait for a background one); draws that went without
+/// their pipeline (async); descriptor set batches allocated (a pool filled: reset or a new one); bb-gpu's calls into the game
+/// process (page protections: a round trip through Rosetta); and the GPU command thread's wait for
+/// the game's next submission (a frame the game itself was slow to make).
+inline std::atomic<std::uint64_t> t_translate{0}, translates{0}, t_pipeline_sync{0},
+    pipelines_sync{0}, async_skips{0}, t_descriptors{0}, descriptor_batches{0}, t_ipc_call{0},
+    ipc_calls{0}, gpu_idle_total_ns{0};
+/// Adds the time since `start` to `total` and one to `count`, with BB_FRAME_STATS.
+struct PhaseTimer {
+    std::atomic<std::uint64_t>& total;
+    std::atomic<std::uint64_t>& count;
+    std::chrono::steady_clock::time_point start =
+        enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    ~PhaseTimer() {
+        if (!enabled) {
+            return;
+        }
+        total.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count(),
+                        std::memory_order_relaxed);
+        count.fetch_add(1, std::memory_order_relaxed);
+    }
+};
 /// GPU thread rusage, refreshed after each graphics submission.
 inline std::atomic<std::uint64_t> gpu_sys_us{0}, gpu_user_us{0}, gpu_invol_switches{0},
     gpu_vol_switches{0}, gpu_minor_faults{0};

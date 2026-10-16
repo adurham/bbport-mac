@@ -81,6 +81,14 @@ void AddCompileTime(std::chrono::steady_clock::time_point start, CompileLayer la
                            .count());
     g_bb_compile_ns += ns;
     (layer == CompileLayer::Port ? g_bb_compile_port_ns : g_bb_compile_driver_ns) += ns;
+    // The same, as running totals for the frame log's per-frame phases.
+    if (BbStats::enabled) {
+        const bool port = layer == CompileLayer::Port;
+        (port ? BbStats::t_translate : BbStats::t_pipeline_sync)
+            .fetch_add(ns, std::memory_order_relaxed);
+        (port ? BbStats::translates : BbStats::pipelines_sync)
+            .fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 struct CompileTimer {
@@ -701,6 +709,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             if (!job->done) {
                 if (skippable) {
                     ++async_skipped;
+                    BbStats::async_skips.fetch_add(1, std::memory_order_relaxed);
                     return nullptr; // drawn from the frame its pipeline is ready
                 }
                 // A pass that is not drawn every frame needs it now: the wait is compile time.
@@ -746,6 +755,7 @@ const GraphicsPipeline* PipelineCache::CompileInBackground(const PipelineSelecti
     auto job = std::make_shared<PendingPipeline>();
     pending_graphics.emplace(selection.graphics_key, job);
     ++async_started;
+    BbStats::async_skips.fetch_add(1, std::memory_order_relaxed); // this draw goes without it
     ++g_bb_compiles;
     compiler->Submit([this, job, key = selection.graphics_key, infos = selection.infos,
                       runtime_infos = selection.runtime_infos, fetch = selection.fetch_shader,
@@ -772,15 +782,62 @@ const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey&
     return slot.get();
 }
 
+namespace {
+/// BB_ASYNC_POLICY: which draws may go without their pipeline while it compiles in the background.
+///  wide (default): the render target was drawn to in the previous frame too (a streak of 2:
+///    a pass that runs every frame, but also loading screens, cutscenes and an area's first frames,
+///    where the narrow policy compiled at once and the game stood still), any number of draws.
+///  narrow: the policy before (the target drawn to in each of the last 8 frames, and the frame
+///    before this one at least 300 draws: loading screens and first-visit passes compiled at once).
+/// Both keep a full-screen pass and an indirect draw waiting for their pipeline (going without one
+/// left whole frames grey), and a one-time render (a target new this frame) compiling at once.
+/// BB_ASYNC_STREAK=N and BB_ASYNC_MIN_DRAWS=N override the policy's two numbers.
+struct AsyncPolicy {
+    const char* name;
+    u32 min_streak;
+    u64 min_draws;
+};
+AsyncPolicy ReadAsyncPolicy() {
+    const char* env = std::getenv("BB_ASYNC_POLICY");
+    const bool narrow = env && std::strcmp(env, "narrow") == 0;
+    AsyncPolicy policy = narrow ? AsyncPolicy{"narrow", 8, 300} : AsyncPolicy{"wide", 2, 0};
+    if (const char* streak = std::getenv("BB_ASYNC_STREAK"); streak && *streak) {
+        policy.min_streak = std::max<u32>(1, u32(std::strtoul(streak, nullptr, 10)));
+        policy.name = "custom";
+    }
+    if (const char* draws = std::getenv("BB_ASYNC_MIN_DRAWS"); draws && *draws) {
+        policy.min_draws = std::strtoull(draws, nullptr, 10);
+        policy.name = "custom";
+    }
+    return policy;
+}
+} // namespace
+
 bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indirect) {
-    // Only a pass drawn every frame may go without a draw for a frame or two (its render target
-    // drawn to in each of the last frames, below). A one-time render compiles at once, as during
-    // loading screens (a frame of fewer than 300 draws before this one). The pipeline must not
-    // depend on the draw's vertex buffers (VK_EXT_vertex_input_dynamic_state). A size rule (the
-    // scene's, the output's) missed most passes: many set a 16384 scissor.
+    // Only a pass drawn frame after frame may go without a draw for a frame or two (its render
+    // target drawn to in the last frames, below); a one-time render compiles at once. The pipeline
+    // must not depend on the draw's vertex buffers (VK_EXT_vertex_input_dynamic_state). A size rule
+    // (the scene's, the output's) missed most passes: many set a 16384 scissor.
     static const bool enabled = [] {
         const char* env = std::getenv("BB_ASYNC_PIPELINES");
         return !(env && env[0] == '0');
+    }();
+    static const AsyncPolicy policy = [this] {
+        const AsyncPolicy read = ReadAsyncPolicy();
+        if (!enabled) {
+            std::printf("GPU: async pipeline compiles off (BB_ASYNC_PIPELINES=0): every new "
+                        "pipeline compiles on the GPU thread\n");
+        } else if (!instance.IsVertexInputDynamicState()) {
+            std::printf("GPU: async pipeline compiles off: no VK_EXT_vertex_input_dynamic_state\n");
+        } else {
+            std::printf("GPU: async pipeline policy %s: a draw may go without its new pipeline "
+                        "when its target was drawn in the last %u frames and the frame before had "
+                        "%llu+ draws; full-screen and indirect draws always wait "
+                        "(BB_ASYNC_POLICY=narrow|wide, BB_ASYNC_STREAK, BB_ASYNC_MIN_DRAWS, "
+                        "BB_ASYNC_PIPELINES=0)\n",
+                        read.name, read.min_streak, (unsigned long long)read.min_draws);
+        }
+        return read;
     }();
     if (!enabled || !instance.IsVertexInputDynamicState() || !selection.regs) {
         return false;
@@ -801,7 +858,7 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
             async_started = async_skipped = async_waited = 0;
         }
     }
-    if (last_frame_draws < 300) {
+    if (last_frame_draws < policy.min_draws) {
         return false;
     }
     // A full-screen pass (one triangle or quad: lighting, fog, post-processing) waits for its
@@ -811,14 +868,14 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
     if (indirect || selection.regs->num_indices <= FullScreenIndices) {
         return false;
     }
-    // A pass drawn every frame: its render target drawn to in each of the last 8 frames (the
-    // scene, the output, shadow maps, half-size and depth-only passes alike). A one-time render
-    // (a face baked for a character, a texture made once) goes to a target new or used now and
-    // then: compiled at once.
-    constexpr u32 PerFrameStreak = 8;
+    // A pass drawn frame after frame: its render target drawn to in each of the last
+    // policy.min_streak frames, this one included (the scene, the output, shadow maps, half-size
+    // and depth-only passes alike). A one-time render (a face baked for a character, a texture
+    // made once) goes to a target new this frame: compiled at once.
     const u64 target = DrawTarget(*selection.regs);
     const auto streak = target_streaks.find(target);
-    return target != 0 && streak != target_streaks.end() && streak->second.frames >= PerFrameStreak;
+    return target != 0 && streak != target_streaks.end() &&
+           streak->second.frames >= policy.min_streak;
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
