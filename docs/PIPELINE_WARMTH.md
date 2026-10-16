@@ -174,9 +174,13 @@ missing geometry, and is a product decision, not a small fix.
 
 `tools/macos/warm_route.sh SECS` runs the game hidden, presses the title's Continue, then walks and
 turns on a scripted pad (`BB_PAD_FILE`, `src/runtime_pad.c`), with `BB_WARM_QUIET=0` so the run is not
-cut short at the title. It never touches the player's save: `<checkout>/user` is copied to
-`out/warm_user` and `BB_USER_DIR` points the run at the copy — the pipeline cache comes with it, so
-the run preloads what earlier runs compiled and adds the area's own pipelines to it.
+cut short at the title. It never touches the player's save: the user dir is copied to
+`$BB_WARM_USER` (`out/warm_user`) and `BB_USER_DIR` points the run at the copy — the pipeline cache
+comes with it, so the run preloads what earlier runs compiled and adds the area's own pipelines to
+it. It sets `BB_WARM_ONLY=1` itself and does not let that be overridden: window.cpp creates a hidden
+window for such a run and never switches the display mode for it, so a route run cannot appear on
+screen. (Before, it did not set the variable at all, so the run was hidden only if the caller had
+set it — and the exit at `BB_WARM_SECONDS` in presenter.cpp only arms for `BB_WARM_ONLY=1` runs.)
 
 ```
 BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warm_route.sh 300
@@ -185,7 +189,208 @@ BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warm_route.sh 300
 A recorded route (`BB_PAD_RECORD` / `BB_PAD_REPLAY`, F9) is better than a synthetic walk: the states
 that were actually on screen are the ones worth compiling.
 
+That is one area per invocation. `tools/macos/warmfill.sh` is the whole thing in one command, and is
+what "prebuild the warmth before the game runs" means in practice.
+
+## The warm-fill pipeline (tools/macos/warmfill.sh)
+
+```
+BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh            # the measured route
+BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh --routes all
+bash tools/macos/warmfill.sh --list-routes                                       # no game, no writes
+```
+
+Four steps, in this order:
+
+1. **Snapshot.** `cp -cR <real user dir> out/warmfill_user` — an APFS clone, so the saves and the
+   cache are copied in about a tenth of a second and cost no space (measured: the 26 MB user dir,
+   14 MB of it saves, in 0.13 s). The runs point at the copy (`BB_USER_DIR`), so no route can write
+   anything into the real user dir.
+2. **Route runs.** One or more `warm_route.sh` runs against that copy, hidden, with the pad driven
+   exactly as above. The sandbox's store is what each run preloads from and adds to.
+3. **Merge.** `tools/macos/warm_merge.sh` moves what the runs compiled into the store the game
+   reads. It is the only step that writes to the real user dir, and only under
+   `<real user dir>/cache/<store>/`.
+4. **Report.** Per route: wall clock, `new_blobs`, `dropped_blobs`, the run's own `Warm run:` line
+   (pipelines compiled this run against those preloaded) and its last `Frame stats` line. Then the
+   merge's counts, `out/warmfill-report.json` and the per-route logs under `out/warmfill/`.
+
+It refuses to start when the game looks like it is running (a `bb-probe` or `bb-gpu` process — the
+merge would be writing into a store another process owns), when `BB_GAME_DIR` and the usual game
+locations hold no game data, when `out/bb-probe` is missing (it needs a build), when the sandbox
+would be the real user dir or sit inside it, or on an unknown route name. `--dry-run` reports the
+plan and the merge it would do and writes nothing. `--force` skips the running-game guard only.
+
+### The merge is additive, and checked
+
+The store is content-addressed — a blob's name is a hash of what it holds — so merging two stores is
+a set union and a name present on both sides holds the same bytes. `warm_merge.sh` therefore:
+
+- writes only new names; a name whose bytes are identical is left alone (not rewritten, not
+  touched);
+- on a name whose bytes *differ* keeps the real store's copy and counts it a conflict
+  (`--prefer-sandbox` takes the sandbox's instead) — a hash collision, or two cache generations in
+  one store, is not a thing to resolve silently;
+- never deletes and never renames a blob; a copy goes in as `<name>.warmfill-tmp` and is renamed,
+  the way the game's own writer does it (`BlobStore::WriteFile`), so nothing ever reads a short
+  file;
+- refuses blobs the loader would reject — a `.spv` without the SPIR-V magic or not a whole number of
+  words, a `.key` or `.meta` too short to hold its header — because one damaged entry makes
+  `PipelineCache::WarmUp` clear the whole store (`num_damaged` → rebuild). That is the one way this
+  step could take warmth away rather than add it, and it is the check that stops it;
+- treats the saves, and everything else outside `cache/`, as off limits: the merge resolves both
+  sides to a user dir, refuses to run when they are the same directory, and only ever creates or
+  writes `<real user>/cache/<store>/<blob>`.
+
+Measured against the real store here (1129 files: 326 `.key`, 401 `.meta`, 401 `.spv`,
+`profile.bin`), with the keys removed from one clone so the merge had the worst case to add back:
+*326 blobs added, 802 identical, 0 conflicts, 0 invalid, 8.4 s*; every one of the real store's 401
+`.spv` files passed the header check, so the check does not cost real blobs. The usual case — a
+route's few hundred blobs into an unchanged store — is a few seconds.
+
+### The profile gate, and a fill after a version bump
+
+`profile.bin` is not a blob: it holds the cache format's version constants and the device profile,
+and it decides whether the rest of the store is used at all (`PipelineCache::WarmUp` clears the
+whole store when it does not match the running build). So:
+
+| sandbox `profile.bin` vs the real store's | what the merge does |
+|---|---|
+| identical | nothing (the normal case: a fill that adds warmth, not a rebuild) |
+| the real store has none | installs it — the store would otherwise be cleared at the next start, and the merged blobs with it |
+| differs | reports it and leaves the real store's alone; `--adopt-profile` installs the sandbox's |
+
+That last row is the case this is for. After a version bump the real store is from the old build:
+the sandbox run (this build) sees the mismatch, clears *its* copy and rebuilds it, so the blobs it
+compiled are this build's. Merging them without touching `profile.bin` changes nothing — the game
+clears the store at its next start and the merge goes with it. With `--adopt-profile` the real
+store's header is this build's too, so the next start preloads the merged blobs; the old entries
+stay on disk as stale ones the loader skips and counts (`N of M cached pipelines were preloaded; N
+stale entries are kept`). warmfill says which of the two happened, at the end of the log and in its
+report: `profile.bin identical` / `installed` / `adopted` / `differs-kept`.
+
+### Routes, and how to add one
+
+The built-in table in `warmfill.sh`, printed by `--list-routes`:
+
+| route | run | what it drives |
+|---|---|---|
+| `yharnam` | 300 s | the measured walk of an area: forward, a look right, forward, a look left, back |
+| `attack` | 300 s | light attacks, a roll, a walk, a heavy, the transform: combat states a plain walk never reaches |
+| `spin` | 240 s | turn in place, then look down and up: headings and the sky are their own draws |
+
+A route is one line: `<name>|<secs>|<title_wait>|<load_wait>|<pad>|<description>`. Add one without
+touching the script by putting the same shape of line in an untracked `out/warmfill_routes.conf`, or
+in the file `WARMFILL_ROUTES_FILE` names; a name that appears there replaces the built-in route of
+the same name. `--routes a,b`, or `--routes all`; `--secs N` overrides the length of each.
+
+- `pad` is warm_route.sh's `<pad file contents>:<seconds>` list: button names (`cross`, `r1`, `l1`,
+  `circle` ...) and `lx= ly= rx= ry=` stick values in 0..255 with 128 at rest (`ly=0` forward,
+  `ly=255` back). The comma stands in for the space the pad file wants between tokens.
+- `secs` is the whole run: the process quits at that mark (`BB_WARM_SECONDS`); nothing is driven
+  before `title_wait + load_wait`, and warm_route.sh stops driving 15 s before the end. So a route
+  needs `secs > title_wait + load_wait + 15` to walk at all; warmfill raises a shorter one (with a
+  line in the log) to `title_wait + load_wait + 30` rather than run a route that sits at the title
+  screen the whole time.
+- `title_wait` (45 s) is the time from launch to the title's Continue; `load_wait` (75 s) is the
+  load after it. Both are the slow parts of a boot; a machine where the title takes longer needs
+  them raised, and if the load is not finished the pad presses into nothing.
+
+A route for a specific place is best made by recording one instead of guessing a walk. Play as
+usual with `BB_PAD_RECORD=out/route-fishing-district.pad`, press F9 where the route should begin,
+walk (and fight) where the warmth is wanted, press F9 again; then add a route whose pad field is the
+single entry `replay:240` — `replay` is the token `src/runtime_pad.c` arms the recording with, and
+the entry's seconds are the time the fill spends there — and pass the file:
+`BB_PAD_REPLAY=out/route-fishing-district.pad bash tools/macos/warmfill.sh --routes <name>`. The
+recorded states are the ones that were on screen, which are the ones worth compiling.
+
+### Durations
+
+| step | measured / expected |
+|---|---|
+| snapshot the user dir (26 MB) | 0.13 s (cloned, measured) |
+| a merge of ~326 blobs into a 1129-blob store | 8.4 s (measured, worst case) |
+| one route run | `secs` + ~20 s of process start and shutdown: 300 s → about 5½ minutes |
+| all three built-in routes | about 14 minutes of GPU time |
+
+The runs are the whole cost, and it is the same compile work the first visit to that area would have
+done while the owner was playing — moved off the play session and into a hidden one. Do not start a
+fill while playing, and do not start one while another build is running: the guard only knows about
+the game itself.
+
+### After a build: the hook
+
+`tools/macos/build.sh` (and so `tools/macos/update.sh`, which the Mac app's Update button runs)
+carries the warm-fill as a step that is **off by default**:
+
+```
+BB_WARMFILL_AFTER_BUILD=1 bash tools/macos/build.sh          # and BB_WARMFILL_ROUTES to change the set
+```
+
+With the variable unset the build is exactly as before and nothing is read or started. Set, the end
+of the build says so on a line of its own and starts one warm-fill in the background
+(`nohup`, output to `out/warmfill.log`, report `out/warmfill-report.json`), so the build and the
+update are not held up by five minutes of route. The fill skips itself, saying why in that log, when
+the game is running or the game data is missing. The owner's one-off command is the same thing
+without the variable:
+
+```
+BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh --adopt-profile
+```
+
+`--adopt-profile` is the flag to use when the fill follows a version bump (see the profile gate
+above); on an ordinary fill the header already matches and the flag does nothing.
+
+### What a fill cannot cover
+
+- **Only what the route drew.** A pipeline is made at the first draw with its state key, and a route
+  walks one patch of one area. Another area, another weapon, another moon phase, an insight level, a
+  cutscene, a boss's VFX: all draws that did not happen and pipelines that were not made. Coverage
+  is a set of walks, and it is inherently partial; the honest target is the places the owner keeps
+  returning to, walked once each.
+- **Layer 3 stays cold.** Neither the store nor KosmicKrisp's own shader cache covers Metal's own
+  pipeline state creation, and that is where the tens of milliseconds per pipeline are on the
+  x86-64 path.
+- **Not every hitch is a compile.** Runs 6 and 7 above walked an area with essentially no compiles
+  (2.3–5.0 ms in the whole window) and still had 186 ms and 667 ms frames — asset streaming, texture
+  upload. A fill does not touch that.
+- **A fill is not an install.** The blobs live in one user dir. Delete the store, change the device
+  profile, or bump the version constants and the set is gone again: the fill has to be re-run, which
+  is what the hook is for.
+- **The sandbox is a second copy of the store**, on the same volume. APFS clones share their blocks,
+  so it is cheap, and a route that compiles a lot writes what it compiles twice — into the sandbox
+  (by the run) and into the real store (by the merge).
+
+### Tests
+
+```
+bash tools/macos/tests/test_warm_merge.sh          # the merge, 53 checks on synthetic pairs
+bash tools/macos/tests/test_warm_route_drivers.sh  # warm_route.sh, 19 checks against a stand-in for run.sh
+bash tools/macos/tests/test_warmfill.sh            # warmfill.sh without a run, 31 checks
+bash tools/macos/tests/test_warmfill_run.sh        # warmfill.sh with runs, 23 checks, against a stand-in
+WARMFILL_TEST_REAL_USER=<a user dir> bash tools/macos/tests/test_warm_merge.sh   # 59 checks, a real store
+```
+
+None of them launch the game or write to a user dir outside their own scratch tree: the first three
+work on synthetic pairs, the fourth on a scratch checkout whose `run.sh` is a stand-in that writes
+the blobs a compile pass would, and the fifth clones whatever user dir it is pointed at, twice,
+checking the merge against that store's own blobs (a clone of the owner's store was used for the
+numbers in "The merge is additive, and checked" above). The stand-in tests are what say the run
+loop, the merge and the report work end to end; they cannot say that the real game's draws produce
+the blobs they pretend to.
+
 ## What is not verified
+
+- **No route has been run by this pipeline yet.** Everything above about the merge, the snapshot, the
+  hook, the refusals and the pad timing was measured or checked as stated; what was *not* run is a
+  fill against the real game — `warmfill.sh` end to end with a real route compiling real pipelines.
+  That needs the machine to itself for about ten minutes of GPU time, game data and a build, and it
+  is the one step left to the owner. `bash tools/macos/warmfill.sh --dry-run` is the cheap rehearsal:
+  it lists the routes, snapshots nothing and merges nothing.
+- Whether a fill actually removes the stutter on the first visit to a warmed area has not been
+  measured either: it needs a before-and-after play session on the same area, with the store
+  swapped underneath.
+
 
 - The port-vs-driver split (section "Which layer is cold") needs a run in which compiles happen. A
   hidden warm run at the title compiles nothing (0 compiles in every 5-s window measured), so the
@@ -194,3 +399,6 @@ that were actually on screen are the ones worth compiling.
   shaders that happen to share a render state was not proven either way.
 - Nothing here was measured in a visible run; every number above comes from hidden `BB_WARM_ONLY`
   runs, which do draw and present (24 draws/frame at the title, `Gnm 1.0 sceGnmSubmitDone/frame`).
+  The route runs behind runs 4–7 were hidden only if whoever ran them had set `BB_WARM_ONLY`
+  themselves: `warm_route.sh` did not set it until the warm-fill work landed it in the script (see
+  "Filling the cache from an area on purpose").
