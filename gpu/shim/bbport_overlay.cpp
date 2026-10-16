@@ -16,6 +16,8 @@
 
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
+#include "bbport_frame_rate.h"
+#include "sdl_window.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "vulkan/instance.h"
@@ -60,6 +62,7 @@ extern "C" const unsigned char bb_font_ttf[];
 extern "C" const unsigned char bb_font_ttf_end[];
 
 extern "C" void runtime_restart(void); // bb-probe (probe.c)
+extern Frontend::WindowSDL* g_window; // bbgpu.cpp: the game's window (the menu's window mode)
 extern "C" __attribute__((weak)) void runtime_toypad_lights(uint32_t out[3]); // runtime_toypad.c
 
 namespace BbOverlay {
@@ -777,6 +780,77 @@ void Menu() {
         "остаётся в 1080p — на Steam Deck и старых видеокартах это заметно медленнее. "
         "Выключена: всё рисуется в разрешении пресета, смена — через перезапуск. Авто включает "
         "её на мощных дискретных видеокартах. Применяется после перезапуска игры."));
+    // Window mode (window.cpp): applied to the window at once; kept in bbport.ini.
+    ImGui::SeparatorText(BbSettings::MenuText("Window", "Окно"));
+    {
+        static const char* modes[] = {BbSettings::MenuText("Windowed", "В окне"),
+                                      BbSettings::MenuText("Borderless", "Без рамки"),
+                                      BbSettings::MenuText("Fullscreen", "Во весь экран")};
+        const int wm = s.window_mode;
+        if (ImGui::BeginCombo(BbSettings::MenuText("Window mode", "Режим окна"), modes[wm])) {
+            for (int i = 0; i < BbSettings::WindowModeCount; ++i) {
+                if (ImGui::Selectable(modes[i], i == wm)) {
+                    Store(s.window_mode, i, true);
+                    if (g_window) {
+                        g_window->SetWindowMode(i);
+                    }
+                }
+            }
+            ImGui::EndCombo();
+        }
+        Hint(BbSettings::MenuText(
+            "Borderless fills the display without a title bar; fullscreen gives the display to "
+            "the game. Switch back from this menu (F1).",
+            "Без рамки — окно во весь экран без заголовка; во весь экран — игра занимает дисплей. "
+            "Вернуться можно из этого же меню (F1)."));
+    }
+    // Frame rate (bbport_frame_rate.cpp): the port's own hooks; changed live.
+    ImGui::SeparatorText(BbSettings::MenuText("Frame rate", "Частота кадров"));
+    {
+        const auto fps_target = [](int mode) {
+            return mode == BbSettings::Fps60 ? 60 : mode == BbSettings::Fps90 ? 90
+                : mode == BbSettings::Fps30 ? 30 : 0; // 0: uncapped
+        };
+        static const char* rates[] = {BbSettings::MenuText("30 (the game's own)", "30 (как в игре)"),
+                                      "60", "90",
+                                      BbSettings::MenuText("Uncapped", "Без ограничения")};
+        const int fm = s.fps_mode;
+        if (ImGui::BeginCombo(BbSettings::MenuText("Mode", "Режим"), rates[fm])) {
+            for (int i = 0; i < BbSettings::FpsModeCount; ++i) {
+                if (ImGui::Selectable(rates[i], i == fm)) {
+                    Store(s.fps_mode, i, true);
+                    BbFrameRate::SetRate(fps_target(i), s.fps_limit);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        static constexpr int limit_values[] = {0, 30, 60, 90, 120};
+        static const char* limit_labels[] = {BbSettings::MenuText("Off (display refresh)", "Выкл (по экрану)"),
+                                             "30", "60", "90", "120"};
+        int limit_at = 0;
+        for (int i = 0; i < 5; ++i) {
+            if (limit_values[i] == s.fps_limit) {
+                limit_at = i;
+            }
+        }
+        if (ImGui::BeginCombo(BbSettings::MenuText("Rate limit", "Ограничение"), limit_labels[limit_at])) {
+            for (int i = 0; i < 5; ++i) {
+                if (ImGui::Selectable(limit_labels[i], i == limit_at)) {
+                    Store(s.fps_limit, limit_values[i], true);
+                    BbFrameRate::SetRate(fps_target(fm), limit_values[i]);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        Hint(BbSettings::MenuText(
+            "30 is the game's own rate; 60/90/uncapped run the game's frame rate free through the "
+            "port's hooks. Uncapped is bounded by the display (FIFO) and a 480 FPS safety cap. "
+            "Changes apply at once.",
+            "30 — собственная частота игры; 60/90/без ограничения раскрывают частоту кадров игры "
+            "хуками порта. Без ограничения упирается в частоту экрана (FIFO) и защитный предел "
+            "480 FPS. Изменения применяются сразу."));
+    }
+
     ImGui::SeparatorText(BbSettings::MenuText("Game effects (restart required)",
                                               "Эффекты игры (после перезапуска)"));
     const char* lods[] = {BbSettings::MenuText("Highest (-2)", "Максимальная (-2)"),
@@ -835,6 +909,22 @@ void Menu() {
     }
 
     ImGui::SeparatorText(BbSettings::MenuText("Other", "Прочее"));
+    {
+        bool hud = s.metal_hud;
+        if (ImGui::Checkbox(BbSettings::MenuText("Metal HUD instead of the corner counter (restart required)",
+                                                 "Metal HUD вместо счётчика в углу (после перезапуска)"),
+                            &hud)) {
+            Store(s.metal_hud, hud, true);
+            if (hud) {
+                Store(s.show_fps, false, true); // "instead": one counter, not both
+            }
+        }
+        Hint(BbSettings::MenuText(
+            "Apple's Metal performance HUD for the game (MTL_HUD_ENABLED): frame rate and frame "
+            "times. It is read at start-up, so it applies after a restart.",
+            "Metal HUD Apple для игры (MTL_HUD_ENABLED): кадры в секунду и времена кадров. "
+            "Читается при запуске — применяется после перезапуска."));
+    }
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
 
     ImGui::Spacing();

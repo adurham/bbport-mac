@@ -60,6 +60,19 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.debug_view = std::clamp(i, 0, DebugViewCount - 1);
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "window_mode") {
+        if (value == "windowed") v.window_mode = WindowWindowed;
+        else if (value == "borderless") v.window_mode = WindowBorderless;
+        else if (value == "fullscreen") v.window_mode = WindowFullscreen;
+    } else if (key == "fps_mode") {
+        if (value == "uncap") v.fps_mode = FpsUncapped;
+        else if (value == "30") v.fps_mode = Fps30;
+        else if (value == "60") v.fps_mode = Fps60;
+        else if (value == "90") v.fps_mode = Fps90;
+    } else if (key == "fps_limit") {
+        v.fps_limit = std::clamp(i, 0, 480);
+    } else if (key == "metal_hud") {
+        v.metal_hud = i != 0;
     } else if (key == "menu_pos") {
         float x = -1.0f, y = -1.0f;
         if (std::sscanf(value.c_str(), "%f,%f", &x, &y) == 2 && x >= 0.0f && x <= 1.0f && y >= 0.0f &&
@@ -222,6 +235,11 @@ void Load() {
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = Effects[e].default_on;
     }
+    // Legacy fullscreen request (launchers, old scripts): the weakest source — bbport.ini's
+    // window_mode and BB_WINDOW_MODE override it.
+    if (const char* fs = std::getenv("BB_FULLSCREEN"); fs && fs[0] == '1') {
+        v.window_mode = WindowFullscreen;
+    }
     // bbport: the menu's language until one is chosen in it (menu_language in bbport.ini): the
     // launcher's (BB_MENU_LANGUAGE), else the system's, as the launcher picks its own.
     {
@@ -265,6 +283,9 @@ void Load() {
         {"BB_REACTIVE_THRESHOLD", "reactive_threshold"}, {"BB_REACTIVE_MAX", "reactive_max"},
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_SHOW_FPS", "show_fps"},
+        {"BB_WINDOW_MODE", "window_mode"},
+        {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
+        {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
     };
     // Frame generation is hidden in the menu until its artifacts are fixed: only BB_FRAME_GEN turns
@@ -288,6 +309,11 @@ void Load() {
         if (output && std::sscanf(output, "%dx%d", &w, &h) == 2) v.startup_output = {w, h};
     }
     v.startup_live_resolution = v.live_resolution;
+    // Apple's Metal performance HUD for the game process: Metal reads MTL_HUD_ENABLED when it
+    // creates its first device (the window and the driver come later), so this is early enough.
+    if (v.metal_hud) {
+        setenv("MTL_HUD_ENABLED", "1", 1);
+    }
 }
 
 void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool metalfx) {
@@ -383,6 +409,12 @@ void Save() {
     // Read by run.sh at start.
     put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
     put("frame_generation", flag(v.frame_generation));
+    put("window_mode", v.window_mode == WindowBorderless ? "borderless"
+                            : v.window_mode == WindowFullscreen ? "fullscreen" : "windowed");
+    put("fps_mode", v.fps_mode == Fps30 ? "30" : v.fps_mode == Fps60 ? "60"
+                          : v.fps_mode == Fps90 ? "90" : "uncap");
+    put("fps_limit", std::to_string(v.fps_limit.load()));
+    put("metal_hud", flag(v.metal_hud));
     if (v.menu_x >= 0.0f && v.menu_y >= 0.0f) {
         put("menu_pos", fixed(v.menu_x, 4) + "," + fixed(v.menu_y, 4));
     }

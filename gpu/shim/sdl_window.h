@@ -28,6 +28,8 @@ public:
     SDL_Window* GetSDLWindow() const { return window; }
     WindowSystemInfo GetWindowInfo() const { return window_info; }
     bool IsOpen() const { return is_open.load(std::memory_order_relaxed); }
+    /// Applies a window mode (BbSettings::WindowMode) at once: windowed, borderless or fullscreen.
+    void SetWindowMode(int mode);
     /// Processes pending window events. Returns false once the user closed the window.
     bool PollEvents();
     /// Keyboard text entry for the system IME dialog; typed text shows in the title bar.

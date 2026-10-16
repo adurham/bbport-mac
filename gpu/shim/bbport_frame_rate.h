@@ -10,6 +10,10 @@
 namespace BbFrameRate {
 /// Installs the hooks (at load, before the game runs: bbgpu_patch_image).
 void PatchImage(unsigned char* image, std::uint64_t size);
+/// Sets the frame rate target and limit while the game runs (the menu): target 60/90/30; 0 or
+/// less is uncapped; limit 0 is none. No effect when the hooks are off (BB_FRAME_HOOKS=0) or
+/// the game's pacer code did not match (see Unlocked()).
+void SetRate(int target_fps, int limit_fps);
 /// Whether the hooks run the game's frame rate: the video out then shows a frame as soon as the
 /// game submits it (the game's own flip rate asks for 30 FPS).
 bool Unlocked();
