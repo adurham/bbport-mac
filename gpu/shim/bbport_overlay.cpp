@@ -862,7 +862,7 @@ void Menu() {
             "Fill (opt-in): the game is drawn at the chosen resolution and scaled up to the "
             "whole screen; the display keeps the mode it is on, so changing the resolution never "
             "blanks the screen and Direct keeps working. Text and UI are sharpest when the "
-            "resolution is the display's own size. Switch the display mode: the display itself is "
+            "resolution is the display's own size. Switch the display mode (the default): the display itself is "
             "put on the chosen resolution — pixel-for-pixel where the panel has it, and for other "
             "sizes the screen goes black for a moment, the panel's own scaler stretches the "
             "picture and Direct has to be set up again.",
@@ -1510,6 +1510,10 @@ std::atomic<std::uint32_t> warming_count{0}; ///< compiles so far when the count
 /// a warm launch shows nothing, the first run after an update says what it is doing instead of
 /// leaving a black window that reads as a hang (bbport).
 bool Warming() {
+    // Opt-in (BB_WARM_NOTICE=1): the owner called the notice distracting during normal play;
+    // warming is background housekeeping and shows nothing unless asked for.
+    static const bool notice = std::getenv("BB_WARM_NOTICE") != nullptr;
+    if (!notice) return false;
     static std::uint32_t last_count = 0;
     static std::chrono::steady_clock::time_point last_change = std::chrono::steady_clock::now();
     static bool ever = false;
