@@ -260,29 +260,6 @@ void OnFlipStats() {
     last_trf = trf;
     last_twf = twf;
     const FramePhases phases = TakeFramePhases();
-    if (frame_ms > 40.0 && last_gpu_ns != 0) {
-        std::printf("       phases ms: translate %.1f (%llu), pipelines on the GPU thread %.1f (%llu), "
-                    "%llu draws without their pipeline (async), descriptors %.1f (%llu batches), "
-                    "calls into the game process %.1f (%llu), GPU thread waiting for the game "
-                    "%.1f, page faults handled %.1f (%llu; draw pipe drains in them %.1f)",
-                    phases.translate_ms, (unsigned long long)phases.translates,
-                    phases.pipeline_sync_ms, (unsigned long long)phases.pipelines_sync,
-                    (unsigned long long)phases.async_skips, phases.descriptor_ms,
-                    (unsigned long long)phases.descriptor_batches, phases.ipc_ms,
-                    (unsigned long long)phases.ipc_calls, phases.gpu_idle_ms,
-                    phases.fault_handler_ms, (unsigned long long)phases.fault_handlers,
-                    phases.fault_drain_ms);
-        if (phases.game) {
-            std::printf("; game process: faults to bb-gpu %.1f (%llu), calls %.1f (%llu), file "
-                        "reads %.1f (%llu, %.1f MB), CPU %.1f, page-ins %llu",
-                        phases.game_fault_ms, (unsigned long long)phases.game_faults,
-                        phases.game_call_ms, (unsigned long long)phases.game_calls,
-                        phases.game_read_ms, (unsigned long long)phases.game_reads,
-                        phases.game_read_mb, phases.game_cpu_ms,
-                        (unsigned long long)phases.game_majflt);
-        }
-        std::printf("\n");
-    }
     const u64 copy_ns = BbStats::t_copy.load(), copy_bytes = BbStats::copy_bytes.load();
     u64 proc_flt = 0;
     if (rusage usage{}; getrusage(RUSAGE_SELF, &usage) == 0) {
@@ -330,6 +307,29 @@ void OnFlipStats() {
                     (t_now[0] - last_t[0]) / 1e6, (t_now[1] - last_t[1]) / 1e6,
                     (t_now[2] - last_t[2]) / 1e6, (t_now[3] - last_t[3]) / 1e6,
                     (t_now[4] - last_t[4]) / 1e6, (t_now[5] - last_t[5]) / 1e6);
+    }
+    if (frame_ms > 40.0 && last_gpu_ns != 0) {
+        std::printf("       phases ms: translate %.1f (%llu), pipelines on the GPU thread %.1f (%llu), "
+                    "%llu draws without their pipeline (async), descriptors %.1f (%llu batches), "
+                    "calls into the game process %.1f (%llu), GPU thread waiting for the game "
+                    "%.1f, page faults handled %.1f (%llu; draw pipe drains in them %.1f)",
+                    phases.translate_ms, (unsigned long long)phases.translates,
+                    phases.pipeline_sync_ms, (unsigned long long)phases.pipelines_sync,
+                    (unsigned long long)phases.async_skips, phases.descriptor_ms,
+                    (unsigned long long)phases.descriptor_batches, phases.ipc_ms,
+                    (unsigned long long)phases.ipc_calls, phases.gpu_idle_ms,
+                    phases.fault_handler_ms, (unsigned long long)phases.fault_handlers,
+                    phases.fault_drain_ms);
+        if (phases.game) {
+            std::printf("; game process: faults to bb-gpu %.1f (%llu), calls %.1f (%llu), file "
+                        "reads %.1f (%llu, %.1f MB), CPU %.1f, page-ins %llu",
+                        phases.game_fault_ms, (unsigned long long)phases.game_faults,
+                        phases.game_call_ms, (unsigned long long)phases.game_calls,
+                        phases.game_read_ms, (unsigned long long)phases.game_reads,
+                        phases.game_read_mb, phases.game_cpu_ms,
+                        (unsigned long long)phases.game_majflt);
+        }
+        std::printf("\n");
     }
     static std::array<u64, 12> last_layer{};
     static u64 last_mprotects = 0, last_entries = 0;
