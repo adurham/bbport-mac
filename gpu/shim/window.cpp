@@ -242,6 +242,7 @@ void apply_window_mode(SDL_Window* window, int mode) {
     switch (mode) {
     case BbSettings::WindowBorderless: {
         SDL_SetWindowFullscreen(window, false);
+        SDL_SetWindowFullscreenMode(window, nullptr); // back to the desktop's own mode
         SDL_SetWindowBordered(window, false);
         const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
         if (const SDL_DisplayMode* display_mode = SDL_GetDesktopDisplayMode(display)) {
@@ -251,13 +252,40 @@ void apply_window_mode(SDL_Window* window, int mode) {
         }
         break;
     }
-    case BbSettings::WindowFullscreen:
+    case BbSettings::WindowFullscreen: {
+        // Fullscreen on an explicit display mode — the real one closest to the output setting —
+        // not on whatever (possibly scaled) mode the desktop happens to run: the window's
+        // surface then matches the mode pixel-for-pixel, which is what Direct scan-out is made
+        // of. P.T.'s "exclusive" fullscreen does the same (SDL_SetWindowFullscreenMode).
+        const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+        const BbSettings::OutputSize wanted = BbSettings::CurrentOutput();
+        int count = 0;
+        SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(display, &count);
+        const SDL_DisplayMode* chosen = nullptr;
+        int best = 1 << 30;
+        for (int i = 0; listed && i < count; ++i) {
+            const int distance = std::abs(listed[i]->w - wanted.width) +
+                                 std::abs(listed[i]->h - wanted.height);
+            if (distance < best || (distance == best && chosen && listed[i]->w > chosen->w)) {
+                best = distance;
+                chosen = listed[i];
+            }
+        }
+        if (chosen) {
+            std::printf("Window mode: fullscreen %dx%d (display mode)\n", chosen->w, chosen->h);
+            SDL_SetWindowFullscreenMode(window, chosen);
+        } else {
+            SDL_SetWindowFullscreenMode(window, nullptr);
+        }
+        SDL_free(listed);
         SDL_SetWindowBordered(window, true);
         SDL_SetWindowFullscreen(window, true);
         break;
+    }
     case BbSettings::WindowWindowed:
     default:
         SDL_SetWindowFullscreen(window, false);
+        SDL_SetWindowFullscreenMode(window, nullptr); // back to the desktop's own mode
         SDL_SetWindowBordered(window, true);
         if (saved_windowed_size.x > 0) {
             SDL_SetWindowSize(window, saved_windowed_size.x, saved_windowed_size.y);
