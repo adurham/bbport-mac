@@ -63,6 +63,7 @@ extern "C" const unsigned char bb_font_ttf_end[];
 
 extern "C" void runtime_restart(void); // bb-probe (probe.c)
 extern Frontend::WindowSDL* g_window; // bbgpu.cpp: the game's window (the menu's window mode)
+namespace Vulkan { std::uint64_t PipelinesCreated(); } // pipeline.cpp (the warming notice below)
 extern "C" __attribute__((weak)) void runtime_toypad_lights(uint32_t out[3]); // runtime_toypad.c
 
 namespace BbOverlay {
@@ -1246,6 +1247,27 @@ bool HandleEvent(const SDL_Event& event) {
     }
 }
 
+std::atomic<std::uint64_t> warming_count{0}; ///< PipelinesCreated() when it last changed (the notice)
+
+/// True while the shader caches are being filled: pipelines were created in the last seconds.
+/// The first run after an update compiles for a while — a black window reads as a hang, so the
+/// overlay says what is happening (warm launches flash it briefly while cached pipelines are
+/// re-created, then it goes).
+bool Warming() {
+    static std::uint64_t last_count = 0;
+    static std::chrono::steady_clock::time_point last_change = std::chrono::steady_clock::now();
+    static bool ever = false;
+    const std::uint64_t count = Vulkan::PipelinesCreated();
+    const auto now = std::chrono::steady_clock::now();
+    if (count != last_count) {
+        last_count = count;
+        last_change = now;
+        ever = true;
+    }
+    warming_count.store(count, std::memory_order_relaxed);
+    return initialized && ever && now - last_change < std::chrono::seconds(5);
+}
+
 void SetBanner(const char* text) {
     {
         std::scoped_lock lock{banner_mutex};
@@ -1256,7 +1278,7 @@ void SetBanner(const char* text) {
 
 bool Visible() {
     return initialized && (menu_open || prompt_active || banner_active ||
-                           BbSettings::Get().show_fps);
+                           BbSettings::Get().show_fps || Warming());
 }
 
 bool MenuOpen() {
@@ -1324,6 +1346,21 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (prompt_active && !menu_open) {
         TextPrompt();
+    }
+    if (!menu_open && Warming()) {
+        // The first launch after an update compiles pipelines for a while; say so over the
+        // loading screens instead of leaving a black window that reads as a hang (bbport).
+        char text[160];
+        std::snprintf(text, sizeof(text),
+                      BbSettings::MenuText("Warming shaders... %llu pipelines",
+                                           "Прогрев шейдеров... %llu конвейеров"),
+                      (unsigned long long)warming_count.load());
+        const ImVec2 size = ImGui::CalcTextSize(text);
+        auto* draw = ImGui::GetForegroundDrawList();
+        const ImVec2 at{(io.DisplaySize.x - size.x) * 0.5f, io.DisplaySize.y * 0.30f};
+        draw->AddRectFilled({at.x - 24.0f, at.y - 12.0f}, {at.x + size.x + 24.0f, at.y + size.y + 12.0f},
+                            IM_COL32(0, 0, 0, 170), 6.0f);
+        draw->AddText(at, IM_COL32(230, 220, 200, 255), text);
     }
     if (banner_active) {
         std::string text;
