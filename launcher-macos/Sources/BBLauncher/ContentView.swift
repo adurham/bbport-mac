@@ -39,16 +39,16 @@ struct ContentView: View {
             model.refreshChecks()
         }
         .onAppear {
-            // P.T.'s shape: the app opens and the game starts, and this window gets out of the
-            // way — a Dock click brings it back (it is setup and logs). The "Start on open" box
-            // by Play turns the whole thing off for good; no hidden gestures anywhere. play()
-            // checks everything itself and quietly does nothing if the setup is not ready.
-            if model.prefs.startOnOpen {
+            // P.T.'s shape: double-click is the game. When the setup is ready the window hides
+            // before it can paint and the game starts; it comes back only if starting fails,
+            // if "Start on open" is off, or from the Dock tile while the game runs. Quitting
+            // the launcher (its Dock tile) ends the game with it, deliberately.
+            guard model.prefs.startOnOpen, !model.isRunning else { return }
+            NSApplication.shared.hide(nil)
+            DispatchQueue.main.async {
                 model.play()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                    if model.isRunning {
-                        NSApplication.shared.hide(nil)
-                    }
+                if !model.isRunning {
+                    NSApplication.shared.unhide(nil) // not ready: show the problem
                 }
             }
         }
