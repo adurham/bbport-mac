@@ -63,7 +63,7 @@ extern "C" const unsigned char bb_font_ttf_end[];
 
 extern "C" void runtime_restart(void); // bb-probe (probe.c)
 extern Frontend::WindowSDL* g_window; // bbgpu.cpp: the game's window (the menu's window mode)
-namespace Vulkan { std::uint64_t PipelinesCreated(); } // pipeline.cpp (the warming notice below)
+namespace Vulkan { extern std::atomic<std::uint32_t> g_bb_compiles; } // pipeline_cache.cpp (the notice below)
 extern "C" __attribute__((weak)) void runtime_toypad_lights(uint32_t out[3]); // runtime_toypad.c
 
 namespace BbOverlay {
@@ -1247,17 +1247,17 @@ bool HandleEvent(const SDL_Event& event) {
     }
 }
 
-std::atomic<std::uint64_t> warming_count{0}; ///< PipelinesCreated() when it last changed (the notice)
+std::atomic<std::uint32_t> warming_count{0}; ///< compiles so far when the count last changed
 
-/// True while the shader caches are being filled: pipelines were created in the last seconds.
-/// The first run after an update compiles for a while — a black window reads as a hang, so the
-/// overlay says what is happening (warm launches flash it briefly while cached pipelines are
-/// re-created, then it goes).
+/// True while shaders/pipelines are actually being compiled (real cache misses in the last
+/// seconds). Cached pipelines are re-created every launch in milliseconds and are not compiles:
+/// a warm launch shows nothing, the first run after an update says what it is doing instead of
+/// leaving a black window that reads as a hang (bbport).
 bool Warming() {
-    static std::uint64_t last_count = 0;
+    static std::uint32_t last_count = 0;
     static std::chrono::steady_clock::time_point last_change = std::chrono::steady_clock::now();
     static bool ever = false;
-    const std::uint64_t count = Vulkan::PipelinesCreated();
+    const std::uint32_t count = Vulkan::g_bb_compiles.load(std::memory_order_relaxed);
     const auto now = std::chrono::steady_clock::now();
     if (count != last_count) {
         last_count = count;
@@ -1352,9 +1352,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
         // loading screens instead of leaving a black window that reads as a hang (bbport).
         char text[160];
         std::snprintf(text, sizeof(text),
-                      BbSettings::MenuText("Warming shaders... %llu pipelines",
-                                           "Прогрев шейдеров... %llu конвейеров"),
-                      (unsigned long long)warming_count.load());
+                      BbSettings::MenuText("Warming shaders... %u compiled",
+                                           "Прогрев шейдеров... скомпилировано %u"),
+                      (unsigned)warming_count.load());
         const ImVec2 size = ImGui::CalcTextSize(text);
         auto* draw = ImGui::GetForegroundDrawList();
         const ImVec2 at{(io.DisplaySize.x - size.x) * 0.5f, io.DisplaySize.y * 0.30f};
