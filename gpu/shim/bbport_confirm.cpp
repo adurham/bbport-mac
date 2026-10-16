@@ -10,6 +10,7 @@
 #include <mutex>
 
 #include "bbport_settings.h"
+#include <SDL3/SDL.h> // the pad's face buttons, as the window reports them (PadEvent)
 #if __has_include("remote/bb_remote.h")
 #include "remote/bb_remote.h" // the native GPU process: tell the game process a kept mode
 #define BBPORT_CONFIRM_REMOTE 1
@@ -18,7 +19,9 @@
 namespace BbConfirm {
 namespace {
 
-constexpr int TimeoutSeconds = 15;
+// Long enough to read the question and pick up a pad: the reference port's 15 s were gone before a
+// player who had put the controller down found it again.
+constexpr int TimeoutSeconds = 30;
 
 std::mutex mutex;
 bool active = false;
@@ -31,6 +34,14 @@ std::chrono::steady_clock::time_point deadline;
 /// happen on the window's own thread).
 std::atomic<bool> window_confirmed{false};
 int window_confirmed_value = 0;
+
+/// The pad (PadHeld, PadEvent): `pad_held` are the buttons that were down when the window last
+/// looked — a question does not take its answer from those (the press that changed the option may
+/// still be down), so each has to be let go and pressed again. `pad_consumed` are the buttons a
+/// question has taken an event from: their press is the modal's, and so is their release, and the
+/// game gets no pad input until none of them is down.
+std::uint32_t pad_held = 0;
+std::uint32_t pad_consumed = 0;
 
 const char* KindName(Kind k) {
     return k == Kind::WindowMode ? "window mode" : "resolution";
@@ -125,9 +136,20 @@ void Decide(bool apply) {
             // live path picks it up.
             s.output_res = v;
             BbSettings::Save();
-            printf("Confirm: resolution %d confirmed\n", v);
+            printf("Confirm: resolution %dx%d confirmed\n", int(v & 0xffff), int(unsigned(v) >> 16));
         } else {
-            printf("Confirm: resolution kept (%d)\n", prev);
+            // The menu that asked already wrote the new size to bbport.ini (the game process's
+            // System menu saves before the GPU process sees it): the kept one goes back, so the
+            // next start (run.sh reads output_res) and the game process's copy agree with what
+            // is on screen. The display mode never moved (window.cpp derives it from output_res).
+            s.output_res = std::uint32_t(prev);
+            BbSettings::Save();
+#ifdef BBPORT_CONFIRM_REMOTE
+            if (BbRemote::BackActive()) {
+                BbRemote::Back::OutputResKept(std::uint32_t(prev));
+            }
+#endif
+            printf("Confirm: resolution kept (%dx%d)\n", int(prev & 0xffff), int(unsigned(prev) >> 16));
         }
         break;
     }
@@ -140,6 +162,54 @@ bool TakeConfirmedWindowMode(int& mode) {
         return true;
     }
     return false;
+}
+
+void PadHeld(std::uint32_t buttons) {
+    static_assert(SDL_GAMEPAD_BUTTON_COUNT <= 32, "the buttons are a bit set");
+    std::scoped_lock lock{mutex};
+    // Read before the events of this poll are pumped, so it is what was down when the question
+    // appeared (or a poll ago, at most): exactly what must not answer it.
+    pad_held = buttons;
+    // A button that is not down any more has been let go, whether its release event was seen or the
+    // pad was unplugged: nothing of a question is left hanging over the game's input.
+    pad_consumed &= buttons;
+}
+
+bool PadEvent(int button, bool down) {
+    if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) {
+        return false; // not a button SDL told us about
+    }
+    const std::uint32_t bit = 1u << unsigned(button);
+    int decide = 0; // 1: apply, -1: keep the current one
+    {
+        std::scoped_lock lock{mutex};
+        if (!active && !pad_consumed) {
+            return false; // no question, and nothing of one is still held: the event goes on
+        }
+        if (down) {
+            // A fresh press answers the question: Cross applies the change, Circle keeps the
+            // current setting. A button that was already down when the question appeared has to be
+            // let go and pressed again (the press that changed the option may still be down).
+            if (active && !(pad_held & bit)) {
+                decide = button == SDL_GAMEPAD_BUTTON_SOUTH ? 1
+                         : button == SDL_GAMEPAD_BUTTON_EAST  ? -1
+                                                             : 0;
+            }
+            pad_consumed |= bit; // the press is the modal's, and so is its release
+        } else {
+            pad_consumed &= ~bit;
+            pad_held &= ~bit;
+        }
+    }
+    if (decide != 0) {
+        Decide(decide > 0); // the answer, as the modal's own buttons give it
+    }
+    return true;
+}
+
+bool PadConsumed() {
+    std::scoped_lock lock{mutex};
+    return pad_consumed != 0;
 }
 
 } // namespace BbConfirm

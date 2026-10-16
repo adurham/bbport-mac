@@ -5,7 +5,9 @@
  * play stale halves - a click every 10.7 ms. The lowest SDL queue level of
  * each window is steered to two buffers (silence prefill on underrun, ±3%
  * cadence corrections), which also absorbs device clock drift. Without an audio device (headless runs, BB_AUDIO=none)
- * ports only follow the clock. */
+ * ports only follow the clock. BB_AUDIO_DEVICE=1 opens the device even in a warm run (sound
+ * diagnostics that must stay hidden); BB_AUDIO_STATS=1 prints queue stats, BB_AUDIO_DUMP=<path>
+ * dumps each port's post-gain PCM. */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "platform.h"
@@ -14,6 +16,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <math.h>
 #include <SDL3/SDL.h>
 
 #define PORTS 25
@@ -32,13 +35,19 @@
 
 typedef struct {
     int used, type, channels, is_float, frames, sample_bytes, std_layout;
+    int out_channels;               /* channels the sink's stream was opened with */
     int32_t volume[8];
+    int32_t vol_min, vol_max;       /* range of the volumes the game set */
+    unsigned vol_calls;
     SDL_AudioStream *stream;
     uint64_t next_deadline_ns; /* next return of sceAudioOutOutput */
     int64_t adjust_ns; int window_min, window_count; /* queue level control */
     uint64_t last_output_us;
     pthread_mutex_t lock;
     FILE *dump;                     /* BB_AUDIO_DUMP: raw converted PCM per port */
+    uint64_t push_bytes, silence_bytes; /* bytes queued to the device, of which silence */
+    unsigned put_failed;            /* SDL_PutAudioStreamData failures: a dead stream is silent */
+    float pm_peak; double pm_sumsq; unsigned long long pm_samples; /* BB_AUDIO_STATS: final device buffer */
     int stats;
     uint64_t stat_start_ns, stat_last_ns, stat_max_gap_ns; /* BB_AUDIO_STATS */
     unsigned stat_starved, stat_buffers; int stat_min_queued;
@@ -63,6 +72,68 @@ static int sdl_audio(void) {
         printf("Runtime: audio backend %s\n", sdl_ready ? SDL_GetCurrentAudioDriver() : "timer (silent)");
     }
     return sdl_ready;
+}
+/* The sink's own channel count. SDL reports the physical device's format, not the port's:
+ * asking for a wider stream than the device has leaves the fold-down to the host, at a level
+ * we cannot see (a standard 8->2 matrix costs ~13 dB), so the port folds the PS4 layout to
+ * the sink itself, at console level. 0 = unknown, keep the port's own width. */
+static int default_sink_channels(void) {
+    const char *want=SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    if (!want) return 0;
+    int count=0, channels=0;
+    SDL_AudioDeviceID *devs=SDL_GetAudioPlaybackDevices(&count);
+    if (!devs) return 0;
+    for (int i=0;i<count;++i) {
+        const char *name=SDL_GetAudioDeviceName(devs[i]);
+        SDL_AudioSpec spec;
+        if (name && !strcmp(name,want) && SDL_GetAudioDeviceFormat(devs[i],&spec,NULL) && spec.channels>0) {
+            channels=spec.channels;
+            break;
+        }
+    }
+    SDL_free(devs);
+    return channels;
+}
+/* Which sink a port feeds. A warm run (BB_WARM_ONLY) keeps the timer sink: an invisible compile
+ * pass must not play the game. BB_AUDIO_DEVICE overrides that: "1" opens the real device even in
+ * a warm run (so the sound path can be exercised without a visible launch), "none"/"0" forces
+ * the timer sink. */
+static int audio_want_device(void) {
+    const char *override_=getenv("BB_AUDIO_DEVICE");
+    if (override_ && override_[0]) return strcmp(override_,"none") && strcmp(override_,"0");
+    const char *warm=getenv("BB_WARM_ONLY");
+    return !(warm && warm[0]=='1');
+}
+/* A paused stream never plays: SDL_OpenAudioDeviceStream hands the device back paused, so the
+ * resume below matters. Naming the sink catches a stream that landed on the wrong device. */
+static void SDLCALL postmix(void *userdata, const SDL_AudioSpec *spec, float *buffer, int buflen) {
+    Port *p=userdata;
+    (void)spec;
+    if (!p || !buffer) return;
+    for (int i=0;i<buflen;++i) {
+        float v=buffer[i], a=v<0 ? -v : v;
+        if (a>p->pm_peak) p->pm_peak=a;
+        p->pm_sumsq+=(double)v*v;
+    }
+    p->pm_samples+=(unsigned long long)(buflen>0 ? buflen : 0);
+}
+static void report_audio_device(Port *p, int id) {
+    SDL_AudioStream *stream=p->stream;
+    SDL_AudioDeviceID dev=SDL_GetAudioStreamDevice(stream);
+    const char *name=SDL_GetAudioDeviceName(dev);
+    SDL_AudioSpec got, native;
+    int have_got=SDL_GetAudioStreamFormat(stream,NULL,&got);
+    printf("Runtime: audio port %d -> device '%s' (id %u), paused=%s\n",id,name ? name : "?",(unsigned)dev,
+           SDL_AudioDevicePaused(dev) ? "yes (silent until resumed)" : "no");
+    if (have_got) printf("Runtime: audio port %d: stream %d Hz, %d ch, format %s\n",
+                         id,got.freq,got.channels,got.format==SDL_AUDIO_F32 ? "F32" : "other");
+    if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&native,NULL))
+        printf("Runtime: audio port %d: default device natively %d Hz, %d ch, %s\n",
+               id,native.freq,native.channels,native.format==SDL_AUDIO_F32 ? "F32" : "other");
+    /* The final buffer in the device's format, after every conversion, immediately before the
+     * device is fed: the sink's level, measurable from inside the game (BB_AUDIO_STATS). */
+    if (!SDL_SetAudioPostmixCallback(dev,postmix,p))
+        fprintf(stderr,"Runtime: audio port %d: no postmix tap (%s)\n",id,SDL_GetError());
 }
 static int port_range(int type, int *first, int *last) {
     switch (type) {
@@ -109,29 +180,38 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     pthread_mutex_init(&p->lock,NULL);
     p->used=1; p->type=type; p->channels=channels[format]; p->is_float=format>=3 && format!=6;
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
+    p->out_channels=p->channels;
     for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
+    p->vol_min=p->vol_max=VOLUME_0DB;
     // A warm run (BB_WARM_ONLY) boots the game hidden to compile its pipelines: no output
     // device — the ports below keep the timer sink (writes are paced and dropped), so the
     // warm-up runs silently instead of playing the game out of an invisible window.
-    const char *warm=getenv("BB_WARM_ONLY");
-    if (warm && warm[0]=='1') {
+    if (!audio_want_device()) {
         printf("Runtime: warm run: port %d keeps the timer sink (no audio device)\n",id);
     } else if (sdl_audio()) {
-        SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->channels, 48000};
+        int sink=default_sink_channels();
+        if (sink>=2 && sink<p->channels) p->out_channels=sink;
+        SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->out_channels, 48000};
         p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
-        if (p->stream) SDL_ResumeAudioStreamDevice(p->stream);
-        else fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+        if (p->stream) {
+            SDL_ResumeAudioStreamDevice(p->stream);
+            report_audio_device(p,id);
+        } else {
+            fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
+        }
     }
     p->stats=getenv("BB_AUDIO_STATS")!=NULL;
     const char *dump=getenv("BB_AUDIO_DUMP");
     if (dump) {
         char path[4096];
-        snprintf(path,sizeof(path),"%s.port%d.%dch.%s",dump,id,p->channels,p->is_float ? "f32" : "s16");
+        snprintf(path,sizeof(path),"%s.port%d.%dch.%s",dump,id,p->out_channels,p->is_float ? "f32" : "s16");
         p->dump=fopen(path,"wb");
     }
     ++ports_opened;
     pthread_mutex_unlock(&table_lock);
-    printf("Runtime: audio port %d opened (type %d, %d ch, %s, %u frames)\n",id,type,p->channels,p->is_float ? "float" : "s16",length);
+    printf("Runtime: audio port %d opened (type %d, %d ch, %s, %u frames)%s\n",id,type,p->channels,
+           p->is_float ? "float" : "s16",length,
+           p->out_channels!=p->channels ? " (folded to the sink's width for output)" : "");
     return (type<<16) | id | 0x20000000;
 }
 static ABI int32_t audio_close(int32_t handle) {
@@ -140,6 +220,12 @@ static ABI int32_t audio_close(int32_t handle) {
     Port *p=port_of(handle,&error);
     if (p) {
         pthread_mutex_lock(&p->lock);
+        /* What the device took: bytes queued minus what is still waiting is what CoreAudio
+           consumed, which is the only host-side proof that the sink is live. */
+        if (p->stream)
+            printf("Runtime: audio port %d closed: %llu bytes queued (incl. %llu silence), %d still queued, %u failed puts, starved %u\n",
+                   (int)(p-ports),(unsigned long long)p->push_bytes,(unsigned long long)p->silence_bytes,
+                   SDL_GetAudioStreamQueued(p->stream),p->put_failed,p->stat_starved);
         if (p->stream) SDL_DestroyAudioStream(p->stream);
         if (p->dump) fclose(p->dump);
         p->dump=NULL;
@@ -157,18 +243,63 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
     pthread_mutex_unlock(&table_lock);
     if (!p) return error;
     pthread_mutex_lock(&p->lock);
-    size_t samples=(size_t)p->frames*(size_t)p->channels, bytes=samples*(size_t)p->sample_bytes;
+    size_t samples=(size_t)p->frames*(size_t)p->channels;
+    size_t bytes=(size_t)p->frames*(size_t)p->out_channels*(size_t)p->sample_bytes;
     uint64_t period=(uint64_t)p->frames*1000000000u/48000u;
     if (data) {
-        /* Apply per-channel volume and map PS4 8ch (L R C LFE SL SR BL BR) to SDL 7.1 order. */
+        /* Apply per-channel volume, map PS4 8ch (L R C LFE SL SR BL BR) to the sink's order and,
+           when the sink has fewer channels than the port, fold it down here: the console folds
+           7.1 to whatever the output has, at full level (front pair 0 dB, centre and surrounds
+           -3 dB, LFE -6 dB), while a wider stream handed to a narrower device leaves the fold to
+           the host, whose matrix costs ~13 dB and cannot be measured from in here. */
         unsigned char converted[2048*8*4];
         static const int remap[8]={0,1,2,3,6,7,4,5};
-        for (size_t f=0;f<(size_t)p->frames;++f) for (int c=0;c<p->channels;++c) {
-            int target=p->channels==8 && !p->std_layout ? remap[c] : c;
-            size_t from=f*(size_t)p->channels+(size_t)c, to=f*(size_t)p->channels+(size_t)target;
-            float gain=(float)p->volume[c]/VOLUME_0DB;
-            if (p->is_float) { float v; memcpy(&v,(const char *)data+from*4,4); v*=gain; memcpy(converted+to*4,&v,4); }
-            else { int16_t v; memcpy(&v,(const char *)data+from*2,2); v=(int16_t)((float)v*gain); memcpy(converted+to*2,&v,2); }
+        static const float fold[8][2]={ /* PS4 channel -> stereo: L R C LFE SL SR BL BR */
+            {1.0f,0.0f},{0.0f,1.0f},{0.707f,0.707f},{0.5f,0.5f},
+            {0.707f,0.0f},{0.0f,0.707f},{0.707f,0.0f},{0.0f,0.707f}};
+        int in_ch=p->channels, out_ch=p->out_channels;
+        for (size_t f=0;f<(size_t)p->frames;++f) {
+            const char *in=(const char *)data+f*(size_t)in_ch*(size_t)p->sample_bytes;
+            char *out=(char *)converted+f*(size_t)out_ch*(size_t)p->sample_bytes;
+            if (out_ch==in_ch) {
+                for (int c=0;c<in_ch;++c) {
+                    int target=in_ch==8 && !p->std_layout ? remap[c] : c;
+                    float gain=(float)p->volume[c]/VOLUME_0DB;
+                    if (p->is_float) { float v; memcpy(&v,in+c*4,4); v*=gain; memcpy(out+target*4,&v,4); }
+                    else { int16_t v; memcpy(&v,in+c*2,2); v=(int16_t)((float)v*gain); memcpy(out+target*2,&v,2); }
+                }
+            } else if (in_ch==8 && out_ch==2) {
+                float l=0, r=0;
+                for (int c=0;c<8;++c) {
+                    float gain=(float)p->volume[c]/VOLUME_0DB, v;
+                    if (p->is_float) memcpy(&v,in+c*4,4);
+                    else { int16_t s; memcpy(&s,in+c*2,2); v=(float)s/32768.0f; }
+                    v*=gain; l+=v*fold[c][0]; r+=v*fold[c][1];
+                }
+                if (p->is_float) { memcpy(out,&l,4); memcpy(out+4,&r,4); }
+                else {
+                    int16_t s;
+                    s=(int16_t)((l>1 ? 1 : l<-1 ? -1 : l)*32767); memcpy(out,&s,2);
+                    s=(int16_t)((r>1 ? 1 : r<-1 ? -1 : r)*32767); memcpy(out+2,&s,2);
+                }
+            } else {
+                /* Other sink widths: keep what fits after the remap, folding the surplus channels
+                   into the last one rather than dropping them. */
+                float extra=0;
+                memset(out,0,(size_t)out_ch*(size_t)p->sample_bytes);
+                for (int c=0;c<in_ch;++c) {
+                    float gain=(float)p->volume[c]/VOLUME_0DB, v;
+                    if (p->is_float) memcpy(&v,in+c*4,4);
+                    else { int16_t s; memcpy(&s,in+c*2,2); v=(float)s/32768.0f; }
+                    v*=gain;
+                    int target=in_ch==8 && !p->std_layout ? remap[c] : c;
+                    if (target>=out_ch) extra+=v*0.707f;
+                    else if (p->is_float) { float w; memcpy(&w,out+target*4,4); w+=v; memcpy(out+target*4,&w,4); }
+                    else { int16_t s; memcpy(&s,out+target*2,2); s=(int16_t)(s+v*32767); memcpy(out+target*2,&s,2); }
+                }
+                if (p->is_float) { float w; memcpy(&w,out+(out_ch-1)*4,4); w+=extra; memcpy(out+(out_ch-1)*4,&w,4); }
+                else { int16_t s; memcpy(&s,out+(out_ch-1)*2,2); s=(int16_t)(s+extra*32767); memcpy(out+(out_ch-1)*2,&s,2); }
+            }
         }
         if (p->dump) fwrite(converted,1,bytes,p->dump);
         if (p->stats) {
@@ -182,10 +313,15 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 if (queued==0) ++p->stat_starved;
             }
             if (now-p->stat_start_ns>=5000000000u) {
-                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u\n",
+                double pm_rms=p->pm_samples ? sqrt(p->pm_sumsq/p->pm_samples) : 0;
+                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u, volume %d..%d of %d, device buffer peak %.2f dBFS rms %.2f dBFS%s%s\n",
                        (int)(p-ports),p->stat_buffers,(unsigned)(5u*48000u/(unsigned)p->frames),p->stat_max_gap_ns/1e6,
-                       p->stat_min_queued,p->stat_starved);
+                       p->stat_min_queued,p->stat_starved,p->vol_min,p->vol_max,VOLUME_0DB,
+                       20*log10(p->pm_peak>0 ? p->pm_peak : 1e-30),20*log10(pm_rms>0 ? pm_rms : 1e-30),
+                       p->stream ? ", stream " : " (timer sink)",
+                       p->stream ? (SDL_AudioDevicePaused(SDL_GetAudioStreamDevice(p->stream)) ? "PAUSED" : "running") : "");
                 p->stat_start_ns=now; p->stat_max_gap_ns=0; p->stat_starved=0; p->stat_buffers=0; p->stat_min_queued=1<<30;
+                p->pm_peak=0; p->pm_sumsq=0; p->pm_samples=0;
             }
         }
         if (pace) {
@@ -200,7 +336,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
             int low=2*(int)bytes, queued=SDL_GetAudioStreamQueued(p->stream);
             if (queued<(int)bytes) {
                 static const unsigned char silence[2048*8*4];
-                SDL_PutAudioStreamData(p->stream,silence,low-queued<(int)bytes ? low-queued : (int)bytes);
+                int pad=low-queued<(int)bytes ? low-queued : (int)bytes;
+                SDL_PutAudioStreamData(p->stream,silence,pad);
+                p->silence_bytes+=(uint64_t)pad;
                 queued=low;
             }
             if (!p->window_count || queued<p->window_min) p->window_min=queued;
@@ -209,7 +347,13 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 p->window_count=0;
             }
             p->next_deadline_ns+=(uint64_t)p->adjust_ns;
-            SDL_PutAudioStreamData(p->stream,converted,(int)bytes);
+            if (!SDL_PutAudioStreamData(p->stream,converted,(int)bytes)) {
+                if (!p->put_failed)
+                    fprintf(stderr,"Runtime: audio port %d: SDL_PutAudioStreamData failed (%s); the sink is dead\n",
+                            (int)(p-ports),SDL_GetError());
+                ++p->put_failed;
+            }
+            p->push_bytes+=(uint64_t)bytes;
         }
         ++buffers_out;
     }
@@ -239,6 +383,17 @@ static ABI int32_t audio_volume(int32_t handle, int32_t flags, const int32_t *vo
     for (int c=0;c<8;++c) if (flags & (1<<c)) {
         if (volume[c]<0 || volume[c]>VOLUME_0DB) { pthread_mutex_unlock(&p->lock); return ERR_INVALID_VOLUME; }
         p->volume[c]=volume[c];
+    }
+    /* The game's port volume is the last multiplier before the sink (VOLUME_0DB is unity):
+     * a quiet game with healthy buffers and a live device is explained here or nowhere. */
+    if (p->vol_calls++ < 4) {
+        printf("Runtime: audio port %d volume call %u, flags 0x%x:",(int)(p-ports),p->vol_calls,(unsigned)flags);
+        for (int c=0;c<8;++c) if (flags & (1<<c)) printf(" ch%d=%d",c,volume[c]);
+        printf(" (unity %d)\n",VOLUME_0DB);
+    }
+    for (int c=0;c<8;++c) {
+        if (p->volume[c]<p->vol_min) p->vol_min=p->volume[c];
+        if (p->volume[c]>p->vol_max) p->vol_max=p->volume[c];
     }
     pthread_mutex_unlock(&p->lock);
     return 0;

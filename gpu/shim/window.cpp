@@ -15,9 +15,16 @@
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
 #include "bbport_confirm.h"
+#if __has_include("remote/bb_remote.h")
+#include "remote/bb_remote.h" // the native GPU process: bb-gpu's window opens the modal's pads itself
+#define BBPORT_WINDOW_REMOTE 1
+#endif
 #ifdef __APPLE__
 // bbport_appnap.mm: keeps a hidden warm run out of App Nap (its compiles at full speed).
 extern "C" void bb_warm_disable_app_nap(void);
+// bbport_layer.mm: the display's mode after a switch, and the panel's native pixel size.
+extern "C" void bb_log_display_mode(void* nswindow, const char* why);
+extern "C" int bb_display_native_pixels(void* nswindow, int* width, int* height);
 #endif
 
 
@@ -85,6 +92,80 @@ extern "C" void bbgpu_filter_pad(uint32_t* buttons, const uint8_t* sticks) {
     }
 }
 
+namespace {
+// bbport: the gamepads the confirmation modal takes its answers from (BbConfirm::PadEvent). SDL
+// sends gamepad button events only for gamepads this process has opened: the game process's
+// runtime_pad.c opens the one it reads, and bb-gpu — whose window draws the modal — has nothing
+// else to open them, so the window does it here (without an open pad its loop never sees one).
+bool OpensPadsHere() {
+#ifdef BBPORT_WINDOW_REMOTE
+    return BbRemote::BackActive(); // bb-gpu: the game's pads are another process's
+#else
+    return false; // in process: runtime_pad.c opens them, and its open is what makes them arrive
+#endif
+}
+
+constexpr int MaxConfirmPads = 8;
+SDL_Gamepad* confirm_pads[MaxConfirmPads] = {};
+
+void OpenConfirmPad(SDL_JoystickID id) {
+    if (!OpensPadsHere() || SDL_GetGamepadFromID(id)) {
+        return; // already open: ours, or the game process's own (in process)
+    }
+    SDL_Gamepad* pad = SDL_OpenGamepad(id);
+    if (!pad) {
+        std::printf("Window: gamepad not opened for the confirmation modal: %s\n", SDL_GetError());
+        return;
+    }
+    std::printf("Window: gamepad opened for the confirmation modal: %s\n", SDL_GetGamepadName(pad));
+    for (SDL_Gamepad*& slot : confirm_pads) {
+        if (!slot) {
+            slot = pad;
+            return;
+        }
+    }
+    SDL_CloseGamepad(pad); // more pads than the modal answers with: the rest stay closed
+}
+
+void RefreshConfirmPads() {
+    for (SDL_Gamepad*& pad : confirm_pads) {
+        if (pad && !SDL_GamepadConnected(pad)) {
+            SDL_CloseGamepad(pad); // unplugged: the handle goes, and a new pad can take the slot
+            pad = nullptr;
+        }
+    }
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i) {
+        OpenConfirmPad(ids[i]);
+    }
+    SDL_free(ids);
+}
+
+// What is down right now on this process's open pads, a bit per SDL_GAMEPAD_BUTTON_* (BbConfirm::
+// PadHeld). Read before a poll's events are pumped, so it is what was down when the question
+// appeared, not what its own press made.
+std::uint32_t ConfirmPadsDown() {
+    static_assert(SDL_GAMEPAD_BUTTON_COUNT <= 32, "a button is a bit");
+    std::uint32_t down = 0;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i) {
+        SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[i]);
+        if (!pad) {
+            continue;
+        }
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+            if (SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(b))) {
+                down |= 1u << unsigned(b);
+            }
+        }
+    }
+    SDL_free(ids);
+    return down;
+}
+} // namespace
+
 namespace Frontend {
 
 namespace {
@@ -129,13 +210,107 @@ SDL_DisplayID ChooseDisplay() {
     return display;
 }
 
-// The monitor the window is on, in pixels: the output's aspect ratio "Auto" follows it.
-void TellMonitor(SDL_Window* window) {
-    if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window))) {
-        const float density = mode->pixel_density > 0.0f ? mode->pixel_density : 1.0f;
-        BbSettings::SetMonitor(int(mode->w * density + 0.5f), int(mode->h * density + 0.5f));
-    }
+bool WarmRun() {
+    const char* warm = std::getenv("BB_WARM_ONLY");
+    return warm && warm[0] == '1';
 }
+
+void* CocoaWindow(SDL_Window* window) {
+    return SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
+                                  nullptr);
+}
+
+/// A display mode's size in pixels: SDL lists macOS modes in points with a pixel density (a
+/// scaled "looks like 3440x1440" mode is 3440x1440 at 2.0, i.e. 6880x2880 pixels).
+BbSettings::OutputSize ModePixels(const SDL_DisplayMode& mode) {
+    const float density = mode.pixel_density > 0.0f ? mode.pixel_density : 1.0f;
+    return {int(mode.w * density + 0.5f), int(mode.h * density + 0.5f)};
+}
+
+/// The panel's own pixel size: the native mode (macOS: the mode CoreGraphics flags native, not
+/// the scaled desktop's backing store), else the largest 1x mode, else the desktop's pixels.
+BbSettings::OutputSize NativePixels(SDL_Window* window) {
+#ifdef __APPLE__
+    if (int w = 0, h = 0; bb_display_native_pixels(CocoaWindow(window), &w, &h) && w > 0 && h > 0) {
+        return {w, h};
+    }
+#endif
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+    BbSettings::OutputSize best{0, 0};
+    int count = 0;
+    SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(display, &count);
+    for (int i = 0; listed && i < count; ++i) {
+        const auto px = ModePixels(*listed[i]);
+        if (listed[i]->pixel_density <= 1.0f && px.width * px.height > best.width * best.height) {
+            best = px;
+        }
+    }
+    SDL_free(listed);
+    if (best.width == 0) {
+        if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(display)) {
+            best = ModePixels(*mode);
+        }
+    }
+    return best;
+}
+
+/// Whether the display has a mode of exactly this pixel size.
+bool HasModeOfPixels(SDL_Window* window, BbSettings::OutputSize size) {
+    int count = 0;
+    SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(SDL_GetDisplayForWindow(window), &count);
+    bool found = false;
+    for (int i = 0; listed && i < count && !found; ++i) {
+        found = ModePixels(*listed[i]) == size;
+    }
+    SDL_free(listed);
+    return found;
+}
+
+// The monitor the window is on, in pixels: the output's aspect ratio "Auto" follows it. Its
+// native pixels: a scaled HiDPI desktop's backing store (6880x2880 for "looks like 3440x1440")
+// is not a size anything should render at.
+void TellMonitor(SDL_Window* window) {
+    const auto native = NativePixels(window);
+    BbSettings::SetMonitor(native.width, native.height);
+}
+
+/// The output resolution's default: the display's native pixel size, when bbport.ini has none
+/// or has one no display mode has (the old default, 1920x1080 fitted to 21:9, made 2560x1080 and
+/// a 2560x1440 fullscreen mode on a 3440x1440 panel). A startup-patched session keeps its value:
+/// run.sh already built the game for it.
+void DefaultOutputToNative(SDL_Window* window) {
+    auto& s = BbSettings::Get();
+    if (BbSettings::FixedRenderSession()) {
+        return;
+    }
+    const auto native = NativePixels(window);
+    const auto current = BbSettings::CurrentOutput();
+    const bool chosen = s.output_res_chosen.load();
+    // A chosen size without a display mode only matters in fullscreen (a window or borderless
+    // scales its output anyway: 5120x2160 there is a deliberate supersample, kept).
+    const bool fullscreen = s.window_mode.load() == BbSettings::WindowFullscreen;
+    if (native.width <= 0 || current == native ||
+        (chosen && (!fullscreen || HasModeOfPixels(window, current)))) {
+        return;
+    }
+    const int aspect = s.aspect.load();
+    const auto fitted = BbSettings::NearestOutput(aspect, native);
+    if (fitted != native) {
+        // An explicit aspect ratio without the panel's size (16:9 on an ultrawide): it stays.
+        std::printf("Output: %s kept (no %dx%d in aspect ratio %s)\n", BbSettings::SizeText(current).c_str(),
+                    native.width, native.height, BbSettings::AspectKey(aspect));
+        return;
+    }
+    std::printf("Output: %s, the display's native pixels (was %s: %s)\n", BbSettings::SizeText(native).c_str(),
+                BbSettings::SizeText(current).c_str(),
+                chosen ? "no display mode has that size" : "never chosen");
+    s.output_res = BbSettings::PackSize(native);
+    s.output_res_chosen = true;
+    BbSettings::Save(); // run.sh reads output_res at the next start
+}
+
+/// The derived display mode (below, with the window modes).
+void apply_display_mode(SDL_Window* window, const char* why);
 
 } // namespace
 
@@ -144,6 +319,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
     }
+    // SDL sends gamepad events only for gamepads that have been opened; in bb-gpu nobody else does,
+    // and the confirmation modal's answers are these events (BbConfirm::PadEvent).
+    RefreshConfirmPads();
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
     const SDL_DisplayID display = ChooseDisplay();
@@ -181,10 +359,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
     // A warm run stays windowed: switching the display mode for a hidden compile pass would
     // flicker the owner's screen for nothing (the pipeline caches do not care about the mode).
-    const bool warm_window = [] {
-        const char* warm = std::getenv("BB_WARM_ONLY");
-        return warm && warm[0] == '1';
-    }();
+    const bool warm_window = WarmRun();
     if (window_mode != BbSettings::WindowWindowed && !warm_window) {
         SetWindowMode(window_mode); // borderless/fullscreen at start; the menu changes it live
     }
@@ -222,6 +397,10 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
                 SDL_GetWindowPixelDensity(window));
 #endif
     TellMonitor(window);
+    DefaultOutputToNative(window);
+    if (warm_window && window_mode == BbSettings::WindowFullscreen) {
+        apply_display_mode(window, "fullscreen at start"); // warm: logged, not applied
+    }
 }
 
 WindowSDL::~WindowSDL() {
@@ -233,6 +412,97 @@ int applied_window_mode = -1; ///< BbSettings::WindowMode last applied
 SDL_Point saved_windowed_size{0, 0}; ///< windowed size/position to come back to
 SDL_Point saved_windowed_pos{0, 0};
 std::atomic<int> pending_window_mode{-1}; ///< a mode from a menu, waiting for the window loop
+
+/// The display mode is derived, never stored: mode = pick(window mode, output resolution). These
+/// are the inputs it was last derived from; PollEvents derives it again when either differs.
+std::uint32_t mode_output = 0;    ///< BbSettings::PackSize of the output it was picked for
+SDL_DisplayID mode_display = 0;   ///< the display it was picked on
+
+/// The display mode for an output of `wanted` pixels: compared in pixels (SDL lists macOS modes
+/// in points with a density: "looks like 3440x1440" is 3440x1440 at 2.0 = 6880x2880 pixels),
+/// 1x modes first — a 2x mode's backing is twice the drawable of a retina=0 window, so the
+/// WindowServer would scale every frame (Composited) — then the closest size, then the
+/// highest refresh rate.
+const SDL_DisplayMode* pick_display_mode(SDL_DisplayMode** listed, int count, BbSettings::OutputSize wanted) {
+    const SDL_DisplayMode* chosen = nullptr;
+    long best_distance = 0;
+    bool best_1x = false;
+    for (int i = 0; listed && i < count; ++i) {
+        const SDL_DisplayMode* mode = listed[i];
+        const BbSettings::OutputSize px = ModePixels(*mode);
+        const long distance = std::labs(long(px.width) - wanted.width) + std::labs(long(px.height) - wanted.height);
+        const bool is_1x = mode->pixel_density <= 1.0f;
+        const bool better = !chosen || (is_1x != best_1x ? is_1x
+                                        : distance != best_distance ? distance < best_distance
+                                                                    : mode->refresh_rate > chosen->refresh_rate);
+        if (better) {
+            chosen = mode;
+            best_distance = distance;
+            best_1x = is_1x;
+        }
+    }
+    return chosen;
+}
+
+/// Derives the display mode from the output resolution and sets it as the window's fullscreen
+/// mode (SDL switches at once when the window is fullscreen already, else on entering it). The
+/// window's thread only. A warm run never switches modes (its window is hidden and windowed).
+void apply_display_mode(SDL_Window* window, const char* why) {
+    if (!window) {
+        return;
+    }
+    const bool dry_run = WarmRun(); // logs the pick (the picker's check), switches nothing
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+    const BbSettings::OutputSize wanted = BbSettings::CurrentOutput();
+    mode_output = BbSettings::PackSize(wanted);
+    mode_display = display;
+    int count = 0;
+    SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(display, &count);
+    const SDL_DisplayMode* chosen = pick_display_mode(listed, count, wanted);
+    if (chosen) {
+        const BbSettings::OutputSize px = ModePixels(*chosen);
+        std::printf("Display mode: %dx%d pixels (SDL %dx%d, pixel density %.2f, %.2f Hz) for output %s (%s)%s\n",
+                    px.width, px.height, chosen->w, chosen->h, chosen->pixel_density, chosen->refresh_rate,
+                    BbSettings::SizeText(wanted).c_str(), why, dry_run ? " - warm run: not applied" : "");
+        if (!dry_run && !SDL_SetWindowFullscreenMode(window, chosen)) {
+            std::printf("Display mode: SDL refused it (%s): the desktop's mode\n", SDL_GetError());
+            SDL_SetWindowFullscreenMode(window, nullptr);
+        }
+    } else {
+        std::printf("Display mode: none listed for output %s: the desktop's mode\n",
+                    BbSettings::SizeText(wanted).c_str());
+        if (!dry_run) {
+            SDL_SetWindowFullscreenMode(window, nullptr);
+        }
+    }
+    SDL_free(listed);
+#ifdef __APPLE__
+    if (!dry_run && (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)) {
+        bb_log_display_mode(CocoaWindow(window), why); // the mode CoreGraphics reports now
+    }
+#endif
+}
+
+/// PollEvents: the derived mode follows its inputs. Fullscreen only (windowed and borderless
+/// use the desktop's mode); a changed output (a confirmed resolution, the overlay's, the native
+/// default) or another display picks again. A resolution the player did not confirm never
+/// reaches BbSettings, so cancelling or the timeout leaves the mode as it is.
+void follow_display_mode(SDL_Window* window, int applied_mode) {
+    // A warm run stays windowed, so its applied mode is never fullscreen: it follows the saved
+    // one instead and logs each pick without applying it (apply_display_mode's dry run) — the
+    // live path checked without touching the screen.
+    if (WarmRun()) {
+        applied_mode = BbSettings::Get().window_mode.load();
+    }
+    if (applied_mode != BbSettings::WindowFullscreen) {
+        return;
+    }
+    const bool output_changed = BbSettings::PackSize(BbSettings::CurrentOutput()) != mode_output;
+    const bool display_changed = SDL_GetDisplayForWindow(window) != mode_display;
+    if (output_changed || display_changed) {
+        apply_display_mode(window, output_changed ? "output resolution changed" : "display changed");
+    }
+}
 
 /// The window mode itself. Window calls change AppKit state, so this runs on the window's own
 /// thread (PollEvents): menus can be anywhere, and AppKit throws from everywhere else
@@ -259,33 +529,19 @@ void apply_window_mode(SDL_Window* window, int mode) {
         break;
     }
     case BbSettings::WindowFullscreen: {
-        // Fullscreen on an explicit display mode — the real one closest to the output setting —
-        // not on whatever (possibly scaled) mode the desktop happens to run: the window's
-        // surface then matches the mode pixel-for-pixel, which is what Direct scan-out is made
-        // of. P.T.'s "exclusive" fullscreen does the same (SDL_SetWindowFullscreenMode).
-        const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
-        const BbSettings::OutputSize wanted = BbSettings::CurrentOutput();
-        int count = 0;
-        SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(display, &count);
-        const SDL_DisplayMode* chosen = nullptr;
-        int best = 1 << 30;
-        for (int i = 0; listed && i < count; ++i) {
-            const int distance = std::abs(listed[i]->w - wanted.width) +
-                                 std::abs(listed[i]->h - wanted.height);
-            if (distance < best || (distance == best && chosen && listed[i]->w > chosen->w)) {
-                best = distance;
-                chosen = listed[i];
-            }
-        }
-        if (chosen) {
-            std::printf("Window mode: fullscreen %dx%d (display mode)\n", chosen->w, chosen->h);
-            SDL_SetWindowFullscreenMode(window, chosen);
-        } else {
-            SDL_SetWindowFullscreenMode(window, nullptr);
-        }
-        SDL_free(listed);
+        // Fullscreen on an explicit display mode — the real one for the output setting (the
+        // derived mode, apply_display_mode) — not on whatever (possibly scaled) mode the desktop
+        // happens to run: the window's surface then matches the mode pixel-for-pixel, which is
+        // what Direct scan-out is made of. P.T.'s "exclusive" fullscreen does the same.
+        apply_display_mode(window, "fullscreen");
         SDL_SetWindowBordered(window, true);
         SDL_SetWindowFullscreen(window, true);
+#ifdef __APPLE__
+        if (!WarmRun()) {
+            SDL_SyncWindow(window); // the switch has happened: what CoreGraphics reports now
+            bb_log_display_mode(CocoaWindow(window), "entered fullscreen");
+        }
+#endif
         break;
     }
     case BbSettings::WindowWindowed:
@@ -414,6 +670,7 @@ bool WindowSDL::PollEvents() {
     if (const int mode = pending_window_mode.exchange(-1, std::memory_order_relaxed); mode >= 0) {
         apply_window_mode(window, mode); // the boot mode, or a menu's (confirmed) window mode
     }
+    follow_display_mode(window, applied_window_mode); // a confirmed resolution: its own mode
     {
         std::scoped_lock lock{text_mutex};
         if (text_requested) { // SDL text input must be toggled from the window thread
@@ -428,6 +685,9 @@ bool WindowSDL::PollEvents() {
     }
     // A game module's menu wants the mouse as a pointer (bbgpu_add_pointer_query).
     const bool pointer = bbgpu_pointer_wanted() != 0;
+    // The pad's buttons, as the gamepad events below are read: what is down now is what a question
+    // that has just appeared must not take its answer from (BbConfirm::PadHeld).
+    BbConfirm::PadHeld(ConfirmPadsDown());
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (BbConfirm::Active() &&
@@ -442,6 +702,18 @@ bool WindowSDL::PollEvents() {
                 }
             }
             continue;
+        }
+        if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+            BbConfirm::PadEvent(event.gbutton.button, event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)) {
+            // A change is asking first, on a pad: Cross applies it and Circle keeps the current
+            // setting, as Enter and Escape above do. Neither the game's own menus nor the port's see
+            // the event, and while the press that answered is held the game's input stays neutral
+            // (BbConfirm::PadConsumed, the overlay's CapturesInput): the answer is not also a menu.
+            continue;
+        }
+        if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_JOYSTICK_ADDED ||
+            event.type == SDL_EVENT_GAMEPAD_REMOVED || event.type == SDL_EVENT_JOYSTICK_REMOVED) {
+            RefreshConfirmPads(); // a pad appears (the modal needs its events) or is gone
         }
         if (FilteredByModule(&event, window)) {
             continue;
@@ -524,6 +796,9 @@ bool WindowSDL::PollEvents() {
             break;
         }
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+            // Another display: its monitor size (Auto follows it), and the derived mode is
+            // picked again from that display's list (follow_display_mode, next poll) — SDL
+            // itself only carries the old mode over by its closest match.
             TellMonitor(window);
             break;
         case SDL_EVENT_QUIT:

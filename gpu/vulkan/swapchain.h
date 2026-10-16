@@ -102,6 +102,7 @@ private:
     bool zero_extent = false; ///< the surface was 0x0 (minimised) at the last Create
     bool use_hdr = false;
     bool supports_hdr = false;
+    void* metal_layer = nullptr; ///< macOS: the window's CAMetalLayer (bbport_layer.mm)
 };
 
 } // namespace Vulkan
