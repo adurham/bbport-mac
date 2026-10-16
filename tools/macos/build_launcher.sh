@@ -48,7 +48,7 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>bbport</string>
+    <string>Bloodborne PC Port</string>
     <key>CFBundleExecutable</key>
     <string>bbport</string>
     <key>CFBundleIdentifier</key>
@@ -56,7 +56,7 @@ cat > "$app/Contents/Info.plist" <<EOF
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>bbport</string>
+    <string>Bloodborne PC Port</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
