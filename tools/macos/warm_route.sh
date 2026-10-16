@@ -12,9 +12,19 @@
 #
 #   BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warm_route.sh 300
 #
-# The player's save is never touched: <checkout>/user is copied once to out/warm_user and BB_USER_DIR
-# points the run at it (the pipeline cache comes with it, so the run preloads what earlier runs
-# compiled and adds to it). RESET_WARM_USER=1 copies it afresh.
+# One area per invocation, and one route per area. For the whole thing in one command — snapshot,
+# several routes, and the merge back into the store the game reads — use tools/macos/warmfill.sh,
+# which runs this script as its step and points the sandbox at its own copy with BB_WARM_USER.
+#
+# The player's save is never touched: the user dir is copied once to $BB_WARM_USER (out/warm_user
+# unless BB_WARM_USER says otherwise) and BB_USER_DIR points the run at it (the pipeline cache comes
+# with it, so the run preloads what earlier runs compiled and adds to it). RESET_WARM_USER=1 copies
+# it afresh; BB_WARM_SOURCE_USER overrides which user dir is copied (default the one this layout
+# uses, ${BB_DATA_DIR:-.}/user).
+#
+# The run is hidden and windowed, always: BB_WARM_ONLY=1 is set below and not overridable
+# (gpu/shim/window.cpp creates a hidden window and never switches the display mode for it), so
+# nothing appears on the owner's screen and the run ends at BB_WARM_SECONDS rather than by hand.
 #
 # Env: TITLE_WAIT (s from the start to the title, default 45), LOAD_WAIT (s after the cross, default
 # 75: the load), ROUTE (the walk loop, default below), plus everything the run itself reads
@@ -25,18 +35,23 @@ secs=${1:?usage: tools/macos/warm_route.sh SECS [ENV=VALUE ...]}
 shift
 : "${BB_GAME_DIR:?set BB_GAME_DIR to the merged 1.09 game folder}"
 export BB_GAME_DIR
+# Hidden, windowed: the caches are compiled for later sessions and nothing shows on screen.
+export BB_WARM_ONLY=1
 
-# The sandbox. cp -c clones on APFS: the 14 MB save and the cache cost nothing.
-if [[ ${RESET_WARM_USER:-0} == 1 || ! -d out/warm_user ]]; then
-    rm -rf out/warm_user
-    if [[ -d user ]]; then
-        cp -ac user out/warm_user
+# The sandbox. cp -c clones on APFS: the saves and the cache cost nothing.
+warm_user=${BB_WARM_USER:-$PWD/out/warm_user}
+source_user=${BB_WARM_SOURCE_USER:-${BB_DATA_DIR:-.}/user}
+if [[ ${RESET_WARM_USER:-0} == 1 || ! -d $warm_user ]]; then
+    rm -rf "$warm_user"
+    if [[ -d $source_user ]]; then
+        mkdir -p "$(dirname -- "$warm_user")"
+        cp -cR "$source_user" "$warm_user" 2>/dev/null || cp -aR "$source_user" "$warm_user"
     else
-        # No checkout user/ to copy: warm a cold cache (the run builds the store from nothing).
-        mkdir -p out/warm_user
+        # No user dir to copy: warm a cold cache (the run builds the store from nothing).
+        mkdir -p "$warm_user"
     fi
 fi
-export BB_USER_DIR=$PWD/out/warm_user
+export BB_USER_DIR=$warm_user
 
 pad=$PWD/out/warm_pad
 : >"$pad"
@@ -85,5 +100,5 @@ kill -0 "$game" 2>/dev/null && kill "$game" 2>/dev/null
 wait "$driver" 2>/dev/null || true
 pad_write ""
 echo "--- the run's own numbers ($log)"
-grep -E '^Warm run:|cached pipelines were preloaded|skipping preload|pad file|pad opened' "$log" | tail -8 || true
+grep -E '^Warm run:|hidden window|cached pipelines were preloaded|skipping preload|pad file|pad opened' "$log" | tail -8 || true
 grep '^Frame stats' "$log" | tail -3 || true
