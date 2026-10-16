@@ -1,3 +1,4 @@
+#include "bbport_region_cache.h"
 #include "bbport_write_log.h"
 #include "bbport_frame_rate.h"
 #include "bbport_game_menu.h"
@@ -119,11 +120,8 @@ namespace {
 // bbport: the mapped region of the last lookup, per thread, valid for the mapping table generation
 // it was read at. The GPU command thread clamps and copies thousands of constant ranges a frame,
 // nearly all within the region of the one before: two calls into the runtime each (~5% of it).
-struct RegionCache {
-    u64 generation = 1; // odd: invalid
-    uintptr_t start = 0, end = 0;
-};
-thread_local RegionCache region_cache;
+thread_local BbMappedRegionCache region_cache; ///< the mapping-extent cache (bbport_region_cache.h)
+
 
 bool CachedMapped(VAddr address, u64 size) {
     static const uint64_t* const generation_ptr = runtime_memory_generation();
@@ -132,7 +130,7 @@ bool CachedMapped(VAddr address, u64 size) {
         return false; // being changed
     }
     auto& cache = region_cache;
-    if (cache.generation == generation && address >= cache.start && address + size <= cache.end) {
+    if (cache.Contains(address, size, generation)) {
         return true;
     }
     uintptr_t start = 0, end = 0;
@@ -140,7 +138,7 @@ bool CachedMapped(VAddr address, u64 size) {
     if (!runtime_memory_region(address, &start, &end, &mapped) || !mapped) {
         return false;
     }
-    cache = {generation, start, end};
+    cache.Remember(start, end, generation);
     return address + size <= end;
 }
 } // namespace
