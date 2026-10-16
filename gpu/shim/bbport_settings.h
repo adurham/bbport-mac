@@ -27,6 +27,12 @@ inline constexpr int PresetOrder[PresetCount] = {NativeAA,     UltraQuality, Qua
 enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugViewCount };
 enum class MenuLanguage { English, Russian };
 
+/// The game window's mode (window.cpp): kept in bbport.ini, changed from the menu live.
+enum WindowMode : int { WindowWindowed = 0, WindowBorderless, WindowFullscreen, WindowModeCount };
+/// The game's frame rate (bbport_frame_rate): the game's own 30, or the port's hooks at 60/90 with
+/// no cap beyond the pacer's safety maximum.
+enum FpsMode : int { Fps30 = 0, Fps60, Fps90, FpsUncapped, FpsModeCount };
+
 /// Game effects switched by the community patches at start (patches.py EFFECTS): ini key,
 /// menu label (Russian, English), default (the game's own behaviour).
 struct Effect {
@@ -120,6 +126,16 @@ struct Values {
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};
+    /// The game window's mode (WindowMode; window.cpp applies it at creation and live). The
+    /// legacy BB_FULLSCREEN=1 asks for fullscreen when the file does not choose a mode.
+    std::atomic<int> window_mode{WindowWindowed};
+    /// The frame rate the port's hooks aim for (FpsMode; bbport_frame_rate.cpp changed live).
+    std::atomic<int> fps_mode{FpsUncapped};
+    /// Rate limit in FPS for the pacer (0: none; FIFO still follows the display's refresh).
+    std::atomic<int> fps_limit{0};
+    /// Apple's Metal performance HUD instead of the port's FPS counter (MTL_HUD_ENABLED for the
+    /// game process, read by Metal before the first device): applies after a restart.
+    std::atomic<bool> metal_hud{false};
     /// FSR 3 frame generation (upscale/vk_frame_generation): a frame interpolated between each
     /// two of the game's, shown between them (needs the upscaler's scaled path). Live.
     std::atomic<bool> frame_generation{false};

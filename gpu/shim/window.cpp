@@ -156,12 +156,18 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
                            !retina || retina[0] != '0');
 #endif
-    const char* fullscreen = std::getenv("BB_FULLSCREEN");
-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen && fullscreen[0] == '1');
+    // The window mode (bbport.ini window_mode / BB_WINDOW_MODE; BB_FULLSCREEN=1 is legacy):
+    // applied at creation and, for changes from the menu, live (SetWindowMode below).
+    const int window_mode = BbSettings::Get().window_mode.load();
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
+                           window_mode == BbSettings::WindowFullscreen);
     base_title = title;
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
+    if (window_mode != BbSettings::WindowWindowed) {
+        SetWindowMode(window_mode); // borderless/fullscreen at start; the menu changes it live
+    }
 
     const char* driver = SDL_GetCurrentVideoDriver();
     const SDL_PropertiesID wp = SDL_GetWindowProperties(window);
@@ -200,6 +206,51 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 
 WindowSDL::~WindowSDL() {
     SDL_DestroyWindow(window);
+}
+
+namespace {
+int applied_window_mode = -1; ///< BbSettings::WindowMode last applied (SetWindowMode)
+SDL_Point saved_windowed_size{0, 0}; ///< windowed size/position to come back to
+SDL_Point saved_windowed_pos{0, 0};
+} // namespace
+
+void WindowSDL::SetWindowMode(int mode) {
+    if (!window || mode == applied_window_mode) {
+        return;
+    }
+    if (applied_window_mode == -1 || applied_window_mode == BbSettings::WindowWindowed) {
+        SDL_GetWindowSize(window, &saved_windowed_size.x, &saved_windowed_size.y);
+        SDL_GetWindowPosition(window, &saved_windowed_pos.x, &saved_windowed_pos.y);
+    }
+    switch (mode) {
+    case BbSettings::WindowBorderless: {
+        SDL_SetWindowFullscreen(window, false);
+        SDL_SetWindowBordered(window, false);
+        const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+        if (const SDL_DisplayMode* display_mode = SDL_GetDesktopDisplayMode(display)) {
+            SDL_SetWindowSize(window, display_mode->w, display_mode->h);
+            SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
+                                  SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+        }
+        break;
+    }
+    case BbSettings::WindowFullscreen:
+        SDL_SetWindowBordered(window, true);
+        SDL_SetWindowFullscreen(window, true);
+        break;
+    case BbSettings::WindowWindowed:
+    default:
+        SDL_SetWindowFullscreen(window, false);
+        SDL_SetWindowBordered(window, true);
+        if (saved_windowed_size.x > 0) {
+            SDL_SetWindowSize(window, saved_windowed_size.x, saved_windowed_size.y);
+            SDL_SetWindowPosition(window, saved_windowed_pos.x, saved_windowed_pos.y);
+        }
+        break;
+    }
+    applied_window_mode = mode;
+    std::printf("Window mode: %s\n", mode == BbSettings::WindowBorderless ? "borderless"
+                                  : mode == BbSettings::WindowFullscreen ? "fullscreen" : "windowed");
 }
 
 void WindowSDL::BeginTextInput(const std::string& initial, const std::string& prompt) {

@@ -18,6 +18,7 @@
 #include "common/types.h"
 #include "bbport_frame_rate.h"
 #include "bbport_guest_code.h"
+#include "bbport_settings.h"
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -311,6 +312,12 @@ u8* MapNear(int prot) {
     }
     return nullptr;
 }
+
+/// The menu's mode (bbport_settings.h's FpsMode) as a SetRate target: 0 asks for uncapped.
+int SettingsTarget(int fps_mode) {
+    return fps_mode == BbSettings::Fps60 ? 60 : fps_mode == BbSettings::Fps90 ? 90
+        : fps_mode == BbSettings::Fps30 ? 30 : 0;
+}
 } // namespace
 
 void PatchImage(unsigned char* image, std::uint64_t) {
@@ -331,14 +338,10 @@ void PatchImage(unsigned char* image, std::uint64_t) {
         return;
     }
     live = new (data) Live{};
-    // The mode's rate and BB_FPS_LIMIT (the launcher's frame rate limit): the game's pacer waits for
-    // it itself, before the frame's simulation (lower latency than holding finished frames back at
-    // the present).
-    int rate = std::clamp(mode, 30, MaxRate);
-    if (const char* limit = std::getenv("BB_FPS_LIMIT"); limit && std::atoi(limit) > 0) {
-        rate = std::min(rate, std::clamp(std::atoi(limit), 30, MaxRate));
-    }
-    live->shortest = 1.0f / float(rate);
+    // The rate from the settings (the menu's mode and limit; bbport.ini, BB_FPS at start): the
+    // game's pacer waits for it itself, before the frame's simulation (lower latency than holding
+    // finished frames back at the present).
+    SetRate(SettingsTarget(BbSettings::Get().fps_mode.load()), BbSettings::Get().fps_limit.load());
     // The core first: without all three the game keeps its own frame rate.
     if (!(HookPacerMode() && HookPacerLate() && HookStep())) {
         std::printf("Frame rate: the game's frame pacer is not the expected code: 30 FPS\n");
@@ -367,5 +370,23 @@ void PatchImage(unsigned char* image, std::uint64_t) {
 
 bool Unlocked() {
     return unlocked.load(std::memory_order_relaxed);
+}
+
+void SetRate(int target_fps, int limit_fps) {
+    if (!live) {
+        return;
+    }
+    int rate = target_fps <= 0 ? MaxRate : std::clamp(target_fps, 30, MaxRate);
+    if (limit_fps > 0) {
+        rate = std::min(rate, std::clamp(limit_fps, 30, MaxRate));
+    }
+    live->shortest = 1.0f / float(rate);
+    char text[64];
+    if (target_fps <= 0) {
+        std::snprintf(text, sizeof(text), "uncapped");
+    } else {
+        std::snprintf(text, sizeof(text), "%d FPS", target_fps);
+    }
+    std::printf("Frame rate: %s%s\n", text, limit_fps > 0 ? " (rate limit applied)" : "");
 }
 } // namespace BbFrameRate

@@ -37,7 +37,9 @@ export BB_PREBUILT=1
 # No online play on the Mac yet (0.51's online module isn't built here): run.sh would otherwise
 # contact the community server with BB_ONLINE=1 and the game still play offline.
 unset BB_ONLINE BB_NET_MODULE
-export BB_FPS=${BB_FPS:-30}
+# The frame rate is the menu's setting now (bbport.ini fps_mode; hooks in the game's code): no
+# forced default here, so a BB_FPS environment value still overrides for one run.
+if [[ -n ${BB_FPS:-} ]]; then export BB_FPS; fi
 # Memory model: 0.6 gives the new one to every GPU (run.sh). On the Mac it is untested (it needs
 # the game's memory imported into the GPU driver), so the 0.3 model stays the default here;
 # BB_PC_MODEL=1 tries the new one.
@@ -62,5 +64,5 @@ exec > >(tee "$log") 2>&1
 version=$(cat .version 2>/dev/null || git log -1 --format='%h' 2>/dev/null || echo unknown)
 # Paths in the log as ~/…, so a log shared in a report doesn't show the account name.
 tilde() { [[ -n ${HOME:-} && $1 == "$HOME"/* ]] && printf '~/%s' "${1#"$HOME"/}" || printf '%s' "$1"; }
-echo "macOS run: $(sw_vers -productVersion), bbport $version, game $(tilde "$BB_GAME_DIR"), fps $BB_FPS, upscaler ${BB_UPSCALER:-from $(tilde "$ini")}"
+echo "macOS run: $(sw_vers -productVersion), bbport $version, game $(tilde "$BB_GAME_DIR"), fps ${BB_FPS:-menu}, upscaler ${BB_UPSCALER:-from $(tilde "$ini")}"
 exec bash run.sh "$@"
