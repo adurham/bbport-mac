@@ -336,9 +336,16 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             Common::SetCurrentThreadName("bb:input");
             SDL_InitSubSystem(SDL_INIT_GAMEPAD);
             for (;;) {
+                // Sleep out the rest of the 4 ms interval: CFRunLoopRunInMode can return
+                // early, and the loop was eating a core busy-spinning (issue-5).
+                const auto started = std::chrono::steady_clock::now();
                 SDL_PumpEvents();
                 SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST); // nobody reads them here
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.004, false);
+                const auto spent = std::chrono::steady_clock::now() - started;
+                if (spent < std::chrono::milliseconds(4)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(4) - spent);
+                }
             }
         });
 #endif
