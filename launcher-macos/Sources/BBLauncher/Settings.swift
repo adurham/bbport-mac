@@ -139,6 +139,9 @@ struct LauncherPrefs: Equatable {
     var language = "1"
     var fullscreen = false
     var hdr = false
+    /// P.T.'s shape: the app opens and the game starts; this window is only for setup and logs.
+    /// Hold Option while opening to keep it, or untick the box by Play.
+    var startOnOpen = true
     var presentMode = "Fifo"
     var fpsMode = Catalog.defaultFPSMode
     var fpsLimit = 0
@@ -182,6 +185,7 @@ struct LauncherPrefs: Equatable {
         static let gameMenu = "gameMenu"
         static let skipNetworkChoice = "skipNetworkChoice"
         static let display = "display"
+        static let startOnOpen = "startOnOpen"
     }
 
     static func load(from defaults: UserDefaults) -> LauncherPrefs {
@@ -198,6 +202,7 @@ struct LauncherPrefs: Equatable {
         p.language = text(Key.language, p.language)
         p.fullscreen = flag(Key.fullscreen, p.fullscreen)
         p.hdr = flag(Key.hdr, p.hdr)
+        p.startOnOpen = flag(Key.startOnOpen, p.startOnOpen)
         p.presentMode = text(Key.presentMode, p.presentMode)
         p.fpsMode = text(Key.fpsMode, p.fpsMode)
         p.fpsLimit = defaults.object(forKey: Key.fpsLimit) as? Int ?? p.fpsLimit
@@ -233,6 +238,7 @@ struct LauncherPrefs: Equatable {
         defaults.set(language, forKey: Key.language)
         defaults.set(fullscreen, forKey: Key.fullscreen)
         defaults.set(hdr, forKey: Key.hdr)
+        defaults.set(startOnOpen, forKey: Key.startOnOpen)
         defaults.set(presentMode, forKey: Key.presentMode)
         defaults.set(fpsMode, forKey: Key.fpsMode)
         defaults.set(fpsLimit, forKey: Key.fpsLimit)
