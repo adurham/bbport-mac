@@ -56,8 +56,10 @@
 #include "remote/bb_remote.h"
 #include "render/presenter.h"
 #include "render/rasterizer.h"
+#include "sdl_window.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
+extern Frontend::WindowSDL* g_window; // bbgpu.cpp: the window, in this process (native mode)
 extern std::unique_ptr<BbCp::CommandProcessor> liverpool;
 
 namespace BbRemote::Back {
@@ -539,6 +541,11 @@ void Handle(const Message& message, auto&& reply) {
         break;
     case MsgSettingsChanged:
         BbSettings::ReloadLive();
+        // The game menu's window-mode row (bbport_game_menu.cpp, in the game process) can only
+        // store the choice; the window lives here, so it is switched here at once.
+        if (g_window) {
+            g_window->SetWindowMode(BbSettings::Get().window_mode);
+        }
         std::printf("GPU process: settings from the game's menu applied\n");
         break;
     case MsgWriteFault:
