@@ -11,19 +11,19 @@ struct BBLauncherApp: App {
     var body: some Scene {
         // No main window: double-clicking the app IS the game (P.T.'s shape). The launcher runs
         // invisibly (an accessory app), starts the game, and leaves when the game does; problems
-        // show as alerts. The Log window stays available for the "Show the Log" alerts.
+        // show as alerts. Settings comes first so no window is ever the "first" one macOS opens
+        // at launch; the Log window appears only when an alert asks for it (see the AppDelegate,
+        // which also closes anything a past session restored).
+        Settings {
+            LauncherSettingsView()
+                .environmentObject(LauncherModel.shared)
+        }
+
         Window("Game Log", id: "log") {
             LogView()
                 .environmentObject(LauncherModel.shared)
         }
         .defaultSize(width: 900, height: 560)
-        .defaultLaunchBehavior(.suppressed) // never at launch: only the alerts ask for it
-        .restorationBehavior(.disabled)     // and never restored from a past session
-
-        Settings {
-            LauncherSettingsView()
-                .environmentObject(LauncherModel.shared)
-        }
     }
 }
 
@@ -34,6 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // app IS the game; it starts it and leaves when the game does. A problem shows an alert.
         NSApplication.shared.setActivationPolicy(.accessory)
         DispatchQueue.main.async {
+            // Anything a past session restored (the log window) is not welcome: drop it here.
+            for window in NSApplication.shared.windows {
+                window.isRestorable = false
+                window.close()
+            }
             let model = LauncherModel.shared
             model.play()
             if !model.isRunning {
