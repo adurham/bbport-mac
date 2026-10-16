@@ -30,7 +30,17 @@
 #include "memory/fault_sites.h"
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
-#include "remote/bb_remote.h"
+#if __has_include("remote/bb_remote.h")
+#include "remote/bb_remote.h" // the native line: whether this process is bb-gpu (Back)
+#else
+// The main (in-process) line has no bb-gpu process: the frame-stats extras print without it.
+namespace BbRemote {
+inline bool BackActive() { return false; }
+namespace Back {
+inline void GameStats(double, double) {}
+} // namespace Back
+} // namespace BbRemote
+#endif
 
 extern "C" void runtime_sleep_stats(uint64_t* calls, uint64_t* ns);
 extern "C" void runtime_wait_report(double frames);
