@@ -17,6 +17,8 @@ struct BBLauncherApp: App {
                 .environmentObject(LauncherModel.shared)
         }
         .defaultSize(width: 900, height: 560)
+        .defaultLaunchBehavior(.suppressed) // never at launch: only the alerts ask for it
+        .restorationBehavior(.disabled)     // and never restored from a past session
 
         Settings {
             LauncherSettingsView()
