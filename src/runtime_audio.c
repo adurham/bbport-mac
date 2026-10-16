@@ -35,6 +35,8 @@
 typedef struct {
     int used, type, channels, is_float, frames, sample_bytes, std_layout;
     int32_t volume[8];
+    int32_t vol_min, vol_max;       /* range of the volumes the game set */
+    unsigned vol_calls;
     SDL_AudioStream *stream;
     uint64_t next_deadline_ns; /* next return of sceAudioOutOutput */
     int64_t adjust_ns; int window_min, window_count; /* queue level control */
@@ -139,6 +141,7 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     p->used=1; p->type=type; p->channels=channels[format]; p->is_float=format>=3 && format!=6;
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
     for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
+    p->vol_min=p->vol_max=VOLUME_0DB;
     // A warm run (BB_WARM_ONLY) boots the game hidden to compile its pipelines: no output
     // device — the ports below keep the timer sink (writes are paced and dropped), so the
     // warm-up runs silently instead of playing the game out of an invisible window.
@@ -220,9 +223,9 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 if (queued==0) ++p->stat_starved;
             }
             if (now-p->stat_start_ns>=5000000000u) {
-                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u%s%s\n",
+                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u, volume %d..%d of %d%s%s\n",
                        (int)(p-ports),p->stat_buffers,(unsigned)(5u*48000u/(unsigned)p->frames),p->stat_max_gap_ns/1e6,
-                       p->stat_min_queued,p->stat_starved,
+                       p->stat_min_queued,p->stat_starved,p->vol_min,p->vol_max,VOLUME_0DB,
                        p->stream ? ", stream " : " (timer sink)",
                        p->stream ? (SDL_AudioDevicePaused(SDL_GetAudioStreamDevice(p->stream)) ? "PAUSED" : "running") : "");
                 p->stat_start_ns=now; p->stat_max_gap_ns=0; p->stat_starved=0; p->stat_buffers=0; p->stat_min_queued=1<<30;
@@ -287,6 +290,17 @@ static ABI int32_t audio_volume(int32_t handle, int32_t flags, const int32_t *vo
     for (int c=0;c<8;++c) if (flags & (1<<c)) {
         if (volume[c]<0 || volume[c]>VOLUME_0DB) { pthread_mutex_unlock(&p->lock); return ERR_INVALID_VOLUME; }
         p->volume[c]=volume[c];
+    }
+    /* The game's port volume is the last multiplier before the sink (VOLUME_0DB is unity):
+     * a quiet game with healthy buffers and a live device is explained here or nowhere. */
+    if (p->vol_calls++ < 4) {
+        printf("Runtime: audio port %d volume call %u, flags 0x%x:",(int)(p-ports),p->vol_calls,(unsigned)flags);
+        for (int c=0;c<8;++c) if (flags & (1<<c)) printf(" ch%d=%d",c,volume[c]);
+        printf(" (unity %d)\n",VOLUME_0DB);
+    }
+    for (int c=0;c<8;++c) {
+        if (p->volume[c]<p->vol_min) p->vol_min=p->volume[c];
+        if (p->volume[c]>p->vol_max) p->vol_max=p->volume[c];
     }
     pthread_mutex_unlock(&p->lock);
     return 0;
