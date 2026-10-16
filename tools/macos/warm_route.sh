@@ -40,19 +40,22 @@ export BB_USER_DIR=$PWD/out/warm_user
 
 pad=$PWD/out/warm_pad
 : >"$pad"
+export BB_PAD_FILE=$pad
 log=$PWD/out/last-run.log
 pad_write() { printf '%s\n' "$1" >"$pad"; }   # the file holds the state, not a sequence
 
 title_wait=${TITLE_WAIT:-45}
 load_wait=${LOAD_WAIT:-75}
 # The walk: forward, a turn, forward, a turn the other way. ly=0 is forward and ly=255 back (the
-# sticks run 0..255 with 128 at rest), rx is the look.
-default_route='ly=0 rx=128:4 ly=0 rx=40:0.5 ly=0 rx=128:4 ly=0 rx=215:0.5 ly=255 rx=160:3'
+# sticks run 0..255 with 128 at rest), rx is the look. An entry is "<pad file contents>:<seconds>",
+# the comma standing in for the space the pad file wants between tokens.
+default_route='ly=0,rx=128:4 ly=0,rx=40:0.5 ly=0,rx=128:4 ly=0,rx=215:0.5 ly=255,rx=160:3'
 route=${ROUTE:-$default_route}
 echo "warm route: ${secs}s; title at ${title_wait}s, cross, load ${load_wait}s, then loop: $route"
 
 BB_FRAME_STATS=${BB_FRAME_STATS:-1} BB_WARM_QUIET=${BB_WARM_QUIET:-0} \
-    setsid bash tools/macos/run.sh >/dev/null 2>&1 </dev/null &
+    BB_WARM_SECONDS=${BB_WARM_SECONDS:-$secs} \
+    bash tools/macos/run.sh >/dev/null 2>&1 </dev/null &
 game=$!
 
 sleep "$title_wait"
@@ -64,7 +67,8 @@ pad_write cross; sleep 0.4; pad_write ""
     while ((SECONDS < deadline)); do
         for entry in $route; do
             ((SECONDS < deadline)) || break
-            pad_write "${entry%:*}"
+            state=${entry%:*}
+            pad_write "${state//,/ }"
             sleep "${entry##*:}"
         done
     done
