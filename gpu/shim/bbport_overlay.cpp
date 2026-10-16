@@ -1297,8 +1297,10 @@ bool MenuOpen() {
 
 bool CapturesInput() {
     // The text dialog too: keys typed into it (Backspace is the touchpad) stay out of the game.
-    // A pending confirmation too: Enter and Escape are its answers.
-    return menu_open || prompt_active || BbConfirm::Active();
+    // A pending confirmation too: Enter and Escape are its answers, and the pad's Cross and Circle.
+    // And while the pad press that answered one is still held (BbConfirm::PadConsumed): the game
+    // gets its input back when the button is let go, so the answer is not a press in the game too.
+    return menu_open || prompt_active || BbConfirm::Active() || BbConfirm::PadConsumed();
 }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
@@ -1391,8 +1393,8 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (BbConfirm::Active()) {
         // A change asked first (BbConfirm): say what it would switch to, and take the answer.
-        // Enter (the window loop reads it) or the button applies it; Escape or the timeout keeps
-        // the current setting. The dimming says the game is waiting for the answer.
+        // Enter or Cross (the window loop reads them) applies it; Escape or Circle keeps the current
+        // setting. The dimming says the game is waiting for the answer.
         BbConfirm::Kind kind{};
         int value = 0;
         if (BbConfirm::Pending(kind, value)) {
@@ -1424,12 +1426,12 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
             bool answered = false;
             ImGui::TextUnformatted(question);
             ImGui::Spacing();
-            if (ImGui::Button(BbSettings::MenuText("Switch (Enter)", "Переключить (Enter)"))) {
+            if (ImGui::Button(BbSettings::MenuText("Switch (Enter / Cross)", "Переключить (Enter / Крест)"))) {
                 answer = true;
                 answered = true;
             }
             ImGui::SameLine();
-            if (ImGui::Button(BbSettings::MenuText("Keep current (Esc)", "Оставить текущее (Esc)"))) {
+            if (ImGui::Button(BbSettings::MenuText("Keep current (Esc / Circle)", "Оставить текущее (Esc / Круг)"))) {
                 answered = true;
             }
             ImGui::TextDisabled(BbSettings::MenuText("Keeping the current one in %d s",
