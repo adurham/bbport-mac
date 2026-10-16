@@ -45,6 +45,14 @@ if [[ -n ${BB_FPS:-} ]]; then export BB_FPS; fi
 # BB_PC_MODEL=1 tries the new one.
 export BB_PC_MODEL=${BB_PC_MODEL:-0}
 mkdir -p "$data/out"
+# tools/macos/capture_condition.sh asks for the bug-report capture (Ctrl+Shift+C's path) by
+# creating this file. (BB_CAPTURE_TRIGGER is the frame analyzer's, render/vk_frame_capture.cpp.)
+export BB_BUGREPORT_TRIGGER=${BB_BUGREPORT_TRIGGER:-$(cd -- "$data" && pwd)/out/bugreport_trigger}
+rm -f "$BB_BUGREPORT_TRIGGER"
+# Present mode for one run (docs/macos-title-artifact.md): BB_VSYNC=1|0 or
+# BB_PRESENT_MODE=fifo|immediate, else bbport.ini present_mode / vsync.
+if [[ -n ${BB_VSYNC:-} ]]; then export BB_VSYNC; fi
+if [[ -n ${BB_PRESENT_MODE:-} ]]; then export BB_PRESENT_MODE; fi
 # FPS counter on by default, as the Linux launcher does; the overlay menu (F1, ` or §) toggles
 # it and saves the choice.
 ini=${BB_CONFIG:-$data/bbport.ini}
@@ -56,6 +64,11 @@ grep -q '^upscaler=' "$ini" 2>/dev/null || echo "upscaler=off" >> "$ini"
 # Character motion vectors, as the Linux launcher defaults: without them temporal upscalers
 # (FSR 3.1, MetalFX, TAA) smear animated characters. BB_OBJECT_MOTION=0 turns them off.
 grep -q '^object_motion=' "$ini" 2>/dev/null || echo "object_motion=1" >> "$ini"
+# Fullscreen: fill (the default) renders the chosen resolution and scales it to the whole screen,
+# the display keeps its own mode (a resolution change never blanks it); exclusive puts the display
+# itself on the output's resolution (1:1 where the panel has it, a mode switch elsewhere).
+# The F1 menu's Window section, or BB_FULLSCREEN_MODE=fill|exclusive for one run.
+grep -q '^fullscreen_mode=' "$ini" 2>/dev/null || echo "fullscreen_mode=exclusive" >> "$ini"
 # Keep a copy of everything the port prints for diagnosis.
 # Keep the previous run's log: a quick relaunch would otherwise overwrite the one to report.
 log=$data/out/last-run.log

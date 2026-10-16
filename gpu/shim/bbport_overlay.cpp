@@ -737,9 +737,11 @@ void Menu() {
                           aspect_label(aspect).c_str())) {
         for (int a = 0; a < BbSettings::AspectCount; ++a) {
             if (ImGui::Selectable(aspect_label(a).c_str(), a == aspect)) {
-                Store(s.output_res, BbSettings::PackSize(BbSettings::NearestOutput(a, BbSettings::CurrentOutput())),
-                      true);
-                Store(s.aspect, a, true);
+                // One direction: the chosen aspect ratio's list holds the output resolution, and
+                // the height is kept (BbSettings::SetAspect — the game's Display page does the
+                // same). The Resolution row below is that list.
+                BbSettings::SetAspect(a);
+                dirty = true;
             }
         }
         ImGui::EndCombo();
@@ -759,21 +761,31 @@ void Menu() {
     if (BbSettings::FixedRenderSession()) {
         Hint(BbSettings::MenuText(
             "Size of the final frame and UI. The preset sets the scene size relative to "
-            "the output: 4K Performance = 1920x1080. Another aspect ratio widens the view (the "
-            "UI keeps to the screen edges). Applies after restarting the game.",
+            "the output: 4K Performance = 1920x1080. The list follows the aspect ratio; at the "
+            "display's own size the picture and the UI are pixel-for-pixel and sharpest. Another "
+            "aspect ratio widens the view (the UI keeps to the screen edges). Applies after "
+            "restarting the game.",
             "Размер готового кадра и интерфейса. Пресет задаёт размер сцены относительно "
-            "вывода: 4K Performance = 1920x1080. Другое соотношение сторон расширяет обзор "
-            "(интерфейс у краёв экрана). Применяется после перезапуска игры."));
+            "вывода: 4K Performance = 1920x1080. Список следует за соотношением сторон; на "
+            "собственном размере дисплея картинка и интерфейс пиксель в пиксель — всего чётче. "
+            "Другое соотношение сторон расширяет обзор (интерфейс у краёв экрана). Применяется "
+            "после перезапуска игры."));
     } else {
         Hint(BbSettings::MenuText(
-            "The final frame and UI size changes at the next frame boundary. "
-            "The preset sets the scene size relative to the output: 4K Performance = 1920x1080. "
-            "Another aspect ratio widens the view (the UI keeps to the screen edges). "
-            "Changing the size resets the upscaler's history and may cause a brief pause.",
-            "Размер готового кадра и интерфейса меняется на границе следующего кадра. "
-            "Пресет задаёт размер сцены относительно вывода: 4K Performance = 1920x1080. "
-            "Другое соотношение сторон расширяет обзор (интерфейс у краёв экрана). "
-            "Смена размера сбрасывает историю апскейлера и может вызвать короткую паузу."));
+            "The final frame and UI size changes at the next frame boundary. The preset sets the "
+            "scene size relative to the output: 4K Performance = 1920x1080. The list follows the "
+            "aspect ratio (another one keeps the height); at the display's own size the picture "
+            "and the UI are pixel-for-pixel and sharpest, and a smaller one is rendered and scaled "
+            "up to fill the screen. Another aspect ratio widens the view (the UI keeps to the "
+            "screen edges). Changing the size resets the upscaler's history and may cause a brief "
+            "pause.",
+            "Размер готового кадра и интерфейса меняется на границе следующего кадра. Пресет "
+            "задаёт размер сцены относительно вывода: 4K Performance = 1920x1080. Список следует "
+            "за соотношением сторон (другое сохраняет высоту); на собственном размере дисплея "
+            "картинка и интерфейс пиксель в пиксель — всего чётче, а меньший размер рисуется и "
+            "растягивается на весь экран. Другое соотношение сторон расширяет обзор (интерфейс у "
+            "краёв экрана). Смена размера сбрасывает историю апскейлера и может вызвать "
+            "короткую паузу."));
     }
     const char* live_modes[] = {BbSettings::MenuText("Auto (based on GPU)", "Авто (по видеокарте)"),
                                 BbSettings::MenuText("Off (faster)", "Выключена (быстрее)"),
@@ -829,6 +841,38 @@ void Menu() {
             "the game. Switch back from this menu (F1).",
             "Без рамки — окно во весь экран без заголовка; во весь экран — игра занимает дисплей. "
             "Вернуться можно из этого же меню (F1)."));
+        // How fullscreen reaches the display (window.cpp, bbport.ini fullscreen_mode): fill — the
+        // default — renders the output and scales it into a window on the display's own mode; the
+        // exclusive semantics puts the display itself on the output's mode.
+        static const char* fullscreen_modes[] = {
+            BbSettings::MenuText("Fill the screen (render and scale)",
+                                 "Заполнять экран (рендер и масштаб)"),
+            BbSettings::MenuText("Switch the display mode", "Переключать режим дисплея")};
+        const int fullscreen_mode = std::clamp(int(s.fullscreen_mode), 0, BbSettings::FullscreenModeCount - 1);
+        if (ImGui::BeginCombo(BbSettings::MenuText("Fullscreen", "Во весь экран"),
+                              fullscreen_modes[fullscreen_mode])) {
+            for (int i = 0; i < BbSettings::FullscreenModeCount; ++i) {
+                if (ImGui::Selectable(fullscreen_modes[i], i == fullscreen_mode)) {
+                    Store(s.fullscreen_mode, i, true);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        Hint(BbSettings::MenuText(
+            "Fill (opt-in): the game is drawn at the chosen resolution and scaled up to the "
+            "whole screen; the display keeps the mode it is on, so changing the resolution never "
+            "blanks the screen and Direct keeps working. Text and UI are sharpest when the "
+            "resolution is the display's own size. Switch the display mode: the display itself is "
+            "put on the chosen resolution — pixel-for-pixel where the panel has it, and for other "
+            "sizes the screen goes black for a moment, the panel's own scaler stretches the "
+            "picture and Direct has to be set up again.",
+            "Заполнять (опция): кадр рисуется в выбранном разрешении и растягивается на "
+            "весь экран; дисплей остаётся в своём режиме, поэтому смена разрешения не гасит "
+            "экран и Direct продолжает работать. Текст и интерфейс всего чётче, когда "
+            "разрешение совпадает с собственным разрешением дисплея. Переключать режим "
+            "дисплея: дисплей переходит в выбранное разрешение — пиксель в пиксель там, где "
+            "панель его имеет, а для остальных размеров экран на мгновение гаснет, картинку "
+            "растягивает собственный скалер панели и Direct приходится настраивать заново."));
     }
     // Frame rate (bbport_frame_rate.cpp): the port's own hooks; changed live.
     ImGui::SeparatorText(BbSettings::MenuText("Frame rate", "Частота кадров"));

@@ -29,6 +29,15 @@ enum class MenuLanguage { English, Russian };
 
 /// The game window's mode (window.cpp): kept in bbport.ini, changed from the menu live.
 enum WindowMode : int { WindowWindowed = 0, WindowBorderless, WindowFullscreen, WindowModeCount };
+/// How fullscreen is done (window.cpp); bbport.ini fullscreen_mode, BB_FULLSCREEN_MODE overrides.
+/// Fill: the output resolution is rendered and scaled into a window on the display's own native
+/// mode — one blit, always the whole panel, and the display mode never moves (Direct stays put).
+/// Exclusive: the display itself is put on the output's mode — 1:1 pixels when the panel has that
+/// size, and for every other one a mode switch: flashes, the panel's scaler and a Direct
+/// renegotiation. The reference ports (P.T.) do the latter; Fill is the default here.
+enum FullscreenMode : int { FullscreenFill = 0, FullscreenExclusive, FullscreenModeCount };
+/// bbport.ini value ("fill", "exclusive").
+const char* FullscreenModeKey(int mode);
 /// The game's frame rate (bbport_frame_rate): the game's own 30, or the port's hooks at 60/90 with
 /// no cap beyond the pacer's safety maximum.
 enum FpsMode : int { Fps30 = 0, Fps60, Fps90, FpsUncapped, FpsModeCount };
@@ -83,16 +92,27 @@ const char* AspectKey(int aspect);
 /// The monitor the game's window is on (window.cpp): Auto follows it. 0x0 until known.
 void SetMonitor(int width, int height);
 OutputSize Monitor();
-/// Auto resolved to the group nearest the monitor's aspect ratio (16:9 until it is known).
+/// Auto resolved to the group nearest the monitor's aspect ratio (16:9 until it is known; the
+/// game process has no window and never learns it, so there the output in effect stands in for it
+/// — both menus then list the same sizes). 16:9 with neither.
 int ResolvedAspect(int aspect);
 /// The output resolutions of an aspect ratio (Auto: the monitor's group and its own size).
 OutputList Outputs(int aspect);
 /// The output of `aspect` nearest `size` in height: another aspect ratio keeps the height.
 OutputSize NearestOutput(int aspect, OutputSize size);
+/// The aspect ratio drives the output, never the other way round: the chosen aspect ratio's list
+/// holds the output, keeping its height (NearestOutput). The F1 overlay's Aspect row and the game's
+/// Display page both change the pair through this.
+void SetAspect(int aspect);
 /// The output in use: the chosen resolution in the chosen aspect ratio.
 OutputSize CurrentOutput();
 /// "2560x1080".
 std::string SizeText(OutputSize size);
+
+/// bbport.ini present_mode (Values::present_mode).
+enum PresentModeChoice : int { PresentModeUnset = -1, PresentFifo = 0, PresentImmediate = 1, PresentMailbox = 2 };
+/// "fifo", "immediate", "mailbox" or "unset".
+const char* PresentModeName(int mode);
 
 struct Values {
     std::atomic<MenuLanguage> menu_language{MenuLanguage::Russian};
@@ -132,6 +152,11 @@ struct Values {
     /// opaque 0/1; colorspace 0 nil (no colour matching), 1 sRGB, 2 the display's own.
     std::atomic<int> layer_opaque{-1};
     std::atomic<int> layer_colorspace{-1};
+    /// The swapchain's present mode (vulkan/swapchain.cpp), bbport.ini present_mode =
+    /// fifo | immediate | mailbox, or vsync = 1 | 0; BB_PRESENT_MODE / BB_VSYNC override for one
+    /// run. -1: unset (the video core's default, Mailbox, which KosmicKrisp lacks: Fifo). On the
+    /// Mac Fifo is CAMetalLayer displaySyncEnabled=YES, Immediate is NO (tears under Direct).
+    std::atomic<int> present_mode{PresentModeUnset};
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};
@@ -142,6 +167,10 @@ struct Values {
     /// The game window's mode (WindowMode; window.cpp applies it at creation and live). The
     /// legacy BB_FULLSCREEN=1 asks for fullscreen when the file does not choose a mode.
     std::atomic<int> window_mode{WindowWindowed};
+    /// How fullscreen puts the picture on the display (FullscreenMode; window.cpp). Fill — the
+    /// default — renders the chosen output and scales it into a window on the display's native
+    /// mode; Exclusive switches the display mode itself.
+    std::atomic<int> fullscreen_mode{FullscreenExclusive};
     /// Whether a resolution change that lands on the display's native 1x mode applies without the
     /// confirmation modal (bbport_confirm.cpp, BB_CONFIRM_NATIVE): the reference ports show no
     /// dialog for the native size at all, and it is the size most changes pick. Off: ask for
@@ -183,6 +212,21 @@ struct Values {
 };
 
 Values& Get();
+/// window.cpp: whether fullscreen renders the chosen output and scales it into a window on the
+/// display's own native mode (the default) instead of putting the display on the output's mode.
+/// True while no window has read the setting at all (the default is Fill).
+inline bool FullscreenFills() {
+    return Get().fullscreen_mode.load(std::memory_order_relaxed) != FullscreenExclusive;
+}
+/// bbport_confirm.cpp: whether a resolution change can move the display mode at all — only where
+/// fullscreen puts the display itself on the output's mode. Everywhere else the display keeps its
+/// own mode, so there is nothing to ask about (the reference ports' question is about the display
+/// switching under the player, not about the frame's size).
+inline bool ResolutionMovesDisplayMode() {
+    const auto& v = Get();
+    return v.window_mode.load(std::memory_order_relaxed) == WindowFullscreen &&
+           v.fullscreen_mode.load(std::memory_order_relaxed) == FullscreenExclusive;
+}
 /// Localized overlay text; the Language selector itself stays in English.
 const char* MenuText(const char* english, const char* russian);
 
