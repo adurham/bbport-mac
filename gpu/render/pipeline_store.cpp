@@ -393,8 +393,13 @@ void PipelineCache::WarmUp() {
     }
     LOG_INFO(Render, "Preloaded {} pipelines", num_pipelines);
     if (num_total > num_pipelines) {
-        LOG_WARNING(Render, "{} stale pipelines were found. Consider re-generating the cache",
-                    num_total - num_pipelines);
+        // Entries that do not load are kept: they cost nothing at start beyond this pass, and one
+        // of them may load in a later preload order (a permutation index that conflicts here may
+        // not conflict there). Rebuilding the cache is what drops them.
+        LOG_WARNING(Render,
+                    "{} of {} cached pipelines were preloaded; {} stale entries are kept in the "
+                    "cache. Consider re-generating the cache",
+                    num_pipelines, num_total, num_total - num_pipelines);
     }
     Store().FinishPreload();
 }
