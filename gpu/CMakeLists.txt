@@ -197,11 +197,12 @@ add_dependencies(bbgpu host_shaders)
 # bbport: MetalFX temporal upscaler, Metal side (Objective-C++ with ARC). MetalFX.framework is
 # opened at run time (dlopen), so a missing x86-64 slice cannot break the link or the start.
 if (APPLE)
-    target_sources(bbgpu PRIVATE shim/bbport_metalfx.mm shim/bbport_appnap.mm shim/bbport_layer.mm)
+    target_sources(bbgpu PRIVATE shim/bbport_metalfx.mm shim/bbport_appnap.mm shim/bbport_layer.mm shim/bbport_capture.mm)
     set_source_files_properties(shim/bbport_metalfx.mm shim/bbport_layer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(bbgpu PRIVATE "-framework Metal" "-framework Foundation"
                                         "-framework CoreFoundation" "-framework AppKit"
-                                        "-framework QuartzCore" "-framework CoreGraphics")
+                                        "-framework QuartzCore" "-framework CoreGraphics"
+                                        "-framework ImageIO")
 endif()
 # In-game settings menu: Dear ImGui (third_party/imgui, MIT) with its Vulkan backend, and an
 # embedded Cyrillic font (third_party/fonts).
@@ -218,9 +219,10 @@ set_source_files_properties(third_party/imgui/imgui.cpp third_party/imgui/imgui_
     third_party/imgui/backends/imgui_impl_vulkan.cpp PROPERTIES
     COMPILE_OPTIONS "-fvisibility=hidden;-fvisibility-inlines-hidden")
 target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
-    BB_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf")
+    BB_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf"
+    BB_SERIF_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/EBGaramond.ttf")
 set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf")
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf;${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/EBGaramond.ttf")
 target_include_directories(bbgpu PRIVATE . shim layer games cp ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include ${XBYAK_INCLUDE_DIR})
 if (WIN32)
     target_include_directories(bbgpu PUBLIC platform/win32/include)

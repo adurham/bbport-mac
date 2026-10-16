@@ -11,6 +11,11 @@
 // gamepad Cross (the southern face button) applies and Circle (the eastern one) keeps — the pad's
 // buttons do not move while a question is up, and the press that answered it is not also a press in
 // the game (PadHeld, PadEvent, PadConsumed).
+//
+// A resolution that lands on the display's own native 1x mode is not asked about at all: the
+// reference ports apply it without a word, so Request puts it in the settings and logs it, and
+// nothing of the modal is involved. window.cpp decides (the display mode is derived from the
+// output resolution there) and confirm_native_mode / BB_CONFIRM_NATIVE turns the shortcut off.
 namespace BbConfirm {
 
 enum class Kind {

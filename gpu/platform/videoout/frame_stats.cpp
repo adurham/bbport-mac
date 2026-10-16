@@ -126,6 +126,25 @@ static void PrintMemory() {
                 (unsigned long long)BbStats::gc_kept_images.exchange(0));
 }
 
+/// bbport: the frame log (BB_FRAME_LOG), opened once. One stream for the log and for the capture
+/// hotkey's marker: the log's own file offset advances with its writes, so a second stream's
+/// marker (written at the end of the file) would be written over by the log's next flush.
+static FILE* OpenFrameLog() {
+    static FILE* const log = [] () -> FILE* {
+        const char* path = std::getenv("BB_FRAME_LOG");
+        FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
+        if (file) {
+            std::fprintf(file, "t_s,frame_ms,present_wait_ms,tick_wait_ms,stage_a_cpu_ms,"
+                               "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
+                               "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
+                               "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
+                               "free_mb\n");
+        }
+        return file;
+    }();
+    return log;
+}
+
 void OnFlipStats() {
     using Clock = std::chrono::steady_clock;
     static Clock::time_point window_start = Clock::now(), last = window_start;
@@ -253,18 +272,7 @@ void OnFlipStats() {
     }
     // bbport: BB_FRAME_LOG=path (with BB_FRAME_STATS): one line per flip, to find what the
     // long frames (stutter) have in common.
-    static FILE* const frame_log = [] () -> FILE* {
-        const char* path = std::getenv("BB_FRAME_LOG");
-        FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
-        if (file) {
-            std::fprintf(file, "t_s,frame_ms,present_wait_ms,tick_wait_ms,stage_a_cpu_ms,"
-                               "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
-                               "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
-                               "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
-                               "free_mb\n");
-        }
-        return file;
-    }();
+    static FILE* const frame_log = OpenFrameLog();
     if (frame_log) {
         static const auto log_start = now;
         static u64 log_twf, log_tick, log_present, log_compiles, log_rf, log_preupload;
@@ -490,6 +498,16 @@ void OnFlipStats() {
         window_start = now;
         frames = 0;
         worst_ms = 0;
+    }
+}
+
+/// The capture hotkey's marker in the frame log (window.cpp, Ctrl+Shift+C). Written through the
+/// log's own stream, so the log's next flush keeps the marker where it is; a "#" line is not a
+/// data row, so a reader that expects one line per flip skips it (grep -v '^#').
+extern "C" void bb_frame_log_marker(const char* text) {
+    if (FILE* log = OpenFrameLog(); log && text) {
+        std::fprintf(log, "# CAPTURE %s\n", text);
+        std::fflush(log); // the marker is there even if the session dies right after
     }
 }
 
