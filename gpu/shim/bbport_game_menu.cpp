@@ -18,6 +18,11 @@
 
 #include "bbport_settings.h"
 #include "bbport_frame_rate.h"
+#include "sdl_window.h"
+
+// bbgpu.cpp: the game window (the Display page's window-mode row applies it at once where the
+// window lives in this process; see Poll).
+extern Frontend::WindowSDL* g_window;
 
 namespace BbGameMenu {
 namespace {
@@ -172,7 +177,7 @@ const char16_t* TextOf(u32 id) {
 
 // ---- The port's values the game's rows edit (ints: the list rows bind ints). ----
 enum Field : int {
-    Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod, FrameRate, FirstEffect,
+    Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod, WindowMode, FrameRate, FirstEffect,
     FieldCount = FirstEffect + BbSettings::EffectCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
@@ -234,6 +239,8 @@ void Fill(const BbSettings::Values& s, int* values) {
     }
     // The frame rate row: FpsMode's order is the row's (30, 60, 90, uncapped).
     values[FrameRate] = s.fps_mode;
+    // The window mode row: WindowMode's order is the row's (windowed, borderless, fullscreen).
+    values[WindowMode] = s.window_mode;
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
     }
@@ -323,11 +330,19 @@ void DefineTexts() {
          AddText("Quality", "Quality"), AddText("Balanced", "Balanced"),
          AddText("Performance", "Performance"), AddText("Ultra Performance", "Ultra Performance")},
         Kind::Select);
-    row(Sharpness, "Sharpness", "Резкость", "RCAS after the upscaler: 0 off, 10 strongest",
-        "RCAS после апскейлера: 0 выкл, 10 сильнее всего", {}, Kind::Slider);
-    // Frame rate: the port's hooks, changed live (bbport_frame_rate.cpp). This row takes the
-    // Display page's sixth slot; "Model detail" moved to the Effects page (the layout has six
-    // rows per page).
+    // Window mode: applied at once where the window lives in this process (the in-process
+    // renderer); with the native GPU process it applies on the next launch.
+    row(WindowMode, "Window mode", "Режим окна",
+        "Windowed keeps the desktop; borderless fills it without a title bar; fullscreen gives "
+        "it to the game (the overlay, F1, can switch back)",
+        "В окне — обычное окно; без рамки — во весь экран без заголовка; во весь экран — игра "
+        "занимает дисплей (вернуться можно через меню F1)",
+        {AddText("Windowed", "В окне"), AddText("Borderless", "Без рамки"),
+         AddText("Fullscreen", "Во весь экран")},
+        Kind::Select);
+    // Frame rate: the port's hooks, changed live (bbport_frame_rate.cpp). The Display page's
+    // sixth slot comes from moving "Sharpness" and "Model detail" to the Effects page (the
+    // layout has six rows per page).
     row(FrameRate, "Frame rate", "Частота кадров",
         "30 is the game's own; 60, 90 and Uncapped use the port's frame hooks (applies at once)",
         "30 — как в игре; 60, 90 и Без ограничения — хуки порта (применяется сразу)",
@@ -342,6 +357,8 @@ void DefineTexts() {
         {AddText("Highest", "Максимальная"), AddText("Game default", "Как в игре"),
          AddText("Lower", "Ниже"), AddText("Lowest", "Минимальная")},
         Kind::Select);
+    row(Sharpness, "Sharpness", "Резкость", "RCAS after the upscaler: 0 off, 10 strongest",
+        "RCAS после апскейлера: 0 выкл, 10 сильнее всего", {}, Kind::Slider);
 
     // Short names for the game's narrow name column (BbSettings::Effects order); the help line
     // has the details.
@@ -826,6 +843,14 @@ void Poll() {
         s.sharpness = std::clamp(now_values[Sharpness], 0, SharpnessSteps - 1) * SharpnessStep;
     }
     s.model_lod = LodValues[std::clamp(now_values[ModelLod], 0, 3)];
+    // The window mode row: applied at once where the window lives in this process (the
+    // in-process renderer); with the native GPU process the choice applies on the next launch.
+    if (now_values[WindowMode] != applied[WindowMode]) {
+        s.window_mode = now_values[WindowMode];
+        if (g_window) {
+            g_window->SetWindowMode(now_values[WindowMode]);
+        }
+    }
     // The frame rate row: the pacer's target, applied at once (bbport_frame_rate.cpp).
     if (now_values[FrameRate] != applied[FrameRate]) {
         s.fps_mode = now_values[FrameRate];
