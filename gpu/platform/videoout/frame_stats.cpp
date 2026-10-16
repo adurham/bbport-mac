@@ -38,6 +38,8 @@ extern "C" void runtime_wait_report(double frames);
 namespace Vulkan {
 extern std::atomic<u64> g_bb_compile_ns;
 extern std::atomic<u32> g_bb_compiles;
+extern std::atomic<u64> g_bb_compile_port_ns;
+extern std::atomic<u64> g_bb_compile_driver_ns;
 } // namespace Vulkan
 
 namespace BbVideoOut {
@@ -326,6 +328,8 @@ void OnFlipStats() {
     if (window >= 5.0) {
         const u32 compiles = Vulkan::g_bb_compiles.exchange(0);
         const u64 compile_ns = Vulkan::g_bb_compile_ns.exchange(0);
+        const u64 compile_port_ns = Vulkan::g_bb_compile_port_ns.exchange(0);
+        const u64 compile_driver_ns = Vulkan::g_bb_compile_driver_ns.exchange(0);
         const u64 direct = Vulkan::Scheduler::direct_recordings.exchange(0);
         const u64 faults = BbStats::tracker_faults.exchange(0);
         // GPU command thread CPU time per draw: comparable between builds even when the scene
@@ -340,13 +344,15 @@ void OnFlipStats() {
         window_draws = all_draws;
         window_gpu_us = gpu_us;
         std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
-                    "%u shader/pipeline compiles, %.1f ms; %llu recorder syncs; "
+                    "%u shader/pipeline compiles, %.1f ms (%.1f translating, %.1f in the driver); "
+                    "%llu recorder syncs; "
                     "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
                     "%.0f draws/frame, idle %.1f%%; blocked: recorder %.1f%%, host copies "
                     "%.1f%% (%.0f/frame, %.0f/frame not needed), copy threads %.1f%%, GPU ticks %.1f%%; "
                     "reduced-size draws %.0f/frame of %.0f in the scene\n",
                     frames / window, worst_ms, EmulatorSettings.GetVblankFrequency(), compiles,
-                    compile_ns / 1e6, static_cast<unsigned long long>(direct),
+                    compile_ns / 1e6, compile_port_ns / 1e6, compile_driver_ns / 1e6,
+                    static_cast<unsigned long long>(direct),
                     faults / window, static_cast<long long>(BbStats::hot_pages.load()),
                     us_per_draw, draws_per_frame,
                     BbStats::gpu_idle_ns.exchange(0) / (window * 1e7),

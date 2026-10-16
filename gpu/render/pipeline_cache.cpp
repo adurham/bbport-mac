@@ -49,6 +49,13 @@ using Shader::SwStage;
 // Shader/pipeline compile time on the GPU thread, reported by BB_FRAME_STATS.
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
+/// g_bb_compile_ns split by the layer it went to (frame_stats reports all three): the port's own
+/// translation of the game's code into SPIR-V (CompileModule), and the driver's pipeline creation
+/// (vkCreateGraphicsPipelines/vkCreateComputePipelines: SPIR-V -> Metal, KosmicKrisp). Without the
+/// split the two are one number, and which layer is cold decides whether a warmer pipeline cache
+/// (the port's) can help at all.
+std::atomic<u64> g_bb_compile_port_ns;
+std::atomic<u64> g_bb_compile_driver_ns;
 
 namespace {
 
@@ -62,16 +69,26 @@ constexpr std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
 };
 
-void AddCompileTime(std::chrono::steady_clock::time_point start) {
-    g_bb_compile_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::steady_clock::now() - start)
-                               .count());
+/// Which layer a measured compile went to.
+enum class CompileLayer {
+    Port,   ///< the game's code -> SPIR-V, in this process
+    Driver, ///< SPIR-V -> Metal pipeline state, in KosmicKrisp
+};
+
+void AddCompileTime(std::chrono::steady_clock::time_point start, CompileLayer layer) {
+    const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count());
+    g_bb_compile_ns += ns;
+    (layer == CompileLayer::Port ? g_bb_compile_port_ns : g_bb_compile_driver_ns) += ns;
 }
 
 struct CompileTimer {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    CompileLayer layer;
+    explicit CompileTimer(CompileLayer layer_) : layer{layer_} {}
     ~CompileTimer() {
-        AddCompileTime(start);
+        AddCompileTime(start, layer);
         ++g_bb_compiles;
     }
 };
@@ -689,7 +706,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 // A pass that is not drawn every frame needs it now: the wait is compile time.
                 const auto start = std::chrono::steady_clock::now();
                 job->cv.wait(lk, [&] { return job->done; });
-                AddCompileTime(start);
+                AddCompileTime(start, CompileLayer::Driver);
                 ++async_waited;
             }
         }
@@ -702,7 +719,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
 
     const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
     LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
-    CompileTimer timer;
+    CompileTimer timer{CompileLayer::Driver};
     GraphicsPipeline::SerializationSupport sdata{};
     auto& slot = graphics_pipelines[sel.graphics_key];
     slot = std::make_unique<GraphicsPipeline>(instance, scheduler, desc_heap, profile,
@@ -812,7 +829,7 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (is_new) {
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}",
                  std::hash<ComputePipelineKey>{}(compute_key));
-        CompileTimer timer;
+        CompileTimer timer{CompileLayer::Driver};
         ComputePipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key, *sel.infos[0],
@@ -1153,7 +1170,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.hw_stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
-    CompileTimer timer;
+    CompileTimer timer{CompileLayer::Port};
 
     // BB_SHADER_CAPTURE: the inputs as they were, for the record.
     const bool capture = BbShaderCapture::Enabled();
