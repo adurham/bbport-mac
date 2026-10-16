@@ -79,6 +79,58 @@ std::string ModeText(CGDirectDisplayID display) {
     return text;
 }
 
+/// Whether the display's current mode is scanned out 1:1 or scaled on the way to the panel. A
+/// mode's pixel size (CGDisplayModeGetPixelWidth/Height) is the framebuffer the WindowServer
+/// scans out; the panel has one physical size, the largest mode flagged native
+/// (kDisplayModeNativeFlag, IOGraphicsTypes.h). A 1x mode smaller than that (2560x1440 on a
+/// 3440x1440 panel) is a framebuffer the display pipe (Apple silicon: DCP) scales up to the
+/// panel's pixels — or the monitor's own scaler does — so text is resampled (soft) whichever
+/// does it; only a native-flagged mode is 1:1. A pixel size above the panel (6880x2880 for
+/// "looks like 3440x1440") is the HiDPI backing store, scaled down.
+std::string ScanoutVerdict(CGDirectDisplayID display) {
+    constexpr uint32_t NativeFlag = 0x02000000;     // kDisplayModeNativeFlag
+    constexpr uint32_t StretchedFlag = 0x00000020;  // kDisplayModeStretchedFlag
+    constexpr uint32_t SimulscanFlag = 0x00000100;  // kDisplayModeSimulscanFlag
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+    if (!mode) {
+        return "unknown (no current mode)";
+    }
+    const size_t w = CGDisplayModeGetPixelWidth(mode), h = CGDisplayModeGetPixelHeight(mode);
+    const uint32_t flags = CGDisplayModeGetIOFlags(mode);
+    const int32_t mode_id = CGDisplayModeGetIODisplayModeID(mode);
+    CGDisplayModeRelease(mode);
+    size_t native_w = 0, native_h = 0;
+    NSDictionary* options = @{(__bridge id)kCGDisplayShowDuplicateLowResolutionModes : @YES};
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef)options);
+    for (CFIndex i = 0; modes && i < CFArrayGetCount(modes); ++i) {
+        CGDisplayModeRef m = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
+        const size_t mw = CGDisplayModeGetPixelWidth(m), mh = CGDisplayModeGetPixelHeight(m);
+        if ((CGDisplayModeGetIOFlags(m) & NativeFlag) && mw * mh > native_w * native_h) {
+            native_w = mw;
+            native_h = mh;
+        }
+    }
+    if (modes) {
+        CFRelease(modes);
+    }
+    char text[320];
+    const char* verdict;
+    if (native_w == 0) {
+        verdict = "no mode is flagged native: cannot tell";
+    } else if (w == native_w && h == native_h) {
+        verdict = "1:1 scanout (the panel's native pixels)";
+    } else if (w > native_w || h > native_h) {
+        verdict = "NOT 1:1: a HiDPI backing store scaled down to the panel";
+    } else {
+        verdict = "NOT 1:1: a framebuffer smaller than the panel, scaled up to it by the display "
+                  "pipe or the monitor (resampled: text is soft)";
+    }
+    std::snprintf(text, sizeof(text), "%s; mode %zux%zu ioflags 0x%08x (native %d stretched %d simulscan %d) id %d, panel native %zux%zu",
+                  verdict, w, h, flags, int((flags & NativeFlag) != 0), int((flags & StretchedFlag) != 0),
+                  int((flags & SimulscanFlag) != 0), mode_id, native_w, native_h);
+    return text;
+}
+
 /// The display's own colour space (its ICC profile, CGDisplayCopyColorSpace) and whether the
 /// layer's tag equals it: a tag different from the display's makes the WindowServer colour-match
 /// the drawable (a pass of its own: Composited).
@@ -323,6 +375,7 @@ extern "C" void bb_layer_after_swapchain(void* metal_layer) {
                     ModeText(display).c_str(),
                     size_t(drawable.width) == mode_w && size_t(drawable.height) == mode_h ? "matches" : "differs from",
                     window && window.visible ? "" : " (window hidden: windowed, no mode switch)");
+        std::printf("Layer dump: scanout: %s\n", ScanoutVerdict(display).c_str());
         std::fflush(stdout);
         dispatch_async(dispatch_get_main_queue(), ^{
           DumpWindow(window, view, layer);
@@ -379,7 +432,8 @@ extern "C" void bb_log_display_mode(void* nswindow, const char* why) {
     @autoreleasepool {
         NSWindow* window = (__bridge NSWindow*)nswindow;
         const CGDirectDisplayID display = window ? DisplayOf(window) : CGMainDisplayID();
-        std::printf("Display mode (%s): display %u now %s\n", why, display, ModeText(display).c_str());
+        std::printf("Display mode (%s): display %u now %s; scanout: %s\n", why, display, ModeText(display).c_str(),
+                    ScanoutVerdict(display).c_str());
         std::fflush(stdout);
     }
 }
