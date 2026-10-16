@@ -273,6 +273,18 @@ namespace {
 /// Both keep a full-screen pass and an indirect draw waiting for their pipeline (going without one
 /// left whole frames grey), and a one-time render (a target new this frame) compiling at once.
 /// BB_ASYNC_STREAK=N and BB_ASYNC_MIN_DRAWS=N override the policy's two numbers.
+/// BB_ASYNC_STATIC_VI=1: background compiles without VK_EXT_vertex_input_dynamic_state
+/// (KosmicKrisp has none): the static vertex input is read on the drawing thread
+/// (GraphicsPipeline::PrepareVertexInput) and the key already holds its formats. Opt-in until
+/// a visible run has checked the picture.
+bool StaticVertexInputAsync() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_ASYNC_STATIC_VI");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
 PipelineCache::AsyncPolicy ReadAsyncPolicy(bool vertex_input_dynamic) {
     using AsyncPolicy = PipelineCache::AsyncPolicy;
     const char* off = std::getenv("BB_ASYNC_PIPELINES");
@@ -292,8 +304,10 @@ PipelineCache::AsyncPolicy ReadAsyncPolicy(bool vertex_input_dynamic) {
     if (!enabled) {
         std::printf("GPU: async pipeline compiles off (BB_ASYNC_PIPELINES=0): every new pipeline "
                     "compiles on the GPU thread\n");
-    } else if (!vertex_input_dynamic) {
-        std::printf("GPU: async pipeline compiles off: no VK_EXT_vertex_input_dynamic_state\n");
+    } else if (!vertex_input_dynamic && !StaticVertexInputAsync()) {
+        std::printf("GPU: async pipeline compiles off: no VK_EXT_vertex_input_dynamic_state "
+                    "(BB_ASYNC_STATIC_VI=1: on anyway, the vertex input read on the drawing "
+                    "thread)\n");
     } else {
         std::printf("GPU: async pipeline policy %s: a draw may go without its new pipeline when its "
                     "target was drawn in the last %u frames and the frame before had %llu+ draws; "
@@ -800,10 +814,19 @@ const GraphicsPipeline* PipelineCache::CompileInBackground(const PipelineSelecti
     ++async_started;
     BbStats::async_skips.fetch_add(1, std::memory_order_relaxed); // this draw goes without it
     ++g_bb_compiles;
+    // Without dynamic vertex input the pipeline bakes the attribute layout, read from this
+    // draw's V#s: here, not on the worker (the stage's user data is the next draw's by then).
+    GraphicsPipeline::SerializationSupport prepared{};
+    if (!instance.IsVertexInputDynamicState()) {
+        const auto& vs = selection.runtime_infos[u32(SwStage::Vertex)].sw.vs;
+        GraphicsPipeline::PrepareVertexInput(selection.fetch_shader,
+                                             selection.infos[u32(SwStage::Vertex)],
+                                             vs.step_rate_0, vs.step_rate_1, prepared);
+    }
     compiler->Submit([this, job, key = selection.graphics_key, infos = selection.infos,
                       runtime_infos = selection.runtime_infos, fetch = selection.fetch_shader,
-                      modules = selection.modules]() mutable {
-        GraphicsPipeline::SerializationSupport sdata{};
+                      modules = selection.modules, prepared = std::move(prepared)]() mutable {
+        GraphicsPipeline::SerializationSupport sdata = std::move(prepared);
         auto pipeline = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, key, *pipeline_cache, infos, runtime_infos,
             fetch, modules, sdata, false);
@@ -836,7 +859,8 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
         return !(env && env[0] == '0');
     }();
     const AsyncPolicy& policy = async_policy;
-    if (!enabled || !instance.IsVertexInputDynamicState() || !selection.regs) {
+    if (!enabled || (!instance.IsVertexInputDynamicState() && !StaticVertexInputAsync()) ||
+        !selection.regs) {
         return false;
     }
     const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
