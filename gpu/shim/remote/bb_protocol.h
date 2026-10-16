@@ -63,6 +63,7 @@ enum Msg : std::uint32_t {
     MsgPadPrompt = 110,     ///< call: PadPromptArgs -> PadPromptReply (runtime_pad_prompt)
     MsgFileHostPath = 111,  ///< call: PathArgs -> PathReply (runtime_file_host_path, /app0/ only)
     MsgWindowModeKept = 112, ///< ValueArgs: the player kept the current window mode (BbSettings)
+    MsgOutputResKept = 113,  ///< ValueArgs: the player kept the current output resolution (packed)
 };
 
 /// Sizes of the guest structures carried as raw bytes (checked against the real types).

@@ -99,6 +99,8 @@ int Main(int argc, char** argv);
 void FramesRetired(u64 frames);
 /// The player kept the current window mode: the game process's copy of the settings follows.
 void WindowModeKept(int mode);
+/// The player kept the current output resolution (PackSize): the game process's copy follows.
+void OutputResKept(u32 packed);
 void ReleaseSubmissionLock();
 void Irq(u32 irq);
 /// Called with the port's status_mutex held, after flip_status changed; `flip_event`: a flip

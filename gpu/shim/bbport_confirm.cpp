@@ -125,9 +125,20 @@ void Decide(bool apply) {
             // live path picks it up.
             s.output_res = v;
             BbSettings::Save();
-            printf("Confirm: resolution %d confirmed\n", v);
+            printf("Confirm: resolution %dx%d confirmed\n", int(v & 0xffff), int(unsigned(v) >> 16));
         } else {
-            printf("Confirm: resolution kept (%d)\n", prev);
+            // The menu that asked already wrote the new size to bbport.ini (the game process's
+            // System menu saves before the GPU process sees it): the kept one goes back, so the
+            // next start (run.sh reads output_res) and the game process's copy agree with what
+            // is on screen. The display mode never moved (window.cpp derives it from output_res).
+            s.output_res = std::uint32_t(prev);
+            BbSettings::Save();
+#ifdef BBPORT_CONFIRM_REMOTE
+            if (BbRemote::BackActive()) {
+                BbRemote::Back::OutputResKept(std::uint32_t(prev));
+            }
+#endif
+            printf("Confirm: resolution kept (%dx%d)\n", int(prev & 0xffff), int(unsigned(prev) >> 16));
         }
         break;
     }

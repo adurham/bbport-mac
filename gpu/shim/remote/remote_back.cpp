@@ -941,6 +941,11 @@ void WindowModeKept(int mode) {
     g.channel->Send(MsgWindowModeKept, &args, sizeof(args));
 }
 
+void OutputResKept(u32 packed) {
+    const ValueArgs args{u64(packed)};
+    g.channel->Send(MsgOutputResKept, &args, sizeof(args));
+}
+
 void ReleaseSubmissionLock() {
     g.channel->Send(MsgReleaseSubmissionLock, nullptr, 0);
 }

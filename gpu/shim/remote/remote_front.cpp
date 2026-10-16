@@ -310,6 +310,11 @@ void Handle(const Message& message, auto&& reply) {
         // menu save cannot resurrect the kept one).
         BbSettings::Get().window_mode = int(Payload<ValueArgs>(message).value);
         break;
+    case MsgOutputResKept:
+        // The same for a resolution the player did not confirm: the System menu's copy goes
+        // back to the size on screen (else its next save would bring the declined one back).
+        BbSettings::Get().output_res = std::uint32_t(Payload<ValueArgs>(message).value);
+        break;
     case MsgReleaseSubmissionLock:
         BbGnm::ReleaseSubmissionLock();
         break;
