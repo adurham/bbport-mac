@@ -16,6 +16,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <math.h>
 #include <SDL3/SDL.h>
 
 #define PORTS 25
@@ -45,6 +46,7 @@ typedef struct {
     FILE *dump;                     /* BB_AUDIO_DUMP: raw converted PCM per port */
     uint64_t push_bytes, silence_bytes; /* bytes queued to the device, of which silence */
     unsigned put_failed;            /* SDL_PutAudioStreamData failures: a dead stream is silent */
+    float pm_peak; double pm_sumsq; unsigned long long pm_samples; /* BB_AUDIO_STATS: final device buffer */
     int stats;
     uint64_t stat_start_ns, stat_last_ns, stat_max_gap_ns; /* BB_AUDIO_STATS */
     unsigned stat_starved, stat_buffers; int stat_min_queued;
@@ -82,7 +84,19 @@ static int audio_want_device(void) {
 }
 /* A paused stream never plays: SDL_OpenAudioDeviceStream hands the device back paused, so the
  * resume below matters. Naming the sink catches a stream that landed on the wrong device. */
-static void report_audio_device(int id, SDL_AudioStream *stream) {
+static void SDLCALL postmix(void *userdata, const SDL_AudioSpec *spec, float *buffer, int buflen) {
+    Port *p=userdata;
+    (void)spec;
+    if (!p || !buffer) return;
+    for (int i=0;i<buflen;++i) {
+        float v=buffer[i], a=v<0 ? -v : v;
+        if (a>p->pm_peak) p->pm_peak=a;
+        p->pm_sumsq+=(double)v*v;
+    }
+    p->pm_samples+=(unsigned long long)(buflen>0 ? buflen : 0);
+}
+static void report_audio_device(Port *p, int id) {
+    SDL_AudioStream *stream=p->stream;
     SDL_AudioDeviceID dev=SDL_GetAudioStreamDevice(stream);
     const char *name=SDL_GetAudioDeviceName(dev);
     SDL_AudioSpec got, native;
@@ -94,6 +108,10 @@ static void report_audio_device(int id, SDL_AudioStream *stream) {
     if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&native,NULL))
         printf("Runtime: audio port %d: default device natively %d Hz, %d ch, %s\n",
                id,native.freq,native.channels,native.format==SDL_AUDIO_F32 ? "F32" : "other");
+    /* The final buffer in the device's format, after every conversion, immediately before the
+     * device is fed: the sink's level, measurable from inside the game (BB_AUDIO_STATS). */
+    if (!SDL_SetAudioPostmixCallback(dev,postmix,p))
+        fprintf(stderr,"Runtime: audio port %d: no postmix tap (%s)\n",id,SDL_GetError());
 }
 static int port_range(int type, int *first, int *last) {
     switch (type) {
@@ -152,7 +170,7 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
         p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
         if (p->stream) {
             SDL_ResumeAudioStreamDevice(p->stream);
-            report_audio_device(id,p->stream);
+            report_audio_device(p,id);
         } else {
             fprintf(stderr,"Runtime: SDL audio stream failed (%s); port %d uses the timer sink\n",SDL_GetError(),id);
         }
@@ -223,12 +241,15 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 if (queued==0) ++p->stat_starved;
             }
             if (now-p->stat_start_ns>=5000000000u) {
-                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u, volume %d..%d of %d%s%s\n",
+                double pm_rms=p->pm_samples ? sqrt(p->pm_sumsq/p->pm_samples) : 0;
+                printf("Audio stats port %d: %u buffers/5s (expected %u), max gap %.2f ms, min queued %d bytes, starved %u, volume %d..%d of %d, device buffer peak %.2f dBFS rms %.2f dBFS%s%s\n",
                        (int)(p-ports),p->stat_buffers,(unsigned)(5u*48000u/(unsigned)p->frames),p->stat_max_gap_ns/1e6,
                        p->stat_min_queued,p->stat_starved,p->vol_min,p->vol_max,VOLUME_0DB,
+                       20*log10(p->pm_peak>0 ? p->pm_peak : 1e-30),20*log10(pm_rms>0 ? pm_rms : 1e-30),
                        p->stream ? ", stream " : " (timer sink)",
                        p->stream ? (SDL_AudioDevicePaused(SDL_GetAudioStreamDevice(p->stream)) ? "PAUSED" : "running") : "");
                 p->stat_start_ns=now; p->stat_max_gap_ns=0; p->stat_starved=0; p->stat_buffers=0; p->stat_min_queued=1<<30;
+                p->pm_peak=0; p->pm_sumsq=0; p->pm_samples=0;
             }
         }
         if (pace) {
