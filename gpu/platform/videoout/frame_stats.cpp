@@ -38,6 +38,10 @@ namespace BbRemote {
 inline bool BackActive() { return false; }
 namespace Back {
 inline void GameStats(double, double) {}
+struct GamePhaseTotals {
+    u64 fault_ns, faults, call_ns, calls, file_reads, file_bytes, file_ns, cpu_us, majflt;
+};
+inline bool GamePhases(GamePhaseTotals&) { return false; }
 } // namespace Back
 } // namespace BbRemote
 #endif
@@ -148,11 +152,80 @@ static FILE* OpenFrameLog() {
                                "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
                                "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
                                "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
-                               "free_mb\n");
+                               "free_mb,"
+                               // The frame phases (FramePhases): which one owns a long frame.
+                               "translate_ms,translates,pipeline_sync_ms,pipelines_sync,"
+                               "async_skips,descriptor_ms,descriptor_batches,ipc_ms,ipc_calls,"
+                               "gpu_idle_ms,game_fault_ms,game_faults,game_call_ms,game_calls,"
+                               "game_read_ms,game_read_mb,game_reads,game_cpu_ms,game_majflt,"
+                               "fault_handler_ms,fault_handlers,fault_drain_ms,fault_drains\n");
         }
         return file;
     }();
     return log;
+}
+
+/// bbport: the frame phases (BbStats::t_translate and the rest, and the game process's
+/// SharedState totals in the native split) as per-frame deltas: what a long frame that has no
+/// compiles spent its time on. Taken once per flip; the totals only count with BB_FRAME_STATS.
+struct FramePhases {
+    double translate_ms, pipeline_sync_ms, descriptor_ms, ipc_ms, gpu_idle_ms;
+    u64 translates, pipelines_sync, async_skips, descriptor_batches, ipc_calls;
+    double fault_handler_ms, fault_drain_ms; ///< bb-gpu's side of the game's page faults
+    u64 fault_handlers, fault_drains;
+    bool game; ///< the game process's columns are valid (native split)
+    double game_fault_ms, game_call_ms, game_read_ms, game_read_mb, game_cpu_ms;
+    u64 game_faults, game_calls, game_reads, game_majflt;
+};
+static FramePhases TakeFramePhases() {
+    static u64 last[14]{};
+    static BbRemote::Back::GamePhaseTotals last_game{};
+    static bool have_game = false;
+    const u64 now[14] = {BbStats::t_translate.load(),        BbStats::translates.load(),
+                         BbStats::t_pipeline_sync.load(),    BbStats::pipelines_sync.load(),
+                         BbStats::async_skips.load(),        BbStats::t_descriptors.load(),
+                         BbStats::descriptor_batches.load(), BbStats::t_ipc_call.load(),
+                         BbStats::ipc_calls.load(),          BbStats::gpu_idle_total_ns.load(),
+                         BbStats::t_fault_handler.load(),    BbStats::fault_handlers.load(),
+                         BbStats::t_fault_drain.load(),      BbStats::fault_drains.load()};
+    u64 d[14];
+    for (int i = 0; i < 14; ++i) {
+        d[i] = now[i] - last[i];
+        last[i] = now[i];
+    }
+    FramePhases p{};
+    p.translate_ms = d[0] / 1e6;
+    p.translates = d[1];
+    p.pipeline_sync_ms = d[2] / 1e6;
+    p.pipelines_sync = d[3];
+    p.async_skips = d[4];
+    p.descriptor_ms = d[5] / 1e6;
+    p.descriptor_batches = d[6];
+    p.ipc_ms = d[7] / 1e6;
+    p.ipc_calls = d[8];
+    p.gpu_idle_ms = d[9] / 1e6;
+    p.fault_handler_ms = d[10] / 1e6;
+    p.fault_handlers = d[11];
+    p.fault_drain_ms = d[12] / 1e6;
+    p.fault_drains = d[13];
+    BbRemote::Back::GamePhaseTotals game{};
+    if (BbRemote::BackActive() && BbRemote::Back::GamePhases(game)) {
+        if (have_game) {
+            p.game = true;
+            p.game_fault_ms = (game.fault_ns - last_game.fault_ns) / 1e6;
+            p.game_faults = game.faults - last_game.faults;
+            p.game_call_ms = (game.call_ns - last_game.call_ns) / 1e6;
+            p.game_calls = game.calls - last_game.calls;
+            p.game_read_ms = (game.file_ns - last_game.file_ns) / 1e6;
+            p.game_read_mb = (game.file_bytes - last_game.file_bytes) / 1e6;
+            p.game_reads = game.file_reads - last_game.file_reads;
+            p.game_cpu_ms = (game.cpu_us - last_game.cpu_us) / 1e3;
+            p.game_majflt = game.majflt - last_game.majflt;
+        }
+        last_game = game;
+        have_game = true;
+    }
+    return p;
 }
 
 void OnFlipStats() {
@@ -186,6 +259,7 @@ void OnFlipStats() {
     last_rf = rf;
     last_trf = trf;
     last_twf = twf;
+    const FramePhases phases = TakeFramePhases();
     const u64 copy_ns = BbStats::t_copy.load(), copy_bytes = BbStats::copy_bytes.load();
     u64 proc_flt = 0;
     if (rusage usage{}; getrusage(RUSAGE_SELF, &usage) == 0) {
@@ -233,6 +307,29 @@ void OnFlipStats() {
                     (t_now[0] - last_t[0]) / 1e6, (t_now[1] - last_t[1]) / 1e6,
                     (t_now[2] - last_t[2]) / 1e6, (t_now[3] - last_t[3]) / 1e6,
                     (t_now[4] - last_t[4]) / 1e6, (t_now[5] - last_t[5]) / 1e6);
+    }
+    if (frame_ms > 40.0 && last_gpu_ns != 0) {
+        std::printf("       phases ms: translate %.1f (%llu), pipelines on the GPU thread %.1f (%llu), "
+                    "%llu draws without their pipeline (async), descriptors %.1f (%llu batches), "
+                    "calls into the game process %.1f (%llu), GPU thread waiting for the game "
+                    "%.1f, page faults handled %.1f (%llu; draw pipe drains in them %.1f)",
+                    phases.translate_ms, (unsigned long long)phases.translates,
+                    phases.pipeline_sync_ms, (unsigned long long)phases.pipelines_sync,
+                    (unsigned long long)phases.async_skips, phases.descriptor_ms,
+                    (unsigned long long)phases.descriptor_batches, phases.ipc_ms,
+                    (unsigned long long)phases.ipc_calls, phases.gpu_idle_ms,
+                    phases.fault_handler_ms, (unsigned long long)phases.fault_handlers,
+                    phases.fault_drain_ms);
+        if (phases.game) {
+            std::printf("; game process: faults to bb-gpu %.1f (%llu), calls %.1f (%llu), file "
+                        "reads %.1f (%llu, %.1f MB), CPU %.1f, page-ins %llu",
+                        phases.game_fault_ms, (unsigned long long)phases.game_faults,
+                        phases.game_call_ms, (unsigned long long)phases.game_calls,
+                        phases.game_read_ms, (unsigned long long)phases.game_reads,
+                        phases.game_read_mb, phases.game_cpu_ms,
+                        (unsigned long long)phases.game_majflt);
+        }
+        std::printf("\n");
     }
     static std::array<u64, 12> last_layer{};
     static u64 last_mprotects = 0, last_entries = 0;
@@ -297,7 +394,9 @@ void OnFlipStats() {
         };
         std::fprintf(frame_log,
                      "%.4f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,"
-                     "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f\n",
+                     "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f,"
+                     "%.2f,%llu,%.2f,%llu,%llu,%.2f,%llu,%.2f,%llu,%.2f,"
+                     "%.2f,%llu,%.2f,%llu,%.2f,%.2f,%llu,%.2f,%llu,%.2f,%llu,%.2f,%llu\n",
                      std::chrono::duration<double>(now - log_start).count(), frame_ms,
                      delta(present, log_present) / 1e6, delta(tick, log_tick) / 1e6,
                      last_gpu_ns ? (gpu_ns - last_gpu_ns) / 1e6 : 0.0,
@@ -315,7 +414,19 @@ void OnFlipStats() {
                      delta(BbStats::preupload_bytes.load(), log_preupload) / 1e6,
                      last_gpu_ns ? (sys_us - last_sys) / 1e3 : 0.0,
                      delta(BbStats::device_alloc_bytes.load(), log_alloc) / 1e6,
-                     delta(BbStats::device_free_bytes.load(), log_free) / 1e6);
+                     delta(BbStats::device_free_bytes.load(), log_free) / 1e6,
+                     phases.translate_ms, (unsigned long long)phases.translates,
+                     phases.pipeline_sync_ms, (unsigned long long)phases.pipelines_sync,
+                     (unsigned long long)phases.async_skips, phases.descriptor_ms,
+                     (unsigned long long)phases.descriptor_batches, phases.ipc_ms,
+                     (unsigned long long)phases.ipc_calls, phases.gpu_idle_ms,
+                     phases.game_fault_ms, (unsigned long long)phases.game_faults,
+                     phases.game_call_ms, (unsigned long long)phases.game_calls,
+                     phases.game_read_ms, phases.game_read_mb,
+                     (unsigned long long)phases.game_reads, phases.game_cpu_ms,
+                     (unsigned long long)phases.game_majflt, phases.fault_handler_ms,
+                     (unsigned long long)phases.fault_handlers, phases.fault_drain_ms,
+                     (unsigned long long)phases.fault_drains);
         static u32 unflushed = 0;
         if (++unflushed >= 120) {
             std::fflush(frame_log);

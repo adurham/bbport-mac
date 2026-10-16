@@ -435,6 +435,7 @@ void CallHook(GpuRange State::*which, const RangeArgs& args) {
 
 void WriteFault(const Message& message, auto&& reply) {
     const auto args = Payload<FaultArgs>(message);
+    BbStats::PhaseTimer timer{BbStats::t_fault_handler, BbStats::fault_handlers};
     std::vector<ProtectArgs> protects;
     collected_protects = args.lock_held ? &protects : nullptr;
     int handled = 0;
@@ -460,6 +461,7 @@ void WriteFault(const Message& message, auto&& reply) {
     // More than fit (not expected): the rest as calls.
     for (std::size_t i = out.count; i < protects.size(); ++i) {
         ResultReply result{};
+        BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
         g.protect->Call(MsgProtect, &protects[i], sizeof(ProtectArgs), &result, sizeof(result));
     }
     reply(&out, u32(offsetof(FaultReply, protects) + out.count * sizeof(ProtectArgs)));
@@ -1016,6 +1018,20 @@ void PublishWindowState() {
     }
 }
 
+bool GamePhases(GamePhaseTotals& out) {
+    if (!g.control) {
+        return false;
+    }
+    const auto& s = g.control->state;
+    const auto load = [](const std::atomic<std::uint64_t>& v) {
+        return v.load(std::memory_order_relaxed);
+    };
+    out = {load(s.game_fault_ns), load(s.game_faults),     load(s.game_call_ns),
+           load(s.game_calls),    load(s.game_file_reads), load(s.game_file_bytes),
+           load(s.game_file_ns),  load(s.game_cpu_us),     load(s.game_majflt)};
+    return true;
+}
+
 void GameStats(double window_s, double frames) {
     const StatsArgs args{window_s, frames};
     g.channel->Send(MsgGameStats, &args, sizeof(args));
@@ -1030,6 +1046,7 @@ int PadPrompt(const char* name, int prefer_mouse, char* label, int size) {
     std::snprintf(args.name, sizeof(args.name), "%s", name);
     args.prefer_mouse = prefer_mouse;
     PadPromptReply out{};
+    BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
     g.channel->Call(MsgPadPrompt, &args, sizeof(args), &out, sizeof(out));
     out.label[sizeof(out.label) - 1] = 0;
     std::snprintf(label, std::size_t(size), "%s", out.label);
@@ -1115,6 +1132,8 @@ void ForwardProtect(const ProtectArgs& args) {
         return;
     }
     ResultReply result{};
+    // A round trip to the game process (Rosetta): the calling thread waits for its protect thread.
+    BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
     g.protect->Call(MsgProtect, &args, sizeof(args), &result, sizeof(result));
 }
 

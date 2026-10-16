@@ -136,7 +136,11 @@ void Rasterizer::OnCpuWrite(VAddr addr, u64 size) {
 }
 
 bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks, u64 guest_rip) {
-    DrainDrawPipe();
+    {
+        // The faulting guest thread waits for the draws already handed over (BB_FRAME_STATS).
+        BbStats::PhaseTimer drain{BbStats::t_fault_drain, BbStats::fault_drains};
+        DrainDrawPipe();
+    }
     if (!InvalidateMemory(addr, 8, assume_locks)) {
         return false;
     }
@@ -145,7 +149,10 @@ bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks, u64 guest_rip) {
 }
 
 bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
-    DrainDrawPipe();
+    {
+        BbStats::PhaseTimer drain{BbStats::t_fault_drain, BbStats::fault_drains};
+        DrainDrawPipe();
+    }
     if (!IsMapped(addr, size)) {
         return false; // the GPU does not use it
     }

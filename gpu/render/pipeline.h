@@ -191,6 +191,9 @@ public:
         std::vector<u32> tcs{};
         std::vector<u32> tes{};
         std::vector<u32> fragment{};
+        /// The vertex input above was filled on the drawing thread (PrepareVertexInput): a
+        /// background compile does not read the game's V#s (not serialized).
+        bool vertex_input_ready = false;
 
         void Serialize(Serialization::Archive& ar) const;
         bool Deserialize(Serialization::Archive& ar);
@@ -213,6 +216,14 @@ public:
     const GraphicsPipelineKey& GetGraphicsKey() const {
         return key;
     }
+
+    /// Without dynamic vertex input: the static vertex input of a pipeline about to be created
+    /// on a worker (BB_ASYNC_PIPELINES), read here on the drawing thread while the stage's user
+    /// data and V#s are this draw's.
+    static void PrepareVertexInput(
+        const std::optional<const Shader::Gcn::FetchShaderData>& fetch_shader,
+        const Shader::Info* vs_info, u32 step_rate_0, u32 step_rate_1,
+        SerializationSupport& sdata);
 
     /// The vertex input attributes and bindings of the fetch shader's attributes. `sharps`,
     /// when given, are their V#s as the GPU command thread read them (in the draw packet): the

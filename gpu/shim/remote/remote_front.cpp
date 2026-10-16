@@ -20,6 +20,7 @@
 #include <spawn.h>
 #include <string>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
@@ -73,6 +74,7 @@ int runtime_pad_prompt_device(void);
 int runtime_pad_mouse_look(void);
 int runtime_file_host_path(const char* guest, char* out, size_t size);
 __attribute__((weak)) void runtime_toypad_lights(uint32_t out[3]); // runtime_toypad.c
+void runtime_file_stats(uint64_t* count, uint64_t* bytes, uint64_t* ns); // runtime_file.c
 }
 
 namespace BbRemote {
@@ -133,6 +135,22 @@ u64 MonotonicNs() {
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);
     return u64(now.tv_sec) * 1'000'000'000ull + u64(now.tv_nsec);
+}
+
+/// A call to bb-gpu, timed into the shared frame phases (BB_FRAME_STATS): a game thread stands
+/// still for the whole round trip. `fault`: a page tracking fault (MsgWriteFault).
+template <typename... Args>
+std::uint32_t TimedCall(bool fault, Args&&... args) {
+    if (!BbStats::enabled || !g.control) {
+        return g.channel->Call(std::forward<Args>(args)...);
+    }
+    const u64 start = MonotonicNs();
+    const std::uint32_t size = g.channel->Call(std::forward<Args>(args)...);
+    auto& s = g.control->state;
+    (fault ? s.game_fault_ns : s.game_call_ns)
+        .fetch_add(MonotonicNs() - start, std::memory_order_relaxed);
+    (fault ? s.game_faults : s.game_calls).fetch_add(1, std::memory_order_relaxed);
+    return size;
 }
 
 void CopyString(char* out, std::size_t size, const char* in) {
@@ -421,6 +439,20 @@ void PublishPadState() {
     s.prompt_device.store(runtime_pad_prompt_device(), std::memory_order_relaxed);
     s.pad_mouse_look.store(runtime_pad_mouse_look(), std::memory_order_relaxed);
     s.prompt_generation.store(runtime_pad_prompt_generation(), std::memory_order_release);
+    if (BbStats::enabled) {
+        // The game process's frame phases for bb-gpu's frame log (SharedState).
+        uint64_t reads = 0, bytes = 0, read_ns = 0;
+        runtime_file_stats(&reads, &bytes, &read_ns);
+        s.game_file_reads.store(reads, std::memory_order_relaxed);
+        s.game_file_bytes.store(bytes, std::memory_order_relaxed);
+        s.game_file_ns.store(read_ns, std::memory_order_relaxed);
+        if (rusage usage{}; getrusage(RUSAGE_SELF, &usage) == 0) {
+            s.game_cpu_us.store(u64(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1'000'000ull +
+                                    u64(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec),
+                                std::memory_order_relaxed);
+            s.game_majflt.store(u64(usage.ru_majflt), std::memory_order_relaxed);
+        }
+    }
     if (runtime_toypad_lights) {
         uint32_t lights[3] = {};
         runtime_toypad_lights(lights);
@@ -734,14 +766,14 @@ void SubmitDone(u64 frame) {
 
 bool IsGpuIdle() {
     ResultReply result{};
-    g.channel->Call(MsgIsGpuIdle, nullptr, 0, &result, sizeof(result));
+    TimedCall(false, MsgIsGpuIdle, nullptr, 0, &result, sizeof(result));
     return result.result != 0;
 }
 
 s32 MapComputeQueue(u64 ring_base, u32* read_ptr, u32 ring_size_dw, u32 pipe_id) {
     const ComputeQueueArgs args{ring_base, reinterpret_cast<u64>(read_ptr), ring_size_dw, pipe_id};
     ResultReply result{-1, 0};
-    g.channel->Call(MsgMapComputeQueue, &args, sizeof(args), &result, sizeof(result));
+    TimedCall(false, MsgMapComputeQueue, &args, sizeof(args), &result, sizeof(result));
     if (result.result < 0) {
         return -1;
     }
@@ -831,7 +863,7 @@ int VoChangeBufferAttribute(s32 attribute_index, const BbVideoOut::BufferAttribu
 bool VoSubmitFlip(s32 index, s64 flip_arg) {
     const VoFlipArgs args{1, index, 1, 0, flip_arg};
     VoReply reply{};
-    g.channel->Call(MsgVoSubmitFlip, &args, sizeof(args), &reply, sizeof(reply));
+    TimedCall(false, MsgVoSubmitFlip, &args, sizeof(args), &reply, sizeof(reply));
     ApplyVoState(reply.state);
     return reply.result != 0;
 }
@@ -839,7 +871,7 @@ bool VoSubmitFlip(s32 index, s64 flip_arg) {
 s32 VoSubmitEopFlip(s32 handle, u32 buf_id, u32 mode, s64 flip_arg) {
     const VoFlipArgs args{handle, s32(buf_id), mode, 0, flip_arg};
     VoReply reply{};
-    g.channel->Call(MsgVoSubmitEopFlip, &args, sizeof(args), &reply, sizeof(reply));
+    TimedCall(false, MsgVoSubmitEopFlip, &args, sizeof(args), &reply, sizeof(reply));
     return reply.result;
 }
 
@@ -875,7 +907,7 @@ int HandleFault(void* context, void* address) {
     const FaultArgs args{addr, BbPortable::Rip(context), Common::IsWriteError(context) ? 1u : 0u,
                          runtime_memory_lock_held() ? 1u : 0u};
     FaultReply reply{};
-    g.channel->Call(MsgWriteFault, &args, sizeof(args), &reply, sizeof(reply));
+    TimedCall(true, MsgWriteFault, &args, sizeof(args), &reply, sizeof(reply));
     // Only when this thread holds the runtime's lock (see FaultReply).
     for (u32 i = 0; i < std::min(reply.count, MaxFaultProtects); ++i) {
         ApplyProtect(reply.protects[i]);
@@ -994,7 +1026,7 @@ int TextInputBegin(const char* initial, const char* prompt) {
 int TextInputPoll(char* out, u64 size) {
     TextInputReply reply{};
     reply.state = 2;
-    g.channel->Call(MsgTextInputPoll, nullptr, 0, &reply, sizeof(reply));
+    TimedCall(false, MsgTextInputPoll, nullptr, 0, &reply, sizeof(reply));
     if (size) {
         const std::size_t n = std::min<std::size_t>(strnlen(reply.text, sizeof(reply.text)),
                                                      size - 1);

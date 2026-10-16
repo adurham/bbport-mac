@@ -414,7 +414,7 @@ GraphicsPipeline::GraphicsPipeline(
     const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
 
     // Vertex input (static only without dynamic vertex input).
-    if (!preloading && !instance.IsVertexInputDynamicState()) {
+    if (!preloading && !instance.IsVertexInputDynamicState() && !sdata.vertex_input_ready) {
         VertexInputs<Gcn::Buffer> guest_buffers;
         const auto& vs_info = runtime_infos[u32(Shader::SwStage::Vertex)].sw.vs;
         GetVertexInputs(sdata.vertex_attributes, sdata.vertex_bindings, sdata.divisors,
@@ -609,17 +609,18 @@ GraphicsPipeline::GraphicsPipeline(
 
 GraphicsPipeline::~GraphicsPipeline() = default;
 
+namespace {
 template <typename Attribute, typename Binding>
-void GraphicsPipeline::GetVertexInputs(
-    VertexInputs<Attribute>& attributes, VertexInputs<Binding>& bindings,
-    VertexInputs<vk::VertexInputBindingDivisorDescriptionEXT>& divisors,
-    VertexInputs<Gcn::Buffer>& guest_buffers, u32 step_rate_0, u32 step_rate_1,
-    std::span<const Gcn::Buffer> sharps) const {
+void FillVertexInputs(const std::optional<const Shader::Gcn::FetchShaderData>& fetch_shader,
+                      const Shader::Info& vs_info, VertexInputs<Attribute>& attributes,
+                      VertexInputs<Binding>& bindings,
+                      VertexInputs<vk::VertexInputBindingDivisorDescriptionEXT>& divisors,
+                      VertexInputs<Gcn::Buffer>& guest_buffers, u32 step_rate_0, u32 step_rate_1,
+                      std::span<const Gcn::Buffer> sharps) {
     using InstanceIdType = Shader::Gcn::VertexAttribute::InstanceIdType;
     if (!fetch_shader || fetch_shader->attributes.empty()) {
         return;
     }
-    const auto& vs_info = GetStage(Shader::SwStage::Vertex);
     const bool given = sharps.size() == fetch_shader->attributes.size();
     for (u32 index = 0; const auto& attrib : fetch_shader->attributes) {
         const auto step_rate = attrib.GetStepRate();
@@ -660,6 +661,31 @@ void GraphicsPipeline::GetVertexInputs(
         }
         guest_buffers.emplace_back(buffer);
     }
+}
+} // namespace
+
+template <typename Attribute, typename Binding>
+void GraphicsPipeline::GetVertexInputs(
+    VertexInputs<Attribute>& attributes, VertexInputs<Binding>& bindings,
+    VertexInputs<vk::VertexInputBindingDivisorDescriptionEXT>& divisors,
+    VertexInputs<Gcn::Buffer>& guest_buffers, u32 step_rate_0, u32 step_rate_1,
+    std::span<const Gcn::Buffer> sharps) const {
+    if (!fetch_shader || fetch_shader->attributes.empty()) {
+        return;
+    }
+    FillVertexInputs(fetch_shader, GetStage(Shader::SwStage::Vertex), attributes, bindings,
+                     divisors, guest_buffers, step_rate_0, step_rate_1, sharps);
+}
+
+void GraphicsPipeline::PrepareVertexInput(
+    const std::optional<const Shader::Gcn::FetchShaderData>& fetch_shader,
+    const Shader::Info* vs_info, u32 step_rate_0, u32 step_rate_1, SerializationSupport& sdata) {
+    if (vs_info) {
+        VertexInputs<Gcn::Buffer> guest_buffers;
+        FillVertexInputs(fetch_shader, *vs_info, sdata.vertex_attributes, sdata.vertex_bindings,
+                         sdata.divisors, guest_buffers, step_rate_0, step_rate_1, {});
+    }
+    sdata.vertex_input_ready = true;
 }
 
 template void GraphicsPipeline::GetVertexInputs(

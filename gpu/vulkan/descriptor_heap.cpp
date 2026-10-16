@@ -4,6 +4,7 @@
 #include <array>
 #include <bit>
 
+#include "bbport_toggles.h"
 #include "common/assert.h"
 #include "vulkan/instance.h"
 #include "vulkan/timeline.h"
@@ -65,6 +66,8 @@ vk::DescriptorSet DescriptorHeap::Commit(vk::DescriptorSetLayout set_layout) {
         it.value().pop_back();
         return set;
     }
+    // Descriptor churn (BB_FRAME_STATS): batches allocated, pools filled and replaced.
+    BbStats::PhaseTimer timer{BbStats::t_descriptors, BbStats::descriptor_batches};
     Sets sets;
     if (!AllocateBatch(set_layout, sets)) {
         // The pool is full: retired with the current tick; the oldest retired one is reset and
