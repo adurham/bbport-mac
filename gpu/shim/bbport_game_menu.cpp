@@ -314,8 +314,10 @@ void DefineTexts() {
     {
         std::vector<u32> outputs;
         for (u32 i = 0; i < OutputSlots; ++i) outputs.push_back(OutputTexts + i);
-        row(OutputRes, "Resolution", "Разрешение", "Size of the final frame and the UI",
-            "Размер готового кадра и интерфейса", std::move(outputs), Kind::Select);
+        row(OutputRes, "Resolution", "Разрешение",
+            "Size of the final frame and the UI (applies on the next launch on this Mac)",
+            "Размер готового кадра и интерфейса (на этом Mac — после перезапуска)",
+            std::move(outputs), Kind::Select);
     }
     row(Upscaler, "Upscaler", "Апскейлер", "Temporal upscaler and anti-aliasing",
         "Временной апскейлер и сглаживание",
