@@ -14,6 +14,7 @@
 #include "sdl_window.h"
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
+#include "bbport_confirm.h"
 #ifdef __APPLE__
 // bbport_appnap.mm: keeps a hidden warm run out of App Nap (its compiles at full speed).
 extern "C" void bb_warm_disable_app_nap(void);
@@ -271,9 +272,14 @@ void apply_window_mode(SDL_Window* window, int mode) {
 } // namespace
 
 void WindowSDL::SetWindowMode(int mode) {
-    // Called from wherever a menu lives (the settings relay, the overlay): hand the mode to
-    // the window loop, which applies it on the window's own thread.
-    pending_window_mode.store(mode, std::memory_order_relaxed);
+    // A change the player makes asks first: the overlay shows the question, and nothing moves
+    // until it is answered (BbConfirm). At startup there is no one to ask: the boot mode queues
+    // and the first PollEvents applies it.
+    if (applied_window_mode == -1) {
+        pending_window_mode.store(mode, std::memory_order_relaxed);
+    } else if (mode != applied_window_mode) {
+        BbConfirm::Request(BbConfirm::Kind::WindowMode, mode, applied_window_mode);
+    }
 }
 
 void WindowSDL::BeginTextInput(const std::string& initial, const std::string& prompt) {
@@ -368,8 +374,11 @@ bool WindowSDL::PollEvents() {
     if (quit_requested.load(std::memory_order_relaxed)) {
         return false; // RequestQuit: a warm run (BB_WARM_ONLY) asking to close
     }
+    if (int confirmed = 0; BbConfirm::TakeConfirmedWindowMode(confirmed)) {
+        apply_window_mode(window, confirmed); // the player agreed: switch, on the window's thread
+    }
     if (const int mode = pending_window_mode.exchange(-1, std::memory_order_relaxed); mode >= 0) {
-        apply_window_mode(window, mode); // a menu's window mode, applied on the window's thread
+        apply_window_mode(window, mode); // the boot mode, or a menu's (confirmed) window mode
     }
     {
         std::scoped_lock lock{text_mutex};
@@ -387,6 +396,19 @@ bool WindowSDL::PollEvents() {
     const bool pointer = bbgpu_pointer_wanted() != 0;
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        if (BbConfirm::Active() &&
+            (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)) {
+            // A change is asking first: Enter applies it, Escape keeps the current setting.
+            // The game does not see these keys (Escape would open its own menu).
+            if (event.type == SDL_EVENT_KEY_DOWN) {
+                if (event.key.key == SDLK_RETURN) {
+                    BbConfirm::Decide(true);
+                } else if (event.key.key == SDLK_ESCAPE) {
+                    BbConfirm::Decide(false);
+                }
+            }
+            continue;
+        }
         if (FilteredByModule(&event, window)) {
             continue;
         }

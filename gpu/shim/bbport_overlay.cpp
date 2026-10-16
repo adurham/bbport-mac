@@ -17,6 +17,7 @@
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
 #include "bbport_frame_rate.h"
+#include "bbport_confirm.h"
 #include "sdl_window.h"
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
@@ -1278,7 +1279,7 @@ void SetBanner(const char* text) {
 
 bool Visible() {
     return initialized && (menu_open || prompt_active || banner_active ||
-                           BbSettings::Get().show_fps || Warming());
+                           BbSettings::Get().show_fps || Warming() || BbConfirm::Active());
 }
 
 bool MenuOpen() {
@@ -1287,7 +1288,8 @@ bool MenuOpen() {
 
 bool CapturesInput() {
     // The text dialog too: keys typed into it (Backspace is the touchpad) stay out of the game.
-    return menu_open || prompt_active;
+    // A pending confirmation too: Enter and Escape are its answers.
+    return menu_open || prompt_active || BbConfirm::Active();
 }
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
@@ -1374,6 +1376,61 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
         draw->AddRectFilled({at.x - 24.0f, at.y - 12.0f}, {at.x + size.x + 24.0f, at.y + size.y + 12.0f},
                             IM_COL32(0, 0, 0, 170), 6.0f);
         draw->AddText(at, IM_COL32(230, 220, 200, 255), text.c_str());
+    }
+    if (BbConfirm::Active() && BbConfirm::SecondsLeft() == 0) {
+        BbConfirm::Decide(false); // no answer in time: the current setting stays
+    }
+    if (BbConfirm::Active()) {
+        // A change asked first (BbConfirm): say what it would switch to, and take the answer.
+        // Enter (the window loop reads it) or the button applies it; Escape or the timeout keeps
+        // the current setting. The dimming says the game is waiting for the answer.
+        BbConfirm::Kind kind{};
+        int value = 0;
+        if (BbConfirm::Pending(kind, value)) {
+            char question[192];
+            if (kind == BbConfirm::Kind::WindowMode) {
+                static const char* modes[] = {BbSettings::MenuText("Windowed", "В окне"),
+                                              BbSettings::MenuText("Borderless", "Без рамки"),
+                                              BbSettings::MenuText("Fullscreen", "Во весь экран")};
+                std::snprintf(question, sizeof(question),
+                              BbSettings::MenuText("Switch to %s?", "Переключиться в «%s»?"),
+                              modes[std::clamp(value, 0, BbSettings::WindowModeCount - 1)]);
+            } else {
+                const auto size = BbSettings::UnpackSize(std::uint32_t(value));
+                std::snprintf(question, sizeof(question),
+                              BbSettings::MenuText("Switch to %d x %d?", "Переключиться на %d x %d?"),
+                              size.width, size.height);
+            }
+            auto* draw = ImGui::GetForegroundDrawList();
+            draw->AddRectFilled({0, 0}, io.DisplaySize, IM_COL32(0, 0, 0, 100));
+            ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.42f},
+                                    ImGuiCond_Always, {0.5f, 0.5f});
+            ImGui::SetNextWindowBgAlpha(0.92f);
+            ImGui::Begin("##bbconfirm", nullptr,
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                             ImGuiWindowFlags_NoFocusOnAppearing);
+            bool answer = false;
+            bool answered = false;
+            ImGui::TextUnformatted(question);
+            ImGui::Spacing();
+            if (ImGui::Button(BbSettings::MenuText("Switch (Enter)", "Переключить (Enter)"))) {
+                answer = true;
+                answered = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(BbSettings::MenuText("Keep current (Esc)", "Оставить текущее (Esc)"))) {
+                answered = true;
+            }
+            ImGui::TextDisabled(BbSettings::MenuText("Keeping the current one in %d s",
+                                                     "Текущее останется через %d s"),
+                                BbConfirm::SecondsLeft());
+            ImGui::End();
+            if (answered) {
+                BbConfirm::Decide(answer);
+            }
+        }
     }
     ImGui::Render();
 
