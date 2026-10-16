@@ -53,7 +53,7 @@ default_route='ly=0,rx=128:4 ly=0,rx=40:0.5 ly=0,rx=128:4 ly=0,rx=215:0.5 ly=255
 route=${ROUTE:-$default_route}
 echo "warm route: ${secs}s; title at ${title_wait}s, cross, load ${load_wait}s, then loop: $route"
 
-BB_FRAME_STATS=${BB_FRAME_STATS:-1} BB_WARM_QUIET=${BB_WARM_QUIET:-0} \
+BB_NATIVE_GPU=${BB_NATIVE_GPU:-1} BB_FRAME_STATS=${BB_FRAME_STATS:-1} BB_WARM_QUIET=${BB_WARM_QUIET:-0} \
     BB_WARM_SECONDS=${BB_WARM_SECONDS:-$secs} \
     bash tools/macos/run.sh >/dev/null 2>&1 </dev/null &
 game=$!

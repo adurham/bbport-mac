@@ -91,36 +91,51 @@ starts a new one but an unchanged driver reuses it — the one here is at `~/.ca
 
 `BB_FRAME_STATS=1` reports the split inside the port's control: `N shader/pipeline compiles, X ms
 (Y translating, Z in the driver)`, where the translating part is `CompileModule` and the driver part
-is `vkCreateGraphicsPipelines` (plus waiting for a background compile). Two hidden runs with an
-empty port store, one at a time — the game compiles the same 65 things at boot and title in both:
+is `vkCreateGraphicsPipelines` (or waiting for a background compile). A hidden warm run that stays at
+the title compiles 31 pipelines (that is all boot and title are), and one driven into an area with
+`tools/macos/warm_route.sh` compiles the area's own:
 
-| driver's MSL cache | compiles | total | translating | in the driver | worst frame |
-|---|---|---|---|---|---|
-| warm (cold port store) | 65 | 18.4 ms | 4.1 ms (22%) | 14.3 ms (78%) | 70.6 ms |
-| cold (cold port store, scratch `XDG_CACHE_HOME`) | 65 | 56.2 ms | 3.9 ms (7%) | 52.4 ms (93%) | 79.6 ms |
-| warm (port store warm: 325 preloaded) | 64 | 4510 ms | 35.1 ms (1%) | 4476 ms (99%) | 992 ms |
+| run | path | where | compiles | total | translating | in the driver | worst frame |
+|---|---|---|---|---|---|---|---|
+| 1 | native (0 preloaded) | boot, title | 65 | 18.4 ms | 4.1 ms (22%) | 14.3 ms (78%) | 70.6 ms |
+| 2 | native, driver cache cold | boot, title | 65 | 56.2 ms | 3.9 ms (7%) | 52.4 ms (93%) | 79.6 ms |
+| 3 | **x86-64, in-process** | boot, title | 37 | 2246 ms | 30.3 ms (1%) | 2215.8 ms (99%) | 239 ms |
+| 4 | **x86-64, in-process** | an area, walking | 6 | 806.5 ms | 5.3 ms | 801.3 ms | 364 ms |
+| 5 | **x86-64, in-process** | an area, walking | 22 | 1682.9 ms | 19.1 ms (1%) | 1663.8 ms (99%) | 684.6 ms |
+| 6 | native, store warm | an area, walking | 1 | 5.0 ms | 5.0 ms | 0.0 ms | 186 ms |
+| 7 | native, store warm | an area, walking | 1 | 2.3 ms | 2.3 ms | 0.0 ms | 667 ms |
 
-Per pipeline: ~0.28 ms, ~0.86 ms — and 70 ms in the third. What holds across all three:
+Runs 3–5 were meant to be native and were not — `warm_route.sh` did not set `BB_NATIVE_GPU` (fixed).
+The two paths are told apart in the file system by the store's directory: `cache/CUSA03173` (x86-64,
+the in-process driver) against `cache/CUSA03173-arm64` (native). What holds across all of them:
 
-- **The driver's layer is everything.** The port's own translating is 1–22% of a number that is
-  already small, and it is the one part that does not move between runs (0.7–30 ms per window;
-  0.06 ms per shader module). Every run's cost is `vkCreateGraphicsPipelines`, inside KosmicKrisp
-  and Metal.
-- **It is not deterministic, and the spread is the interesting part.** The same boot-and-title set
-  cost 18 ms in one hidden run and 4510 ms in another. The worst frame tracked it: 10–20 ms in the
-  quiet windows, 239 ms, 439 ms and 992 ms in the windows where the pipelines were made. So a
-  first-visit stutter is this layer, and its size is set by the Metal side's state (its own pipeline
-  cache, and how contended the machine is — the third run overlapped other work on this Mac and its
-  `Frame stats` show 30–44% of the frame lost in host copies and almost no GPU work, which is
-  consistent with contention inflating it).
+- **The driver's layer is everything.** The port's own translating is 1–22% of the total and it is
+  the part that does not move (0.7–30 ms per window; ~0.06 ms per shader module) whether the driver's
+  cache is warm or cold or the GPU process is native. Every expensive window is
+  `vkCreateGraphicsPipelines`.
+- **Per pipeline, the x86-64 in-process driver costs tens of milliseconds and the native one a few.**
+  x86-64: 806.5/6, 1682.9/22 and 2215.8/37 ms — 37 to 134 ms each — and frames of 0.24 s, 0.36 s and
+  0.68 s while they are made. Native: 0.3 ms each at boot with the driver's cache warm, 0.9 ms with it
+  cold, and 2.3–5.0 ms each in the area itself (runs 6 and 7; one compile each in the windows that
+  had any). The area walked draws 664–1151 draws a frame at 36–42 FPS.
+- **The comparison is not clean, and the honest version of it matters.** Runs 4–5 wrote their store
+  to the *other* directory (they were x86-64), so they started from an empty one and compiled the
+  whole area (~540 compiles in that run); runs 6–7 preloaded the 325 in the native store and had
+  almost nothing left to compile. So the per-pipeline figures are the comparable part, not the
+  window totals: native-vs-x86-64 with the *same* store still needs one run (native, empty store,
+  same route).
 - **A warmer port pipeline cache cannot help with the dominant part.** It removes at most the
-  translating share, which is 1–22%. The persisted shader cache the port already patches into
-  KosmicKrisp covers SPIR-V → Metal; what no cache covers is Metal's own pipeline state creation
-  (layer 3), and that is where the 70 ms per pipeline and the 1 s frames are. A persisted Metal
-  binary archive is the lever, not the port's store.
-- Separating layer 2 from layer 3 needs a timer inside KosmicKrisp; the port's numbers cannot split
-  them, and these runs were not controlled for concurrent load, so the absolute millisecond figures
-  are indicative rather than comparable across runs. The ratios are the robust part.
+  translating share. The persisted shader cache the port patches into KosmicKrisp covers
+  SPIR-V → Metal; what no cache covers is Metal's own pipeline state creation (layer 3), and that is
+  where the tens of milliseconds per pipeline are on the x86-64 path, where every Metal call is
+  translated.
+- **Not every hitch is a compile.** Runs 6–7 walked the same area with essentially no compiles
+  (2.3–5.0 ms in the whole window) and still had 186 ms and 667 ms frames. So there is a second
+  source of first-visit stutter this measurement does not name — asset streaming, texture upload,
+  the port's own caches — and it is worth measuring on its own.
+- The runs were not controlled for other load on the machine, so absolute figures are indicative
+  rather than comparable across runs; the per-pipeline scale is the robust part. Separating layer 2
+  from layer 3 needs a timer inside KosmicKrisp; the port's numbers cannot split them.
 
 ## Async pipeline compilation
 
