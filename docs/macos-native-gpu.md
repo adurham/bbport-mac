@@ -280,18 +280,26 @@ g++ -std=c++20 -O1 -g -fsanitize=thread -pthread -Igpu/shim tests/test_remote_ch
 The Metal HUD's **Direct** means the WindowServer scans the game's drawable out unchanged;
 **Composited** costs a full-screen copy and a frame of latency. What decides it, as logged:
 
-- **Display mode (window.cpp).** Fullscreen sets an explicit display mode derived from the output
-  resolution: `mode = pick(window_mode, output_res)`, picked again whenever the output (a confirmed
-  resolution) or the window's display changes. The picker compares *pixels* (SDL lists macOS modes
-  in points with a density: "looks like 3440x1440" is 3440x1440 @2.0 = 6880x2880 pixels), takes
-  1x modes first, then the closest size, then the highest refresh. Log lines:
-  `Display mode: 3440x1440 pixels (SDL 3440x1440, pixel density 1.00, 240.00 Hz) for output ...`
-  and, after the switch, `Display mode (entered fullscreen): display N now 3440x1440 pixels ...`
+- **Display mode (window.cpp).** What fullscreen does with the display is `fullscreen_mode`
+  (bbport.ini, `BB_FULLSCREEN_MODE`), see the section below. With `exclusive` the display is put on
+  an explicit mode derived from the output resolution — `mode = pick(window_mode, output_res)`,
+  picked again whenever the output (a confirmed resolution) or the window's display changes — and
+  with `fill` (the default) on the display's own native 1x mode, which a resolution change never
+  touches. The picker compares *pixels* (SDL lists macOS modes in points with a density: "looks
+  like 3440x1440" is 3440x1440 @2.0 = 6880x2880 pixels), takes 1x modes first, then the closest
+  size, then the highest refresh. Log lines, which say which path ran:
+  `Display mode: 3440x1440 pixels (SDL 3440x1440, pixel density 1.00, 240.00 Hz) for output
+  2560x1440 (fullscreen (fill)) - fullscreen_mode=fill: the display's own mode, the output scaled
+  into the window`, `Display mode: <size> rendered and scaled into the window
+  (fullscreen_mode=fill); the display stays on its own mode` for a resolution change, and
+  `... - fullscreen_mode=exclusive: the output's own mode` for the display-mode switch; after the
+  switch, `Display mode (entered fullscreen): display N now 3440x1440 pixels ...`
   (CGDisplayCopyDisplayMode). A warm run (`BB_WARM_ONLY=1`) never switches: it logs the picks with
   `- warm run: not applied`.
-- **Output default.** Without `output_res` in bbport.ini (or, in fullscreen, with one no display
-  mode has) the output is the display's native pixel size (the CoreGraphics native-flagged mode),
-  saved so run.sh's startup patch reads the same value.
+- **Output default.** Without `output_res` in bbport.ini the output is the display's native pixel
+  size (the CoreGraphics native-flagged mode), saved so run.sh's startup patch reads the same value.
+  With one no display mode has, `fill` keeps it (it is a render resolution scaled into the window)
+  and `exclusive` replaces it with the native size, as it always did.
 - **The layer (bbport_layer.mm).** After every swapchain: `Layer dump: CAMetalLayer opaque ...
   colorspace ... drawableSize ...`, the display mode against the drawable, the window's views and
   the on-screen windows over the display. KosmicKrisp's WSI sets `opaque = NO` on hardware devices
@@ -309,3 +317,42 @@ The Metal HUD's **Direct** means the WindowServer scans the game's drawable out 
   the hideMenuBar/hideDock bits), the bundle and the frontmost app (Game Mode), and for each menu
   bar strip which display it is on and whether the game window is above it. Four seconds after
   each dump, `Layer check (+4 s): opaque 1 (as overridden) ...` confirms nothing reverted the layer.
+
+## Fullscreen: render-and-scale or the display mode (2026-10-16)
+
+The owner's report: changing the resolution in the game does not change the whole fullscreen
+window (3440x1440 -> 2560x1440 did not fill the panel), the text does not look sharp, and the
+resolutions are not tied to the aspect ratio. All three come from the same two settings.
+
+**The two semantics.** `fullscreen_mode` (bbport.ini; `BB_FULLSCREEN_MODE=fill|exclusive`; the F1
+menu's Window section, "Fullscreen") picks how fullscreen puts the picture on the display:
+
+| | `fill` (the default) | `exclusive` (P.T.'s behaviour) |
+|---|---|---|
+| what the display is put on | its own native 1x mode, once, and it stays there | the output resolution's own mode, re-picked for every change |
+| a resolution change | nothing moves: the chosen size is rendered and scaled into the same window (one blit) | a display-mode switch: a black flash, then the panel's own scaler for sizes it does not have, Direct renegotiated |
+| pixels | 1:1 only at the display's own size; text and UI are upscaled elsewhere and are slightly softer | 1:1 whenever the panel has that size, so the sharpest text there |
+| Direct | stays put: the drawable keeps matching the mode it was created on | set up again after every switch, and a mode the panel has to stretch is never 1:1 |
+| the panel | always the whole panel, whatever the resolution | fills the panel only where the output's aspect ratio is the panel's |
+
+That trade-off is the point: the display-mode switch is the only way to 1:1 pixels at a
+non-native size, and render-and-scale is the only way to change resolution without the screen
+blacking out, the panel's scaler and a Direct renegotiation. Both are kept; the default behaves
+like a modern game — the panel is always full, Direct is decided once, and the resolution is a
+render scale. `exclusive` keeps the picker and the confirmation modal exactly as they were; in
+`fill` there is nothing to ask about (the display mode does not move), so a resolution applies at
+once, and `bb_display_is_native_mode`/`confirm_native_mode` only have a role left in `exclusive`.
+
+**Aspect ratio -> resolution, one direction.** The chosen aspect ratio's list holds the output
+resolution (`BbSettings::NearestOutput` keeps the height) and both menus change the pair through
+`BbSettings::SetAspect`. The lists are per aspect ratio and their entries are not interchangeable:
+entry 5 of 16:9 is 1920x1080 and entry 5 of 21:9 is 3840x1600. The game's Display page used to map
+the Resolution row's bare index through whichever list happened to be current, so an aspect ratio
+chosen anywhere else (the F1 menu, the launcher, another process) could leave the row holding a
+size of another list — a 2560x1440 pick under a 21:9 setting: the pillarboxed 16:9 picture of the
+report. `RefreshOutputRow` now keys the row to `BbSettings::aspect` (not to the page's own aspect
+row) and re-fits it — entries, texts, count and selected value — whenever the two disagree; `Poll`
+applies an aspect change through `SetAspect`; and the resolution row is always the list of the
+aspect ratio in use. `Auto` in a process without a window (the game process, and so its Display
+page: `Monitor()` is only set where the window is) resolves to the output in effect instead of a
+hard 16:9, so the page and the F1 menu list the same sizes on an ultrawide panel.

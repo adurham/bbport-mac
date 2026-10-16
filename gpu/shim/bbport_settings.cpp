@@ -66,6 +66,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         if (value == "windowed") v.window_mode = WindowWindowed;
         else if (value == "borderless") v.window_mode = WindowBorderless;
         else if (value == "fullscreen") v.window_mode = WindowFullscreen;
+    } else if (key == "fullscreen_mode") {
+        for (int m = 0; m < FullscreenModeCount; ++m) {
+            if (value == FullscreenModeKey(m)) v.fullscreen_mode = m;
+        }
     } else if (key == "confirm_native_mode") {
         v.confirm_native_mode = i != 0;
     } else if (key == "fps_mode") {
@@ -179,13 +183,25 @@ const char* AspectKey(int aspect) {
     return Groups[std::clamp(aspect, 0, AspectCount - 1)].key;
 }
 
+const char* FullscreenModeKey(int mode) {
+    return std::clamp(mode, 0, FullscreenModeCount - 1) == FullscreenExclusive ? "exclusive" : "fill";
+}
+
 OutputSize Monitor() {
     return UnpackSize(monitor.load(std::memory_order_relaxed));
 }
 
 int ResolvedAspect(int aspect) {
     if (aspect > AspectAuto && aspect < AspectCount) return aspect;
-    const OutputSize m = Monitor();
+    OutputSize m = Monitor();
+    if (m.width <= 0 || m.height <= 0) {
+        // No window in this process (the game process): the output in effect stands in for the
+        // monitor. It is the size the window derived (its native pixels where Auto is the panel's
+        // own group) or a size the player chose inside the panel's group, so both processes list
+        // the same resolutions — a hard 16:9 here made the game's Display page offer 16:9 sizes
+        // on an ultrawide panel and hand the renderer a size of another aspect ratio's list.
+        m = UnpackSize(Get().output_res.load(std::memory_order_relaxed));
+    }
     if (m.width <= 0 || m.height <= 0) return Aspect16x9;
     const double ratio = double(m.width) / m.height;
     int best = Aspect16x9;
@@ -231,6 +247,15 @@ OutputSize CurrentOutput() {
     const auto& v = Get();
     return NearestOutput(v.aspect.load(std::memory_order_relaxed),
                          UnpackSize(v.output_res.load(std::memory_order_relaxed)));
+}
+
+void SetAspect(int aspect) {
+    auto& v = Get();
+    aspect = std::clamp(aspect, 0, AspectCount - 1);
+    // The one direction: the aspect ratio's list holds the output, and the height is kept (the
+    // mapping the F1 overlay's Aspect row and the game's Display page both use).
+    v.output_res = PackSize(NearestOutput(aspect, CurrentOutput()));
+    v.aspect = aspect;
 }
 
 std::string SizeText(OutputSize size) {
@@ -315,6 +340,7 @@ void Load() {
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_SHOW_FPS", "show_fps"},
         {"BB_WINDOW_MODE", "window_mode"},
+        {"BB_FULLSCREEN_MODE", "fullscreen_mode"},
         {"BB_RETINA", "retina"},
         {"BB_CONFIRM_NATIVE", "confirm_native_mode"},
         {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
@@ -437,6 +463,13 @@ void ReloadLive() {
     if (fresh.output_res.load() != v.output_res.load()) {
         BbConfirm::Request(BbConfirm::Kind::OutputRes, fresh.output_res.load(), v.output_res.load());
     }
+    if (fresh.fullscreen_mode.load() != v.fullscreen_mode.load()) {
+        // How fullscreen reaches the display: nothing asks (while it is Fill no display mode is at
+        // stake, and in Exclusive it is the resolution change above that asks). The window derives
+        // its mode again on its next poll (window.cpp, follow_display_mode).
+        v.fullscreen_mode = fresh.fullscreen_mode.load();
+        std::printf("Settings: fullscreen_mode=%s\n", FullscreenModeKey(v.fullscreen_mode.load()));
+    }
     v.upscaler = fresh.upscaler.load();
     v.preset = fresh.preset.load();
     v.sharpen = fresh.sharpen.load();
@@ -494,6 +527,9 @@ void Save() {
     put("frame_generation", flag(v.frame_generation));
     put("window_mode", v.window_mode == WindowBorderless ? "borderless"
                             : v.window_mode == WindowFullscreen ? "fullscreen" : "windowed");
+    // Read by window.cpp: how fullscreen puts the picture on the display (fill: the output is
+    // scaled inside a window on the display's own mode; exclusive: the display mode itself).
+    put("fullscreen_mode", FullscreenModeKey(v.fullscreen_mode));
     // bbport_confirm.cpp: whether a resolution change that lands on the display's native 1x mode
     // asks first (1) or applies at once (0) — the file keeps the answer either way.
     put("confirm_native_mode", flag(v.confirm_native_mode));
