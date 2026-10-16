@@ -299,3 +299,13 @@ The Metal HUD's **Direct** means the WindowServer scans the game's drawable out 
   applied after the driver and logged as `Layer: override (...)`:
   - `layer_opaque=1` / `BB_LAYER_OPAQUE=1` (0, keep)
   - `layer_colorspace=nil` / `BB_LAYER_COLORSPACE=nil` (srgb, display, keep)
+
+  The overrides run after every `vkCreateSwapchainKHR` (resolution change, HDR toggle, resize) and
+  are flushed to the render server at once (`[CATransaction flush]`: the presenting thread has no
+  run loop to commit them). The dump also logs the window's level and shadow, the layer's
+  `presentsWithTransaction`, every visible layer drawn above the CAMetalLayer (with its view's
+  class, e.g. `NSTitlebarContainerView`), the display's own colour space against the layer's tag
+  (`differs (colour-matched)` is a Composited cause), `NSApp.presentationOptions` (raw value and
+  the hideMenuBar/hideDock bits), the bundle and the frontmost app (Game Mode), and for each menu
+  bar strip which display it is on and whether the game window is above it. Four seconds after
+  each dump, `Layer check (+4 s): opaque 1 (as overridden) ...` confirms nothing reverted the layer.
