@@ -273,8 +273,14 @@ if ((do_run)); then
         total_secs=$((total_secs + took))
         cp -c "$root/out/last-run.log" "$state/$name.log" 2>/dev/null || cp "$root/out/last-run.log" "$state/$name.log" 2>/dev/null || true
         tail -1 "$state/$name.out" 2>/dev/null || true
-        grep -E '^Warm run:' "$state/$name.log" 2>/dev/null | tail -1 || true
-        grep -E '^Frame stats' "$state/$name.log" 2>/dev/null | tail -1 || true
+        # The run's own numbers, when there are any: a run that died before the game wrote its log
+        # (a missing build, a crash) leaves none, and saying so beats a grep error.
+        if [[ -f $state/$name.log ]]; then
+            grep -E '^Warm run:' "$state/$name.log" | tail -1 || true
+            grep -E '^Frame stats' "$state/$name.log" | tail -1 || true
+        else
+            echo "no game log for $name: the run did not get as far as writing one (out/last-run.log)"
+        fi
         echo "route $name took ${took}s"
         find "$sandbox/cache" -type f 2>/dev/null | sed "s|^$sandbox/||" | sort >"$state/$name.names"
         new=$(( $(wc -l <"$state/$name.names") - $(comm -12 "$before_names" "$state/$name.names" | wc -l) ))

@@ -61,8 +61,9 @@ blob() { { printf '%s' "$3"; head -c "$2" /dev/zero; } | head -c "$2" >"$1"; }
 spv() { printf '\x03\x02\x23\x07\x00\x06\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >"$1"; }
 # profile.bin: the header's length is what the merge checks, the text is how a case names it.
 profile() { printf 'BBPC-the-cache-header-%s' "$2" >"$1"; }
-# Everything of a user dir except the caches: what the merge must never add, drop or rewrite.
-outside_cache() { find "$1" -not -path '*/cache/*' -print0 | sort -z | md5; }
+# Everything of a user dir except the caches (the cache directory itself too: a merge into a user
+# dir that never had one must be allowed to create it, and nothing else).
+outside_cache() { find "$1" -not -path "$1/cache*" -print0 | sort -z | md5; }
 none_exist() {
     local f
     for f in "$@"; do [[ -e $f ]] && return 1; done
@@ -230,6 +231,20 @@ if [[ -n ${WARMFILL_TEST_REAL_USER:-} ]]; then
 else
     echo "  (skipped: set WARMFILL_TEST_REAL_USER=<a user dir with a filled store> to run it)"
 fi
+
+echo "== 10. a real user dir with no cache/ at all (the game never ran there): the store is created"
+mkdir -p "$work/case10/sandbox-user/cache/CUSA00000-arm64" "$work/case10/real-user/savedata/1"
+blob "$work/case10/sandbox-user/cache/CUSA00000-arm64/0x0000000000000011.key" 64 fresh
+profile "$work/case10/sandbox-user/cache/CUSA00000-arm64/profile.bin" fresh
+printf "a save, made before the game ever wrote a cache\n" >"$work/case10/real-user/savedata/1/userdata0000"
+outside_before=$(outside_cache "$work/case10/real-user")
+check "the merge created the store and added the blob" merge_log "$work/case10.log" \
+    "$work/case10/sandbox-user" "$work/case10/real-user"
+check "the blob is there" test -f "$work/case10/real-user/cache/CUSA00000-arm64/0x0000000000000011.key"
+check "and the store's profile.bin with it" test -f "$work/case10/real-user/cache/CUSA00000-arm64/profile.bin"
+check "it said the profile was installed" grep -q 'profile.bin installed' "$work/case10.log"
+check "nothing outside cache/ was written" \
+    test "$(outside_cache "$work/case10/real-user")" = "$outside_before"
 
 printf '\n%d checks passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))

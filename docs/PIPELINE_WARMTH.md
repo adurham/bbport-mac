@@ -364,16 +364,20 @@ above); on an ordinary fill the header already matches and the flag does nothing
 ### Tests
 
 ```
-bash tools/macos/tests/test_warm_merge.sh          # the merge: 48 checks, synthetic pairs
-bash tools/macos/tests/test_warm_route_drivers.sh  # warm_route.sh against a stand-in for run.sh
-bash tools/macos/tests/test_warmfill.sh            # warmfill.sh end to end, without the game
-WARMFILL_TEST_REAL_USER=<a user dir> bash tools/macos/tests/test_warm_merge.sh   # and against a real store
+bash tools/macos/tests/test_warm_merge.sh          # the merge, 53 checks on synthetic pairs
+bash tools/macos/tests/test_warm_route_drivers.sh  # warm_route.sh, 19 checks against a stand-in for run.sh
+bash tools/macos/tests/test_warmfill.sh            # warmfill.sh without a run, 31 checks
+bash tools/macos/tests/test_warmfill_run.sh        # warmfill.sh with runs, 23 checks, against a stand-in
+WARMFILL_TEST_REAL_USER=<a user dir> bash tools/macos/tests/test_warm_merge.sh   # 59 checks, a real store
 ```
 
 None of them launch the game or write to a user dir outside their own scratch tree: the first three
-work on synthetic pairs, and the fourth clones whatever user dir it is pointed at, twice, checking
-the merge against that store's own blobs (a clone of the owner's store was used for the numbers in
-"The merge is additive, and checked" above).
+work on synthetic pairs, the fourth on a scratch checkout whose `run.sh` is a stand-in that writes
+the blobs a compile pass would, and the fifth clones whatever user dir it is pointed at, twice,
+checking the merge against that store's own blobs (a clone of the owner's store was used for the
+numbers in "The merge is additive, and checked" above). The stand-in tests are what say the run
+loop, the merge and the report work end to end; they cannot say that the real game's draws produce
+the blobs they pretend to.
 
 ## What is not verified
 
