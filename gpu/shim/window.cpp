@@ -15,6 +15,10 @@
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
 #include "bbport_confirm.h"
+#if __has_include("remote/bb_remote.h")
+#include "remote/bb_remote.h" // the native GPU process: bb-gpu's window opens the modal's pads itself
+#define BBPORT_WINDOW_REMOTE 1
+#endif
 #ifdef __APPLE__
 // bbport_appnap.mm: keeps a hidden warm run out of App Nap (its compiles at full speed).
 extern "C" void bb_warm_disable_app_nap(void);
@@ -85,6 +89,80 @@ extern "C" void bbgpu_filter_pad(uint32_t* buttons, const uint8_t* sticks) {
     }
 }
 
+namespace {
+// bbport: the gamepads the confirmation modal takes its answers from (BbConfirm::PadEvent). SDL
+// sends gamepad button events only for gamepads this process has opened: the game process's
+// runtime_pad.c opens the one it reads, and bb-gpu — whose window draws the modal — has nothing
+// else to open them, so the window does it here (without an open pad its loop never sees one).
+bool OpensPadsHere() {
+#ifdef BBPORT_WINDOW_REMOTE
+    return BbRemote::BackActive(); // bb-gpu: the game's pads are another process's
+#else
+    return false; // in process: runtime_pad.c opens them, and its open is what makes them arrive
+#endif
+}
+
+constexpr int MaxConfirmPads = 8;
+SDL_Gamepad* confirm_pads[MaxConfirmPads] = {};
+
+void OpenConfirmPad(SDL_JoystickID id) {
+    if (!OpensPadsHere() || SDL_GetGamepadFromID(id)) {
+        return; // already open: ours, or the game process's own (in process)
+    }
+    SDL_Gamepad* pad = SDL_OpenGamepad(id);
+    if (!pad) {
+        std::printf("Window: gamepad not opened for the confirmation modal: %s\n", SDL_GetError());
+        return;
+    }
+    std::printf("Window: gamepad opened for the confirmation modal: %s\n", SDL_GetGamepadName(pad));
+    for (SDL_Gamepad*& slot : confirm_pads) {
+        if (!slot) {
+            slot = pad;
+            return;
+        }
+    }
+    SDL_CloseGamepad(pad); // more pads than the modal answers with: the rest stay closed
+}
+
+void RefreshConfirmPads() {
+    for (SDL_Gamepad*& pad : confirm_pads) {
+        if (pad && !SDL_GamepadConnected(pad)) {
+            SDL_CloseGamepad(pad); // unplugged: the handle goes, and a new pad can take the slot
+            pad = nullptr;
+        }
+    }
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i) {
+        OpenConfirmPad(ids[i]);
+    }
+    SDL_free(ids);
+}
+
+// What is down right now on this process's open pads, a bit per SDL_GAMEPAD_BUTTON_* (BbConfirm::
+// PadHeld). Read before a poll's events are pumped, so it is what was down when the question
+// appeared, not what its own press made.
+std::uint32_t ConfirmPadsDown() {
+    static_assert(SDL_GAMEPAD_BUTTON_COUNT <= 32, "a button is a bit");
+    std::uint32_t down = 0;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    for (int i = 0; ids && i < count; ++i) {
+        SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[i]);
+        if (!pad) {
+            continue;
+        }
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+            if (SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(b))) {
+                down |= 1u << unsigned(b);
+            }
+        }
+    }
+    SDL_free(ids);
+    return down;
+}
+} // namespace
+
 namespace Frontend {
 
 namespace {
@@ -144,6 +222,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
     }
+    // SDL sends gamepad events only for gamepads that have been opened; in bb-gpu nobody else does,
+    // and the confirmation modal's answers are these events (BbConfirm::PadEvent).
+    RefreshConfirmPads();
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, title);
     const SDL_DisplayID display = ChooseDisplay();
@@ -428,6 +509,9 @@ bool WindowSDL::PollEvents() {
     }
     // A game module's menu wants the mouse as a pointer (bbgpu_add_pointer_query).
     const bool pointer = bbgpu_pointer_wanted() != 0;
+    // The pad's buttons, as the gamepad events below are read: what is down now is what a question
+    // that has just appeared must not take its answer from (BbConfirm::PadHeld).
+    BbConfirm::PadHeld(ConfirmPadsDown());
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (BbConfirm::Active() &&
@@ -442,6 +526,18 @@ bool WindowSDL::PollEvents() {
                 }
             }
             continue;
+        }
+        if ((event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+            BbConfirm::PadEvent(event.gbutton.button, event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)) {
+            // A change is asking first, on a pad: Cross applies it and Circle keeps the current
+            // setting, as Enter and Escape above do. Neither the game's own menus nor the port's see
+            // the event, and while the press that answered is held the game's input stays neutral
+            // (BbConfirm::PadConsumed, the overlay's CapturesInput): the answer is not also a menu.
+            continue;
+        }
+        if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_JOYSTICK_ADDED ||
+            event.type == SDL_EVENT_GAMEPAD_REMOVED || event.type == SDL_EVENT_JOYSTICK_REMOVED) {
+            RefreshConfirmPads(); // a pad appears (the modal needs its events) or is gone
         }
         if (FilteredByModule(&event, window)) {
             continue;
