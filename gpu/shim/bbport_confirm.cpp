@@ -63,6 +63,19 @@ void ApplyOutputRes(int packed) {
 } // namespace
 
 void Request(Kind k, int v, int prev) {
+    // Nothing about the display moves, so there is nothing to warn about: fullscreen_mode=fill (the
+    // default) renders the chosen output and scales it into a window on the display's own native
+    // mode (window.cpp), and a resolution in a window or a borderless window never had a mode of
+    // its own. The question belongs to the one case that does switch the display — exclusive
+    // fullscreen — where the pick is also the size the panel ends up on.
+    if (k == Kind::OutputRes && !BbSettings::ResolutionMovesDisplayMode()) {
+        ApplyOutputRes(v);
+        std::printf("Confirm: resolution %dx%d applied without asking (the display mode does not "
+                    "change: fullscreen is fill, or there is no fullscreen)\n",
+                    int(v & 0xffff), int(unsigned(v) >> 16));
+        std::fflush(stdout);
+        return;
+    }
     // A resolution that lands on the panel's own native 1x mode is what the reference ports apply
     // without a word (and what the game's own options do): the display is already showing it, so
     // there is nothing to warn about. The pick itself is window.cpp's (the display mode is derived
