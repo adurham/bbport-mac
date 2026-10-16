@@ -273,10 +273,11 @@ void CommandProcessor::WaitForWork(std::stop_token stop) {
         std::unique_lock lock{submit_mutex};
         Common::CondvarWait(submit_cv, lock, stop, has_work);
     }
-    BbStats::gpu_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                           std::chrono::steady_clock::now() - idle_start)
-                                           .count()),
-                                   std::memory_order_relaxed);
+    const u64 idle_ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - idle_start)
+                                .count());
+    BbStats::gpu_idle_ns.fetch_add(idle_ns, std::memory_order_relaxed);
+    BbStats::gpu_idle_total_ns.fetch_add(idle_ns, std::memory_order_relaxed); // never reset
     BbTimeline::Note(BbTimeline::DecoderIdleEnd);
 }
 

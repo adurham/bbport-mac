@@ -11,7 +11,7 @@
 
 namespace BbRemote {
 
-inline constexpr std::uint32_t ProtocolVersion = 7;
+inline constexpr std::uint32_t ProtocolVersion = 8; // 8: SharedState's frame phases
 
 enum Msg : std::uint32_t {
     // ---- game process -> GPU process ----

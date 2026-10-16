@@ -46,6 +46,14 @@ struct SharedState {
     std::atomic<std::int32_t> pad_mouse_look{0};
     /// The Toy Pad's lights (runtime_toypad_lights), for bb-gpu's settings menu.
     std::atomic<std::uint32_t> toypad_lights[3]{};
+    /// Frame phases of the game process (BB_FRAME_STATS), running totals for bb-gpu's frame log
+    /// (frame_stats.cpp): its fault round trips to bb-gpu (page tracking: a guest thread stands
+    /// still for each), its other calls, and, published once a frame (SubmitDone), its file reads
+    /// (asset streaming), and its CPU time and page-ins (Rosetta translating new code shows here).
+    alignas(64) std::atomic<std::uint64_t> game_fault_ns{0}, game_faults{0}, game_call_ns{0},
+        game_calls{0};
+    alignas(64) std::atomic<std::uint64_t> game_file_reads{0}, game_file_bytes{0},
+        game_file_ns{0}, game_cpu_us{0}, game_majflt{0};
 };
 
 struct ControlBlock {

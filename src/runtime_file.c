@@ -48,6 +48,8 @@ static File files[MAX_FILES];
 static Mount mounts[MAX_MOUNTS];
 static size_t mount_count, opens, reads, writes, missing;
 static uint64_t bytes_read;
+/* bbport (frame stats): wall time in host reads, for the GPU process's frame log (runtime_file_stats). */
+static uint64_t read_ns;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 
 static int save_path(const char *p) { return p && !strncmp(p,"/savedata",9); }
@@ -603,7 +605,10 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     if (h<0) return -EBADF;
     runtime_memory_note_write((uintptr_t)buffer,size);
     touch_for_write(buffer,size);
+    struct timespec t0,t1; clock_gettime(CLOCK_MONOTONIC,&t0);
     ssize_t n=read_retrying(h,buffer,size,0,0);
+    clock_gettime(CLOCK_MONOTONIC,&t1);
+    __atomic_add_fetch(&read_ns,(uint64_t)((t1.tv_sec-t0.tv_sec)*1000000000LL+(t1.tv_nsec-t0.tv_nsec)),__ATOMIC_RELAXED);
     if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
     if (n>0) runtime_memory_note_write((uintptr_t)buffer,(uint64_t)n); /* and once the data is there */
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
@@ -615,7 +620,10 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     if (h<0) return -EBADF;
     runtime_memory_note_write((uintptr_t)buffer,size);
     touch_for_write(buffer,size);
+    struct timespec t0,t1; clock_gettime(CLOCK_MONOTONIC,&t0);
     ssize_t n=read_retrying(h,buffer,size,offset,1);
+    clock_gettime(CLOCK_MONOTONIC,&t1);
+    __atomic_add_fetch(&read_ns,(uint64_t)((t1.tv_sec-t0.tv_sec)*1000000000LL+(t1.tv_nsec-t0.tv_nsec)),__ATOMIC_RELAXED);
     if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno); return -errno; }
     if (n>0) runtime_memory_note_write((uintptr_t)buffer,(uint64_t)n); /* and once the data is there */
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
@@ -811,6 +819,11 @@ uintptr_t runtime_file_resolve(const char *name) { return RUNTIME_LOOKUP(exports
 int64_t runtime_file_open(const char *p,int f,int m) { return do_open(p,f,m); }
 int64_t runtime_file_close(int fd) { return do_close(fd); }
 int64_t runtime_file_read(int fd,void *b,uint64_t n) { return do_read(fd,b,n); }
+/* Running totals of the game's host reads (asset streaming): count, bytes, wall ns. */
+void runtime_file_stats(uint64_t *count,uint64_t *bytes,uint64_t *ns) {
+    *count=__atomic_load_n(&reads,__ATOMIC_RELAXED); *bytes=__atomic_load_n(&bytes_read,__ATOMIC_RELAXED);
+    *ns=__atomic_load_n(&read_ns,__ATOMIC_RELAXED);
+}
 int64_t runtime_file_pread(int fd,void *b,uint64_t n,int64_t o) { return do_pread(fd,b,n,o); }
 int64_t runtime_file_write(int fd,const void *b,uint64_t n) { return do_write(fd,b,n); }
 int64_t runtime_file_lseek(int fd,int64_t o,int w) { return do_lseek(fd,o,w); }

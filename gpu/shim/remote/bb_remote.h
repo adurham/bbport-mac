@@ -115,6 +115,11 @@ void PublishWindowState();
 void RequestRestart();
 /// After the frame stats: the game process prints its threads' CPU time and the guest's waits.
 void GameStats(double window_s, double frames);
+/// The game process's frame phases (SharedState, BB_FRAME_STATS), running totals.
+struct GamePhaseTotals {
+    u64 fault_ns, faults, call_ns, calls, file_reads, file_bytes, file_ns, cpu_us, majflt;
+};
+bool GamePhases(GamePhaseTotals& out);
 // The game process's pad and files for the button prompts (runtime_pad_prompt*,
 // runtime_pad_mouse_look, runtime_file_host_path there).
 int PadPrompt(const char* name, int prefer_mouse, char* label, int size);

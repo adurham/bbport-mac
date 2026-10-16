@@ -34,6 +34,9 @@ void runtime_sleep_stats(uint64_t* calls, uint64_t* ns) {
     *ns = 0;
 }
 void runtime_wait_report(double) {}
+void runtime_file_stats(uint64_t* count, uint64_t* bytes, uint64_t* ns) {
+    *count = *bytes = *ns = 0; // the game's files are read in the game process
+}
 void runtime_thread_attach_host(const char*) {}
 void runtime_restart(void) {
     Back::RequestRestart();
