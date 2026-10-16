@@ -856,6 +856,22 @@ bool WindowSDL::PollEvents() {
         BbConfirm::Request(BbConfirm::Kind::OutputRes, int(BbSettings::PackSize({2560, 1080})),
                            int(BbSettings::PackSize(BbSettings::CurrentOutput())));
     }
+    // BB_BUGREPORT_TRIGGER=<file>: a capture whenever the file appears (it is removed first) — the
+    // hotkey's own path for tools/macos/capture_condition.sh, which takes the real screen capture
+    // (post-scanout: tears show) next to this pre-present frame (tears never do). Checked at most
+    // every 200 ms.
+    static const char* capture_trigger = [] {
+        const char* env = std::getenv("BB_BUGREPORT_TRIGGER");
+        return env && env[0] ? env : nullptr;
+    }();
+    static Uint64 trigger_checked_ms = 0;
+    if (capture_trigger && SDL_GetTicks() - trigger_checked_ms >= 200) {
+        trigger_checked_ms = SDL_GetTicks();
+        if (std::remove(capture_trigger) == 0) {
+            std::printf("Capture: requested by %s\n", capture_trigger);
+            CaptureBugReport(window);
+        }
+    }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         // The capture hotkey (Ctrl+Shift+C): the frame that is on screen, its state in the log and

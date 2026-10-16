@@ -45,6 +45,14 @@ if [[ -n ${BB_FPS:-} ]]; then export BB_FPS; fi
 # BB_PC_MODEL=1 tries the new one.
 export BB_PC_MODEL=${BB_PC_MODEL:-0}
 mkdir -p "$data/out"
+# tools/macos/capture_condition.sh asks for the bug-report capture (Ctrl+Shift+C's path) by
+# creating this file. (BB_CAPTURE_TRIGGER is the frame analyzer's, render/vk_frame_capture.cpp.)
+export BB_BUGREPORT_TRIGGER=${BB_BUGREPORT_TRIGGER:-$(cd -- "$data" && pwd)/out/bugreport_trigger}
+rm -f "$BB_BUGREPORT_TRIGGER"
+# Present mode for one run (docs/macos-title-artifact.md): BB_VSYNC=1|0 or
+# BB_PRESENT_MODE=fifo|immediate, else bbport.ini present_mode / vsync.
+if [[ -n ${BB_VSYNC:-} ]]; then export BB_VSYNC; fi
+if [[ -n ${BB_PRESENT_MODE:-} ]]; then export BB_PRESENT_MODE; fi
 # FPS counter on by default, as the Linux launcher does; the overlay menu (F1, ` or §) toggles
 # it and saves the choice.
 ini=${BB_CONFIG:-$data/bbport.ini}
