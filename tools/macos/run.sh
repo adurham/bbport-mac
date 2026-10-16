@@ -68,7 +68,7 @@ grep -q '^object_motion=' "$ini" 2>/dev/null || echo "object_motion=1" >> "$ini"
 # the display keeps its own mode (a resolution change never blanks it); exclusive puts the display
 # itself on the output's resolution (1:1 where the panel has it, a mode switch elsewhere).
 # The F1 menu's Window section, or BB_FULLSCREEN_MODE=fill|exclusive for one run.
-grep -q '^fullscreen_mode=' "$ini" 2>/dev/null || echo "fullscreen_mode=fill" >> "$ini"
+grep -q '^fullscreen_mode=' "$ini" 2>/dev/null || echo "fullscreen_mode=exclusive" >> "$ini"
 # Keep a copy of everything the port prints for diagnosis.
 # Keep the previous run's log: a quick relaunch would otherwise overwrite the one to report.
 log=$data/out/last-run.log

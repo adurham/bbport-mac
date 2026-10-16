@@ -170,7 +170,7 @@ struct Values {
     /// How fullscreen puts the picture on the display (FullscreenMode; window.cpp). Fill — the
     /// default — renders the chosen output and scales it into a window on the display's native
     /// mode; Exclusive switches the display mode itself.
-    std::atomic<int> fullscreen_mode{FullscreenFill};
+    std::atomic<int> fullscreen_mode{FullscreenExclusive};
     /// Whether a resolution change that lands on the display's native 1x mode applies without the
     /// confirmation modal (bbport_confirm.cpp, BB_CONFIRM_NATIVE): the reference ports show no
     /// dialog for the native size at all, and it is the size most changes pick. Off: ask for

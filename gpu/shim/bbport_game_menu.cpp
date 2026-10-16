@@ -327,9 +327,9 @@ void DefineTexts() {
         for (u32 i = 0; i < OutputSlots; ++i) outputs.push_back(OutputTexts + i);
         row(OutputRes, "Resolution", "Разрешение",
             "Size of the final frame and the UI; the list follows the aspect ratio "
-            "(applies on the next launch on this Mac)",
+            "(the display switches to it right away)",
             "Размер готового кадра и интерфейса; список следует за соотношением сторон "
-            "(на этом Mac — после перезапуска)",
+            "(дисплей переключается сразу)",
             std::move(outputs), Kind::Select);
     }
     row(Upscaler, "Upscaler", "Апскейлер", "Temporal upscaler and anti-aliasing",

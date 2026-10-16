@@ -859,14 +859,14 @@ void Menu() {
             ImGui::EndCombo();
         }
         Hint(BbSettings::MenuText(
-            "Fill (the default): the game is drawn at the chosen resolution and scaled up to the "
+            "Fill (opt-in): the game is drawn at the chosen resolution and scaled up to the "
             "whole screen; the display keeps the mode it is on, so changing the resolution never "
             "blanks the screen and Direct keeps working. Text and UI are sharpest when the "
             "resolution is the display's own size. Switch the display mode: the display itself is "
             "put on the chosen resolution — pixel-for-pixel where the panel has it, and for other "
             "sizes the screen goes black for a moment, the panel's own scaler stretches the "
             "picture and Direct has to be set up again.",
-            "Заполнять (по умолчанию): кадр рисуется в выбранном разрешении и растягивается на "
+            "Заполнять (опция): кадр рисуется в выбранном разрешении и растягивается на "
             "весь экран; дисплей остаётся в своём режиме, поэтому смена разрешения не гасит "
             "экран и Direct продолжает работать. Текст и интерфейс всего чётче, когда "
             "разрешение совпадает с собственным разрешением дисплея. Переключать режим "
