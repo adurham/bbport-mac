@@ -110,7 +110,13 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     p->used=1; p->type=type; p->channels=channels[format]; p->is_float=format>=3 && format!=6;
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
     for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
-    if (sdl_audio()) {
+    // A warm run (BB_WARM_ONLY) boots the game hidden to compile its pipelines: no output
+    // device — the ports below keep the timer sink (writes are paced and dropped), so the
+    // warm-up runs silently instead of playing the game out of an invisible window.
+    const char *warm=getenv("BB_WARM_ONLY");
+    if (warm && warm[0]=='1') {
+        printf("Runtime: warm run: port %d keeps the timer sink (no audio device)\n",id);
+    } else if (sdl_audio()) {
         SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->channels, 48000};
         p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
         if (p->stream) SDL_ResumeAudioStreamDevice(p->stream);
