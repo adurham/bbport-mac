@@ -2,6 +2,7 @@
 #include "bbport_settings.h"
 #include "bbport_confirm.h"
 #include <cmath>
+#include <cctype>
 
 #include <algorithm>
 #include <cstdio>
@@ -104,6 +105,23 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         }
     } else if (key == "layer_opaque") {
         v.layer_opaque = value == "keep" || value.empty() ? -1 : (i != 0);
+    } else if (key == "present_mode" || key == "vsync") {
+        std::string lower = value;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        if (key == "vsync") {
+            v.present_mode = lower.empty() || lower == "default" ? PresentModeUnset : i != 0 || lower == "on" ? PresentFifo : PresentImmediate;
+        } else if (lower == "fifo" || lower == "vsync") {
+            v.present_mode = PresentFifo;
+        } else if (lower == "immediate" || lower == "novsync") {
+            v.present_mode = PresentImmediate;
+        } else if (lower == "mailbox") {
+            v.present_mode = PresentMailbox;
+        } else {
+            if (!lower.empty() && lower != "default") {
+                std::printf("Settings: unknown present_mode '%s' (fifo, immediate or mailbox)\n", value.c_str());
+            }
+            v.present_mode = PresentModeUnset;
+        }
     } else if (key == "layer_colorspace") {
         v.layer_colorspace = value == "nil" || value == "none" ? 0
                              : value == "srgb"                 ? 1
@@ -303,6 +321,8 @@ void Load() {
         {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
         {"BB_LAYER_OPAQUE", "layer_opaque"},       {"BB_LAYER_COLORSPACE", "layer_colorspace"},
+        // BB_VSYNC first: BB_PRESENT_MODE (the launcher's, more specific) wins when both are set.
+        {"BB_VSYNC", "vsync"},                     {"BB_PRESENT_MODE", "present_mode"},
     };
     // Frame generation is hidden in the menu until its artifacts are fixed: only BB_FRAME_GEN turns
     // it on, a saved setting does not.
@@ -539,6 +559,15 @@ const char* PresetName(int preset) {
                                                        "Performance", "Ultra Performance",
                                                        "Ultra Quality"};
     return names[std::clamp(preset, 0, PresetCount - 1)];
+}
+
+const char* PresentModeName(int mode) {
+    switch (mode) {
+    case PresentFifo: return "fifo";
+    case PresentImmediate: return "immediate";
+    case PresentMailbox: return "mailbox";
+    default: return "unset";
+    }
 }
 
 const char* UpscalerName(int upscaler) {

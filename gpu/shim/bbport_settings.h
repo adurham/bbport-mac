@@ -94,6 +94,11 @@ OutputSize CurrentOutput();
 /// "2560x1080".
 std::string SizeText(OutputSize size);
 
+/// bbport.ini present_mode (Values::present_mode).
+enum PresentModeChoice : int { PresentModeUnset = -1, PresentFifo = 0, PresentImmediate = 1, PresentMailbox = 2 };
+/// "fifo", "immediate", "mailbox" or "unset".
+const char* PresentModeName(int mode);
+
 struct Values {
     std::atomic<MenuLanguage> menu_language{MenuLanguage::Russian};
     /// Chosen in the menu (or already in bbport.ini): only then is it saved, so the language
@@ -132,6 +137,11 @@ struct Values {
     /// opaque 0/1; colorspace 0 nil (no colour matching), 1 sRGB, 2 the display's own.
     std::atomic<int> layer_opaque{-1};
     std::atomic<int> layer_colorspace{-1};
+    /// The swapchain's present mode (vulkan/swapchain.cpp), bbport.ini present_mode =
+    /// fifo | immediate | mailbox, or vsync = 1 | 0; BB_PRESENT_MODE / BB_VSYNC override for one
+    /// run. -1: unset (the video core's default, Mailbox, which KosmicKrisp lacks: Fifo). On the
+    /// Mac Fifo is CAMetalLayer displaySyncEnabled=YES, Immediate is NO (tears under Direct).
+    std::atomic<int> present_mode{PresentModeUnset};
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};

@@ -3,8 +3,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <limits>
+#include <string>
 
+#include "bbport_settings.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
 #include "vulkan/instance.h"
@@ -25,7 +28,23 @@ constexpr vk::SurfaceFormatKHR HdrFormat{
     .colorSpace = vk::ColorSpaceKHR::eHdr10St2084EXT,
 };
 
-vk::PresentModeKHR RequestedPresentMode() {
+/// The mode asked for, and where the request came from: bbport.ini present_mode / vsync (or their
+/// BB_PRESENT_MODE / BB_VSYNC overrides, bbport_settings.cpp), else the video core's default.
+vk::PresentModeKHR RequestedPresentMode(const char*& source) {
+    switch (BbSettings::Get().present_mode.load()) {
+    case BbSettings::PresentFifo:
+        source = "present_mode/vsync setting";
+        return vk::PresentModeKHR::eFifo;
+    case BbSettings::PresentImmediate:
+        source = "present_mode/vsync setting";
+        return vk::PresentModeKHR::eImmediate;
+    case BbSettings::PresentMailbox:
+        source = "present_mode/vsync setting";
+        return vk::PresentModeKHR::eMailbox;
+    default:
+        break;
+    }
+    source = "default";
     const auto name = EmulatorSettings.GetPresentMode();
     if (name == "Fifo") {
         return vk::PresentModeKHR::eFifo;
@@ -37,6 +56,20 @@ vk::PresentModeKHR RequestedPresentMode() {
         LOG_ERROR(Render_Vulkan, "Unknown present mode {}, using Mailbox", name);
     }
     return vk::PresentModeKHR::eMailbox;
+}
+
+/// Fifo waits for the display's refresh (vsync); Immediate and Mailbox do not wait (Immediate can
+/// tear: on the Mac it is CAMetalLayer.displaySyncEnabled = NO).
+const char* VsyncText(vk::PresentModeKHR mode) {
+    switch (mode) {
+    case vk::PresentModeKHR::eFifo:
+    case vk::PresentModeKHR::eFifoRelaxed:
+        return "vsync on";
+    case vk::PresentModeKHR::eImmediate:
+        return "vsync off, may tear";
+    default:
+        return "vsync off";
+    }
 }
 
 } // namespace
@@ -77,13 +110,25 @@ void Swapchain::ChooseFormat() {
 
 void Swapchain::ChoosePresentMode() {
     const auto [result, modes] = instance.GetPhysicalDevice().getSurfacePresentModesKHR(surface);
-    present_mode = RequestedPresentMode();
+    const char* source = "default";
+    const vk::PresentModeKHR requested = RequestedPresentMode(source);
+    present_mode = requested;
     if (result != vk::Result::eSuccess || !std::ranges::contains(modes, present_mode)) {
         // FIFO is always there.
         LOG_WARNING(Render_Vulkan, "Present mode {} is not supported, using Fifo",
                     vk::to_string(present_mode));
         present_mode = vk::PresentModeKHR::eFifo;
     }
+    // One line naming the mode in use: a tearing report (Direct scanout shows tears a composited
+    // window hides) is read against it. The A/B matrix is docs/macos-title-artifact.md.
+    std::string supported;
+    for (const auto mode : modes) {
+        supported += (supported.empty() ? "" : ", ") + vk::to_string(mode);
+    }
+    std::printf("Present mode: %s (%s; asked %s by %s; surface offers %s)\n",
+                vk::to_string(present_mode).c_str(), VsyncText(present_mode),
+                vk::to_string(requested).c_str(), source, supported.c_str());
+    std::fflush(stdout);
 }
 
 void Swapchain::QuerySurface() {
