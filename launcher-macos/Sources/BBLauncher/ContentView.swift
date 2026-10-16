@@ -39,10 +39,11 @@ struct ContentView: View {
             model.refreshChecks()
         }
         .onAppear {
-            // P.T.'s shape: the app opens and the game starts; this window is setup and logs.
-            // Hold Option while opening to keep it (or untick the box by Play). play() checks
+            // P.T.'s shape: the app opens and the game starts; the window stays behind it for
+            // setup and logs. The "Start on open" box by Play turns this off for good — the
+            // setting is remembered, so there are no hidden gestures anywhere. play() checks
             // everything itself and quietly does nothing if the setup is not ready.
-            if model.prefs.startOnOpen && !NSEvent.modifierFlags.contains(.option) {
+            if model.prefs.startOnOpen {
                 model.play()
             }
         }
@@ -74,7 +75,7 @@ struct PlayBar: View {
             Spacer(minLength: 8)
             Toggle("Start on open", isOn: $model.prefs.startOnOpen)
                 .toggleStyle(.checkbox)
-                .help("Start the game when this window opens (P.T.'s shape); hold ⌥ while opening to keep the window anyway")
+                .help("Start the game when this window opens (P.T.'s shape). Untick to keep this window instead — the setting is remembered.")
             Button {
                 model.update()
                 if model.isRunning { showLog() }

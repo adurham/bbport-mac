@@ -139,8 +139,8 @@ struct LauncherPrefs: Equatable {
     var language = "1"
     var fullscreen = false
     var hdr = false
-    /// P.T.'s shape: the app opens and the game starts; this window is only for setup and logs.
-    /// Hold Option while opening to keep it, or untick the box by Play.
+    /// P.T.'s shape: the app opens and the game starts; this window is setup and logs. The
+    /// "Start on open" box by Play turns it off for good.
     var startOnOpen = true
     var presentMode = "Fifo"
     var fpsMode = Catalog.defaultFPSMode
