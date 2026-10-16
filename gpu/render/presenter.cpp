@@ -25,6 +25,7 @@
 
 // bbgpu.cpp: the game window (a warm run asks it to quit after the caches are compiled).
 extern Frontend::WindowSDL* g_window;
+namespace Vulkan { std::uint64_t PipelinesCreated(); } // pipeline.cpp (warm runs watch it)
 
 namespace Vulkan {
 
@@ -698,11 +699,12 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
             return false;
         }
     }
-    // BB_WARM_ONLY: a hidden warm run quits BB_WARM_SECONDS after the first frame it presents
-    // (the window thread closes the game; what was compiled is already written to the caches).
-    // BB_WARM_SECONDS overrides the default 240 s. See window.cpp (the hidden window).
+    // BB_WARM_ONLY: a hidden warm run quits once the shader compiles have stopped — no pipeline
+    // created for 30 s, at least 45 s in — and at the latest at BB_WARM_SECONDS (default 420: a
+    // ceiling for unusually slow boots; leftovers compile on the next run). The window thread
+    // closes the game; what compiled is already written to the caches.
     {
-        static const int warm_seconds = [] {
+        static const int warm_cap = [] {
             const char* warm = std::getenv("BB_WARM_ONLY");
             if (!warm || warm[0] != '1') {
                 return 0;
@@ -710,16 +712,29 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
             if (const char* seconds = std::getenv("BB_WARM_SECONDS"); seconds && *seconds) {
                 return std::atoi(seconds);
             }
-            return 240;
+            return 420;
         }();
-        if (warm_seconds > 0) {
-            static const auto warm_start = std::chrono::steady_clock::now();
+        if (warm_cap > 0) {
+            using Clock = std::chrono::steady_clock;
+            static const Clock::time_point warm_start = Clock::now();
+            static std::uint64_t last_created = 0;
+            static Clock::time_point last_change = warm_start;
             static bool warm_asked = false;
-            if (!warm_asked && std::chrono::steady_clock::now() - warm_start >=
-                                   std::chrono::seconds(warm_seconds)) {
+            const auto now = Clock::now();
+            const std::uint64_t created = PipelinesCreated();
+            if (created != last_created) {
+                last_created = created;
+                last_change = now;
+            }
+            const bool quiet = now - last_change >= std::chrono::seconds(30);
+            const bool started = now - warm_start >= std::chrono::seconds(45);
+            const bool capped = now - warm_start >= std::chrono::seconds(warm_cap);
+            if (!warm_asked && ((quiet && started) || capped)) {
                 warm_asked = true;
-                std::printf("Warm run: %d s of frames presented; asking the game to quit\n",
-                            warm_seconds);
+                std::printf(
+                    "Warm run: %llu pipelines created; compiles %s - asking the game to quit\n",
+                    static_cast<unsigned long long>(created),
+                    quiet ? "stopped" : "still running at the time limit");
                 std::fflush(stdout);
                 if (g_window) {
                     g_window->RequestQuit();
