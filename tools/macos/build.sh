@@ -86,3 +86,21 @@ fi
 if [[ -x out/gpu-arm64/bb-gpu ]]; then
     bash tools/macos/make_engine_app.sh
 fi
+
+# === the pipeline warm-fill (docs/PIPELINE_WARMTH.md) — OFF unless asked for.
+# A version bump throws the gameplay pipeline set away at the next start (profile.bin's constants
+# no longer match, PipelineCache::WarmUp clears the store), and a pipeline is only made by a draw,
+# so the set has to be re-earned. BB_WARMFILL_AFTER_BUILD=1 starts one hidden warm-fill in the
+# background when the build is done: it snapshots the user dir, walks a route in the copy with
+# tools/macos/warm_route.sh and merges the blobs it compiled into the real store. It needs the game
+# data (BB_GAME_DIR, or the usual places) and several minutes of GPU time, and it skips itself
+# without touching anything if the game is running. Routes: BB_WARMFILL_ROUTES (default yharnam);
+# tools/macos/warmfill.sh --list-routes shows them and it is also fine to run by hand.
+if [[ ${BB_WARMFILL_AFTER_BUILD:-0} == 1 ]]; then
+    echo "=== Pipeline warm-fill (BB_WARMFILL_AFTER_BUILD=1): starting it in the background"
+    mkdir -p out
+    nohup bash tools/macos/warmfill.sh --routes "${BB_WARMFILL_ROUTES:-yharnam}" \
+        >>out/warmfill.log 2>&1 </dev/null &
+    echo "    log: out/warmfill.log, report: out/warmfill-report.json"
+    echo "    (it skips itself, and says so in the log, if the game is running)"
+fi
