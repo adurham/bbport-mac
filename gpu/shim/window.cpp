@@ -161,6 +161,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     const int window_mode = BbSettings::Get().window_mode.load();
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
                            window_mode == BbSettings::WindowFullscreen);
+    // A warm run (BB_WARM_ONLY): hidden window; the caches are compiled for later sessions and
+    // presenter.cpp asks the game to quit after BB_WARM_SECONDS.
+    if (const char* warm = std::getenv("BB_WARM_ONLY"); warm && warm[0] == '1') {
+        SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+        std::printf("Warm run: hidden window (BB_WARM_ONLY)\n");
+    }
     base_title = title;
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
@@ -342,6 +348,9 @@ void WindowSDL::AppendTypedKey(int scancode, unsigned mod) {
 #endif
 
 bool WindowSDL::PollEvents() {
+    if (quit_requested.load(std::memory_order_relaxed)) {
+        return false; // RequestQuit: a warm run (BB_WARM_ONLY) asking to close
+    }
     {
         std::scoped_lock lock{text_mutex};
         if (text_requested) { // SDL text input must be toggled from the window thread
