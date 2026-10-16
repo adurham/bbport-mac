@@ -222,12 +222,15 @@ WindowSDL::~WindowSDL() {
 }
 
 namespace {
-int applied_window_mode = -1; ///< BbSettings::WindowMode last applied (SetWindowMode)
+int applied_window_mode = -1; ///< BbSettings::WindowMode last applied
 SDL_Point saved_windowed_size{0, 0}; ///< windowed size/position to come back to
 SDL_Point saved_windowed_pos{0, 0};
-} // namespace
+std::atomic<int> pending_window_mode{-1}; ///< a mode from a menu, waiting for the window loop
 
-void WindowSDL::SetWindowMode(int mode) {
+/// The window mode itself. Window calls change AppKit state, so this runs on the window's own
+/// thread (PollEvents): menus can be anywhere, and AppKit throws from everywhere else
+/// ("NSWindow geometry should only be modified on the main thread!", from the settings relay).
+void apply_window_mode(SDL_Window* window, int mode) {
     if (!window || mode == applied_window_mode) {
         return;
     }
@@ -264,6 +267,13 @@ void WindowSDL::SetWindowMode(int mode) {
     applied_window_mode = mode;
     std::printf("Window mode: %s\n", mode == BbSettings::WindowBorderless ? "borderless"
                                   : mode == BbSettings::WindowFullscreen ? "fullscreen" : "windowed");
+}
+} // namespace
+
+void WindowSDL::SetWindowMode(int mode) {
+    // Called from wherever a menu lives (the settings relay, the overlay): hand the mode to
+    // the window loop, which applies it on the window's own thread.
+    pending_window_mode.store(mode, std::memory_order_relaxed);
 }
 
 void WindowSDL::BeginTextInput(const std::string& initial, const std::string& prompt) {
@@ -357,6 +367,9 @@ void WindowSDL::AppendTypedKey(int scancode, unsigned mod) {
 bool WindowSDL::PollEvents() {
     if (quit_requested.load(std::memory_order_relaxed)) {
         return false; // RequestQuit: a warm run (BB_WARM_ONLY) asking to close
+    }
+    if (const int mode = pending_window_mode.exchange(-1, std::memory_order_relaxed); mode >= 0) {
+        apply_window_mode(window, mode); // a menu's window mode, applied on the window's thread
     }
     {
         std::scoped_lock lock{text_mutex};
