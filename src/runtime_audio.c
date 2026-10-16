@@ -42,6 +42,7 @@ typedef struct {
     pthread_mutex_t lock;
     FILE *dump;                     /* BB_AUDIO_DUMP: raw converted PCM per port */
     uint64_t push_bytes, silence_bytes; /* bytes queued to the device, of which silence */
+    unsigned put_failed;            /* SDL_PutAudioStreamData failures: a dead stream is silent */
     int stats;
     uint64_t stat_start_ns, stat_last_ns, stat_max_gap_ns; /* BB_AUDIO_STATS */
     unsigned stat_starved, stat_buffers; int stat_min_queued;
@@ -174,9 +175,9 @@ static ABI int32_t audio_close(int32_t handle) {
         /* What the device took: bytes queued minus what is still waiting is what CoreAudio
            consumed, which is the only host-side proof that the sink is live. */
         if (p->stream)
-            printf("Runtime: audio port %d closed: %llu bytes queued (incl. %llu silence), %d still queued, starved %u\n",
+            printf("Runtime: audio port %d closed: %llu bytes queued (incl. %llu silence), %d still queued, %u failed puts, starved %u\n",
                    (int)(p-ports),(unsigned long long)p->push_bytes,(unsigned long long)p->silence_bytes,
-                   SDL_GetAudioStreamQueued(p->stream),p->stat_starved);
+                   SDL_GetAudioStreamQueued(p->stream),p->put_failed,p->stat_starved);
         if (p->stream) SDL_DestroyAudioStream(p->stream);
         if (p->dump) fclose(p->dump);
         p->dump=NULL;
@@ -250,7 +251,12 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
                 p->window_count=0;
             }
             p->next_deadline_ns+=(uint64_t)p->adjust_ns;
-            SDL_PutAudioStreamData(p->stream,converted,(int)bytes);
+            if (!SDL_PutAudioStreamData(p->stream,converted,(int)bytes)) {
+                if (!p->put_failed)
+                    fprintf(stderr,"Runtime: audio port %d: SDL_PutAudioStreamData failed (%s); the sink is dead\n",
+                            (int)(p-ports),SDL_GetError());
+                ++p->put_failed;
+            }
             p->push_bytes+=(uint64_t)bytes;
         }
         ++buffers_out;
