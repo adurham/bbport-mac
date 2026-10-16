@@ -18,6 +18,7 @@
 
 #include "bbport_settings.h"
 #include "remote/bb_remote.h"
+#include "bbport_frame_rate.h"
 
 namespace BbGameMenu {
 namespace {
@@ -172,7 +173,8 @@ const char16_t* TextOf(u32 id) {
 
 // ---- The port's values the game's rows edit (ints: the list rows bind ints). ----
 enum Field : int {
-    Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod, FirstEffect, FieldCount = FirstEffect + BbSettings::EffectCount
+    Aspect, OutputRes, Upscaler, Preset, Sharpness, ModelLod, FrameRate, FirstEffect,
+    FieldCount = FirstEffect + BbSettings::EffectCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -231,6 +233,8 @@ void Fill(const BbSettings::Values& s, int* values) {
     for (int i = 0; i < 4; ++i) {
         if (LodValues[i] == s.model_lod) values[ModelLod] = i;
     }
+    // The frame rate row: FpsMode's order is the row's (30, 60, 90, uncapped).
+    values[FrameRate] = s.fps_mode;
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
     }
@@ -293,8 +297,8 @@ void DefineTexts() {
     // forms): the picture, then the game's effects. Choices are the game's pop-up rows
     // (SelectRow). The other patches (intros, the free camera, the debug menu), the game's own AA
     // and the FPS counter are in the overlay menu and the launcher.
-    page("Display", "Изображение", "Aspect ratio, resolution, upscaler and detail (bbport)",
-         "Соотношение сторон, разрешение, апскейлер и детализация (bbport)", ControlsLayout);
+    page("Display", "Изображение", "Aspect ratio, resolution, upscaler and frame rate (bbport)",
+         "Соотношение сторон, разрешение, апскейлер и частота кадров (bbport)", ControlsLayout);
     row(Aspect, "Aspect ratio", "Соотношение сторон",
         "Of the final frame: wider sees more to the sides, the UI keeps to the screen edges",
         "Готового кадра: шире - больше видно по бокам, интерфейс у краёв экрана",
@@ -327,14 +331,23 @@ void DefineTexts() {
         Kind::Select);
     row(Sharpness, "Sharpness", "Резкость", "RCAS after the upscaler: 0 off, 10 strongest",
         "RCAS после апскейлера: 0 выкл, 10 сильнее всего", {}, Kind::Slider);
+    // Frame rate: the port's hooks, changed live (bbport_frame_rate.cpp). This row takes the
+    // Display page's sixth slot; "Model detail" moved to the Effects page (the layout has six
+    // rows per page).
+    row(FrameRate, "Frame rate", "Частота кадров",
+        "30 is the game's own; 60, 90 and Uncapped use the port's frame hooks (applies at once)",
+        "30 — как в игре; 60, 90 и Без ограничения — хуки порта (применяется сразу)",
+        {AddText("30 (game)", "30 (как в игре)"), AddText("60", "60"), AddText("90", "90"),
+         AddText("Uncapped", "Без ограничения")},
+        Kind::Select);
+
+    page("Effects", "Эффекты", "The game's effects and detail (bbport; after a restart)",
+         "Эффекты и детализация игры (bbport; после перезапуска)", ControlsLayout);
     row(ModelLod, "Model detail", "Детализация", "Level of detail of models (after a restart)",
         "Детализация моделей (после перезапуска)",
         {AddText("Highest", "Максимальная"), AddText("Game default", "Как в игре"),
          AddText("Lower", "Ниже"), AddText("Lowest", "Минимальная")},
         Kind::Select);
-
-    page("Effects", "Эффекты", "The game's effects (bbport; after a restart)",
-         "Эффекты игры (bbport; после перезапуска)", ControlsLayout);
 
     // Short names for the game's narrow name column (BbSettings::Effects order); the help line
     // has the details.
@@ -822,6 +835,14 @@ bool Poll() {
         s.sharpness = std::clamp(now_values[Sharpness], 0, SharpnessSteps - 1) * SharpnessStep;
     }
     s.model_lod = LodValues[std::clamp(now_values[ModelLod], 0, 3)];
+    // The frame rate row: the pacer's target, applied at once (bbport_frame_rate.cpp).
+    if (now_values[FrameRate] != applied[FrameRate]) {
+        s.fps_mode = now_values[FrameRate];
+        BbFrameRate::SetRate(now_values[FrameRate] == BbSettings::Fps60 ? 60
+                                 : now_values[FrameRate] == BbSettings::Fps90 ? 90
+                                 : now_values[FrameRate] == BbSettings::Fps30 ? 30 : 0,
+                             s.fps_limit);
+    }
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         s.effects[e] = now_values[FirstEffect + e] != 0;
     }
