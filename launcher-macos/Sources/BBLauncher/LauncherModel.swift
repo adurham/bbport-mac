@@ -563,7 +563,38 @@ final class LauncherModel: ObservableObject {
         appendLines(["", bySignal ? "— the game was stopped (signal \(status)) —" : "— the game exited (code \(status)) —"])
         // Pick up changes made in the in-game menu (it saves bbport.ini).
         reloadIni()
+        // The launcher is invisible and transient (P.T.'s shape): a game that closed takes it
+        // along; a game that died gets an alert, since there is no window any more to show one.
+        if status == 0 && !bySignal {
+            NSApplication.shared.terminate(nil)
+        } else {
+            reportExitProblem(status: status, bySignal: bySignal)
+        }
         return true
+    }
+
+    /// The game died instead of closing: say so (an alert — the launcher has no window now).
+    private func reportExitProblem(status: Int32, bySignal: Bool) {
+        let alert = NSAlert()
+        alert.messageText = bySignal ? "The game was stopped (signal \(status))"
+                                     : "The game exited with code \(status)"
+        alert.informativeText = lastProblem ?? "The last lines are in the log."
+        alert.addButton(withTitle: "Show the Log")
+        alert.addButton(withTitle: "OK")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            revealLastLog()
+        }
+    }
+
+    /// From the start-failure alert: pick the game folder (the launcher has no window any more).
+    func fixGameFolder() {
+        if let path = chooseFolder(message: "Choose the game folder (with eboot.bin)",
+                                   startingAt: prefs.gameFolder) {
+            prefs.gameFolder = path
+            prefs.save(to: UserDefaults.standard)
+            refreshChecks()
+        }
     }
 
     private func appendLines(_ lines: [String]) {

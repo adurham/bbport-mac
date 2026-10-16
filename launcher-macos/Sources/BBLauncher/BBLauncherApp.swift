@@ -9,17 +9,9 @@ struct BBLauncherApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Window("Bloodborne", id: "main") {
-            ContentView()
-                .environmentObject(LauncherModel.shared)
-        }
-        .defaultSize(width: 700, height: 880)
-        .commands {
-            CommandGroup(replacing: .help) {
-                HelpCommands()
-            }
-        }
-
+        // No main window: double-clicking the app IS the game (P.T.'s shape). The launcher runs
+        // invisibly (an accessory app), starts the game, and leaves when the game does; problems
+        // show as alerts. The Log window stays available for the "Show the Log" alerts.
         Window("Game Log", id: "log") {
             LogView()
                 .environmentObject(LauncherModel.shared)
@@ -36,9 +28,32 @@ struct BBLauncherApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Also come to the front when started as a bare executable (swift run).
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate()
+        // The launcher is invisible: an accessory app with no window at all. Double-clicking the
+        // app IS the game; it starts it and leaves when the game does. A problem shows an alert.
+        NSApplication.shared.setActivationPolicy(.accessory)
+        DispatchQueue.main.async {
+            let model = LauncherModel.shared
+            model.play()
+            if !model.isRunning {
+                let alert = NSAlert()
+                alert.messageText = "Bloodborne PC Port could not start the game"
+                alert.informativeText = model.lastProblem
+                    ?? "Check the game folder (the log has the details)."
+                alert.addButton(withTitle: "Choose Game Folder…")
+                alert.addButton(withTitle: "Show the Log")
+                alert.addButton(withTitle: "Quit")
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                switch alert.runModal() {
+                case .alertFirstButtonReturn:
+                    model.fixGameFolder()
+                    model.play()
+                case .alertSecondButtonReturn:
+                    model.revealLastLog()
+                default:
+                    NSApplication.shared.terminate(nil)
+                }
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
