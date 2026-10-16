@@ -179,7 +179,13 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
-    if (window_mode != BbSettings::WindowWindowed) {
+    // A warm run stays windowed: switching the display mode for a hidden compile pass would
+    // flicker the owner's screen for nothing (the pipeline caches do not care about the mode).
+    const bool warm_window = [] {
+        const char* warm = std::getenv("BB_WARM_ONLY");
+        return warm && warm[0] == '1';
+    }();
+    if (window_mode != BbSettings::WindowWindowed && !warm_window) {
         SetWindowMode(window_mode); // borderless/fullscreen at start; the menu changes it live
     }
 
