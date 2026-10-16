@@ -35,6 +35,7 @@
 
 typedef struct {
     int used, type, channels, is_float, frames, sample_bytes, std_layout;
+    int out_channels;               /* channels the sink's stream was opened with */
     int32_t volume[8];
     int32_t vol_min, vol_max;       /* range of the volumes the game set */
     unsigned vol_calls;
@@ -71,6 +72,27 @@ static int sdl_audio(void) {
         printf("Runtime: audio backend %s\n", sdl_ready ? SDL_GetCurrentAudioDriver() : "timer (silent)");
     }
     return sdl_ready;
+}
+/* The sink's own channel count. SDL reports the physical device's format, not the port's:
+ * asking for a wider stream than the device has leaves the fold-down to the host, at a level
+ * we cannot see (a standard 8->2 matrix costs ~13 dB), so the port folds the PS4 layout to
+ * the sink itself, at console level. 0 = unknown, keep the port's own width. */
+static int default_sink_channels(void) {
+    const char *want=SDL_GetAudioDeviceName(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
+    if (!want) return 0;
+    int count=0, channels=0;
+    SDL_AudioDeviceID *devs=SDL_GetAudioPlaybackDevices(&count);
+    if (!devs) return 0;
+    for (int i=0;i<count;++i) {
+        const char *name=SDL_GetAudioDeviceName(devs[i]);
+        SDL_AudioSpec spec;
+        if (name && !strcmp(name,want) && SDL_GetAudioDeviceFormat(devs[i],&spec,NULL) && spec.channels>0) {
+            channels=spec.channels;
+            break;
+        }
+    }
+    SDL_free(devs);
+    return channels;
 }
 /* Which sink a port feeds. A warm run (BB_WARM_ONLY) keeps the timer sink: an invisible compile
  * pass must not play the game. BB_AUDIO_DEVICE overrides that: "1" opens the real device even in
@@ -158,6 +180,7 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     pthread_mutex_init(&p->lock,NULL);
     p->used=1; p->type=type; p->channels=channels[format]; p->is_float=format>=3 && format!=6;
     p->sample_bytes=p->is_float ? 4 : 2; p->frames=(int)length; p->std_layout=format>=6;
+    p->out_channels=p->channels;
     for (int c=0;c<8;++c) p->volume[c]=VOLUME_0DB;
     p->vol_min=p->vol_max=VOLUME_0DB;
     // A warm run (BB_WARM_ONLY) boots the game hidden to compile its pipelines: no output
@@ -166,7 +189,9 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     if (!audio_want_device()) {
         printf("Runtime: warm run: port %d keeps the timer sink (no audio device)\n",id);
     } else if (sdl_audio()) {
-        SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->channels, 48000};
+        int sink=default_sink_channels();
+        if (sink>=2 && sink<p->channels) p->out_channels=sink;
+        SDL_AudioSpec spec={p->is_float ? SDL_AUDIO_F32 : SDL_AUDIO_S16, p->out_channels, 48000};
         p->stream=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,NULL,NULL);
         if (p->stream) {
             SDL_ResumeAudioStreamDevice(p->stream);
@@ -179,12 +204,14 @@ static ABI int32_t audio_open(int32_t user, int32_t type, int32_t index, uint32_
     const char *dump=getenv("BB_AUDIO_DUMP");
     if (dump) {
         char path[4096];
-        snprintf(path,sizeof(path),"%s.port%d.%dch.%s",dump,id,p->channels,p->is_float ? "f32" : "s16");
+        snprintf(path,sizeof(path),"%s.port%d.%dch.%s",dump,id,p->out_channels,p->is_float ? "f32" : "s16");
         p->dump=fopen(path,"wb");
     }
     ++ports_opened;
     pthread_mutex_unlock(&table_lock);
-    printf("Runtime: audio port %d opened (type %d, %d ch, %s, %u frames)\n",id,type,p->channels,p->is_float ? "float" : "s16",length);
+    printf("Runtime: audio port %d opened (type %d, %d ch, %s, %u frames)%s\n",id,type,p->channels,
+           p->is_float ? "float" : "s16",length,
+           p->out_channels!=p->channels ? " (folded to the sink's width for output)" : "");
     return (type<<16) | id | 0x20000000;
 }
 static ABI int32_t audio_close(int32_t handle) {
@@ -216,18 +243,63 @@ static int32_t output_port(int32_t handle, const void *data, int pace) {
     pthread_mutex_unlock(&table_lock);
     if (!p) return error;
     pthread_mutex_lock(&p->lock);
-    size_t samples=(size_t)p->frames*(size_t)p->channels, bytes=samples*(size_t)p->sample_bytes;
+    size_t samples=(size_t)p->frames*(size_t)p->channels;
+    size_t bytes=(size_t)p->frames*(size_t)p->out_channels*(size_t)p->sample_bytes;
     uint64_t period=(uint64_t)p->frames*1000000000u/48000u;
     if (data) {
-        /* Apply per-channel volume and map PS4 8ch (L R C LFE SL SR BL BR) to SDL 7.1 order. */
+        /* Apply per-channel volume, map PS4 8ch (L R C LFE SL SR BL BR) to the sink's order and,
+           when the sink has fewer channels than the port, fold it down here: the console folds
+           7.1 to whatever the output has, at full level (front pair 0 dB, centre and surrounds
+           -3 dB, LFE -6 dB), while a wider stream handed to a narrower device leaves the fold to
+           the host, whose matrix costs ~13 dB and cannot be measured from in here. */
         unsigned char converted[2048*8*4];
         static const int remap[8]={0,1,2,3,6,7,4,5};
-        for (size_t f=0;f<(size_t)p->frames;++f) for (int c=0;c<p->channels;++c) {
-            int target=p->channels==8 && !p->std_layout ? remap[c] : c;
-            size_t from=f*(size_t)p->channels+(size_t)c, to=f*(size_t)p->channels+(size_t)target;
-            float gain=(float)p->volume[c]/VOLUME_0DB;
-            if (p->is_float) { float v; memcpy(&v,(const char *)data+from*4,4); v*=gain; memcpy(converted+to*4,&v,4); }
-            else { int16_t v; memcpy(&v,(const char *)data+from*2,2); v=(int16_t)((float)v*gain); memcpy(converted+to*2,&v,2); }
+        static const float fold[8][2]={ /* PS4 channel -> stereo: L R C LFE SL SR BL BR */
+            {1.0f,0.0f},{0.0f,1.0f},{0.707f,0.707f},{0.5f,0.5f},
+            {0.707f,0.0f},{0.0f,0.707f},{0.707f,0.0f},{0.0f,0.707f}};
+        int in_ch=p->channels, out_ch=p->out_channels;
+        for (size_t f=0;f<(size_t)p->frames;++f) {
+            const char *in=(const char *)data+f*(size_t)in_ch*(size_t)p->sample_bytes;
+            char *out=(char *)converted+f*(size_t)out_ch*(size_t)p->sample_bytes;
+            if (out_ch==in_ch) {
+                for (int c=0;c<in_ch;++c) {
+                    int target=in_ch==8 && !p->std_layout ? remap[c] : c;
+                    float gain=(float)p->volume[c]/VOLUME_0DB;
+                    if (p->is_float) { float v; memcpy(&v,in+c*4,4); v*=gain; memcpy(out+target*4,&v,4); }
+                    else { int16_t v; memcpy(&v,in+c*2,2); v=(int16_t)((float)v*gain); memcpy(out+target*2,&v,2); }
+                }
+            } else if (in_ch==8 && out_ch==2) {
+                float l=0, r=0;
+                for (int c=0;c<8;++c) {
+                    float gain=(float)p->volume[c]/VOLUME_0DB, v;
+                    if (p->is_float) memcpy(&v,in+c*4,4);
+                    else { int16_t s; memcpy(&s,in+c*2,2); v=(float)s/32768.0f; }
+                    v*=gain; l+=v*fold[c][0]; r+=v*fold[c][1];
+                }
+                if (p->is_float) { memcpy(out,&l,4); memcpy(out+4,&r,4); }
+                else {
+                    int16_t s;
+                    s=(int16_t)((l>1 ? 1 : l<-1 ? -1 : l)*32767); memcpy(out,&s,2);
+                    s=(int16_t)((r>1 ? 1 : r<-1 ? -1 : r)*32767); memcpy(out+2,&s,2);
+                }
+            } else {
+                /* Other sink widths: keep what fits after the remap, folding the surplus channels
+                   into the last one rather than dropping them. */
+                float extra=0;
+                memset(out,0,(size_t)out_ch*(size_t)p->sample_bytes);
+                for (int c=0;c<in_ch;++c) {
+                    float gain=(float)p->volume[c]/VOLUME_0DB, v;
+                    if (p->is_float) memcpy(&v,in+c*4,4);
+                    else { int16_t s; memcpy(&s,in+c*2,2); v=(float)s/32768.0f; }
+                    v*=gain;
+                    int target=in_ch==8 && !p->std_layout ? remap[c] : c;
+                    if (target>=out_ch) extra+=v*0.707f;
+                    else if (p->is_float) { float w; memcpy(&w,out+target*4,4); w+=v; memcpy(out+target*4,&w,4); }
+                    else { int16_t s; memcpy(&s,out+target*2,2); s=(int16_t)(s+v*32767); memcpy(out+target*2,&s,2); }
+                }
+                if (p->is_float) { float w; memcpy(&w,out+(out_ch-1)*4,4); w+=extra; memcpy(out+(out_ch-1)*4,&w,4); }
+                else { int16_t s; memcpy(&s,out+(out_ch-1)*2,2); s=(int16_t)(s+extra*32767); memcpy(out+(out_ch-1)*2,&s,2); }
+            }
         }
         if (p->dump) fwrite(converted,1,bytes,p->dump);
         if (p->stats) {
