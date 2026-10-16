@@ -31,8 +31,16 @@ bool Visible();
 /// A line of text over the game until called with null (bbgpu_overlay_banner).
 void SetBanner(const char* text);
 
-/// Present thread: draws into `view` (layout ColorAttachmentOptimal).
-void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent);
+/// Window thread (the capture hotkey, window.cpp): the next presented frame is written to `path`
+/// as a PNG. The pixels are the swapchain image the presenter hands the overlay, so the file is
+/// the frame the port drew, at its own resolution, with no screen-recording permission asked.
+void RequestCapture(const char* path);
+
+/// Present thread: draws into `view` (layout ColorAttachmentOptimal). `presented` is the swapchain
+/// image behind it, `presented_format` its format: the capture hotkey copies that one back
+/// (RequestCapture) and has to know the bytes' order to write them (HDR frames are left out).
+void Render(vk::CommandBuffer cmdbuf, vk::Image presented, vk::Format presented_format,
+            vk::ImageView view, vk::Extent2D extent);
 
 /// The menu or the text dialog is open: the game's input is held neutral.
 bool CapturesInput();
