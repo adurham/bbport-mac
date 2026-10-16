@@ -197,7 +197,12 @@ constexpr int LodValues[] = {-2, 0, 1, 2};
 BbSettings::OutputList menu_outputs;
 int output_row_aspect = -1; ///< the aspect ratio the resolution row shows
 
+/// The size the resolution row's value `index` denotes, fitted to `aspect`: the row's value is an
+/// entry of the list it shows (menu_outputs), and `aspect` is the aspect ratio the setting is on —
+/// NearestOutput keeps the height. Mapping the index through another aspect ratio's list is what
+/// this must never do.
 BbSettings::OutputSize MenuOutput(int aspect, int index) {
+    aspect = std::clamp(aspect, 0, BbSettings::AspectCount - 1);
     if (menu_outputs.count == 0) return BbSettings::NearestOutput(aspect, BbSettings::OutputDefault);
     return BbSettings::NearestOutput(aspect, menu_outputs.sizes[std::clamp(index, 0, menu_outputs.count - 1)]);
 }
@@ -321,8 +326,10 @@ void DefineTexts() {
         std::vector<u32> outputs;
         for (u32 i = 0; i < OutputSlots; ++i) outputs.push_back(OutputTexts + i);
         row(OutputRes, "Resolution", "Разрешение",
-            "Size of the final frame and the UI (applies on the next launch on this Mac)",
-            "Размер готового кадра и интерфейса (на этом Mac — после перезапуска)",
+            "Size of the final frame and the UI; the list follows the aspect ratio "
+            "(applies on the next launch on this Mac)",
+            "Размер готового кадра и интерфейса; список следует за соотношением сторон "
+            "(на этом Mac — после перезапуска)",
             std::move(outputs), Kind::Select);
     }
     row(Upscaler, "Upscaler", "Апскейлер", "Temporal upscaler and anti-aliasing",
@@ -342,9 +349,11 @@ void DefineTexts() {
     // renderer); with the native GPU process it applies on the next launch.
     row(WindowMode, "Window mode", "Режим окна",
         "Windowed keeps the desktop; borderless fills it without a title bar; fullscreen gives "
-        "it to the game (the overlay, F1, can switch back)",
+        "it to the game and fills the screen at the chosen resolution (bbport.ini "
+        "fullscreen_mode=exclusive puts the display itself on that resolution)",
         "В окне — обычное окно; без рамки — во весь экран без заголовка; во весь экран — игра "
-        "занимает дисплей (вернуться можно через меню F1)",
+        "занимает дисплей и заполняет его в выбранном разрешении (fullscreen_mode=exclusive в "
+        "bbport.ini переключает на это разрешение сам дисплей)",
         {AddText("Windowed", "В окне"), AddText("Borderless", "Без рамки"),
          AddText("Fullscreen", "Во весь экран")},
         Kind::Select);
@@ -475,9 +484,18 @@ bool UpscalerAvailable(int i) {
 
 /// Another aspect ratio chosen on the page: the resolution row gets that aspect ratio's outputs
 /// as its values (as many; the texts are looked up in the port's buffers, RefreshOutputs, when the
-/// row shows them) and keeps the chosen height.
+/// row shows them) and keeps the chosen height. Poll applies the pair through
+/// BbSettings::SetAspect — the one direction, the same mapping the F1 overlay's Aspect row uses.
+///
+/// The list is keyed to BbSettings::Get().aspect, not to the page's own aspect row: an aspect
+/// ratio changed anywhere else (the F1 overlay, the launcher, another process) re-fits the row on
+/// its next poll too, so the row always lists the aspect ratio the setting is on. The row's value
+/// is an entry of THAT list (1:1 with menu_outputs); mapping the bare index through another
+/// aspect ratio's list would silently land on another size — 16:9's entry 5 is 1920x1080 and
+/// 21:9's is 3840x1600 (the owner's report: a 2560x1440 pick that pillarboxed a 21:9 panel).
 void RefreshOutputRow(u8* row) {
-    const int aspect = std::clamp(values[Aspect], 0, BbSettings::AspectCount - 1);
+    const int aspect = std::clamp(BbSettings::Get().aspect.load(std::memory_order_relaxed), 0,
+                                  BbSettings::AspectCount - 1);
     if (aspect == output_row_aspect) return;
     const BbSettings::OutputSize shown = MenuOutput(output_row_aspect, values[OutputRes]);
     output_row_aspect = aspect;
@@ -835,12 +853,14 @@ bool Poll() {
     }
     auto& s = BbSettings::Get();
     if (now_values[Aspect] != applied[Aspect]) {
-        // Another aspect ratio keeps the resolution row's height (its texts show the new
-        // aspect ratio's sizes, RefreshOutputRow).
-        const int aspect = std::clamp(now_values[Aspect], 0, BbSettings::AspectCount - 1);
-        s.output_res = BbSettings::PackSize(MenuOutput(aspect, now_values[OutputRes]));
-        s.aspect = aspect;
+        // Another aspect ratio: the resolution row's height is kept and both settings move
+        // together (BbSettings::SetAspect — the one direction, as the F1 overlay's Aspect row
+        // does). The row's own list still belongs to the old aspect ratio; RefreshOutputRow gives
+        // it the new one on its next poll, from the size the row showed (never its bare index).
+        BbSettings::SetAspect(std::clamp(now_values[Aspect], 0, BbSettings::AspectCount - 1));
     } else if (now_values[OutputRes] != applied[OutputRes]) {
+        // The row's value is an entry of the list it shows: the resolution is that size, fitted to
+        // the aspect ratio in use (an entry of another list would be another size).
         s.output_res = BbSettings::PackSize(MenuOutput(s.aspect, now_values[OutputRes]));
     }
     const int upscaler = std::clamp(now_values[Upscaler], 0, BbSettings::UpscalerCount - 1);
