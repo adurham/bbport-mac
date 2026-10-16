@@ -90,6 +90,10 @@ setenv("BB_CONFIG", NSHomeDirectory() + "/Library/Application Support/bbport/bbp
 if defaults.object(forKey: "nativeGpu") as? Bool ?? true {
     setenv("BB_NATIVE_GPU", "1", 1)
 }
+// Every run leaves per-frame data (the port's stats in the log + a CSV): owner-launched runs had
+// none, which left the performance numbers to guesswork.
+setenv("BB_FRAME_STATS", "1", 1)
+setenv("BB_FRAME_LOG", NSHomeDirectory() + "/Games/Bloodborne/frames-app.csv", 1)
 let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
 setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:" + path, 1)
 guard chdir(repo) == 0 else {
