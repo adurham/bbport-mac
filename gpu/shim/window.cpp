@@ -314,6 +314,14 @@ void apply_display_mode(SDL_Window* window, const char* why);
 
 } // namespace
 
+namespace {
+
+/// The window the display-mode picker works on — this process has exactly one (window.cpp's
+/// bb_output_is_native_mode and the capture hotkey ask for it from outside these functions).
+SDL_Window* last_window = nullptr;
+
+} // namespace
+
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -357,6 +365,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
+    last_window = window; // the display-mode picker's and the capture hotkey's window
     // A warm run stays windowed: switching the display mode for a hidden compile pass would
     // flicker the owner's screen for nothing (the pipeline caches do not care about the mode).
     const bool warm_window = WarmRun();
@@ -404,6 +413,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 }
 
 WindowSDL::~WindowSDL() {
+    last_window = nullptr;
     SDL_DestroyWindow(window);
 }
 
@@ -561,6 +571,30 @@ void apply_window_mode(SDL_Window* window, int mode) {
 }
 } // namespace
 
+/// bbport (bbport_confirm.cpp): whether a resolution change lands on the panel's own native 1x
+/// mode — the one the reference ports apply without a word. The display mode is derived from the
+/// output resolution here (pick_display_mode prefers 1x modes, then the closest size): the answer
+/// is the pick itself, not a guess from the numbers, so a size whose closest 1x mode is something
+/// else (or which the display does not have at all) keeps its question. False with no window yet.
+extern "C" int bb_output_is_native_mode(int width, int height) {
+    SDL_Window* window = last_window;
+    if (!window || width <= 0 || height <= 0) {
+        return 0;
+    }
+    const BbSettings::OutputSize wanted{width, height};
+    const BbSettings::OutputSize native = NativePixels(window);
+    if (native.width <= 0 || wanted != native) {
+        return 0;
+    }
+    int count = 0;
+    SDL_DisplayMode** listed =
+        SDL_GetFullscreenDisplayModes(SDL_GetDisplayForWindow(window), &count);
+    const SDL_DisplayMode* chosen = pick_display_mode(listed, count, wanted);
+    const bool native_1x = chosen && chosen->pixel_density <= 1.0f && ModePixels(*chosen) == native;
+    SDL_free(listed);
+    return native_1x ? 1 : 0;
+}
+
 void WindowSDL::SetWindowMode(int mode) {
     // A change the player makes asks first: the overlay shows the question, and nothing moves
     // until it is answered (BbConfirm). At startup there is no one to ask: the boot mode queues
@@ -688,6 +722,19 @@ bool WindowSDL::PollEvents() {
     // The pad's buttons, as the gamepad events below are read: what is down now is what a question
     // that has just appeared must not take its answer from (BbConfirm::PadHeld).
     BbConfirm::PadHeld(ConfirmPadsDown());
+    // BB_CONFIRM_AT=<seconds>: put a question up that long after the start, once — how the modal
+    // is drawn is then checked without a hand on the game's own menu (BB_CAPTURE_AT photographs it).
+    // A size that is not the display's native one: the case that keeps its question.
+    static const double confirm_at = [] {
+        const char* env = std::getenv("BB_CONFIRM_AT");
+        return env && env[0] ? std::atof(env) : 0.0;
+    }();
+    static bool asked_at_start = false;
+    if (confirm_at > 0.0 && !asked_at_start && double(SDL_GetTicks()) >= confirm_at * 1000.0) {
+        asked_at_start = true;
+        BbConfirm::Request(BbConfirm::Kind::OutputRes, int(BbSettings::PackSize({2560, 1080})),
+                           int(BbSettings::PackSize(BbSettings::CurrentOutput())));
+    }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (BbConfirm::Active() &&

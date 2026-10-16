@@ -65,6 +65,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         if (value == "windowed") v.window_mode = WindowWindowed;
         else if (value == "borderless") v.window_mode = WindowBorderless;
         else if (value == "fullscreen") v.window_mode = WindowFullscreen;
+    } else if (key == "confirm_native_mode") {
+        v.confirm_native_mode = i != 0;
     } else if (key == "fps_mode") {
         if (value == "uncap") v.fps_mode = FpsUncapped;
         else if (value == "30") v.fps_mode = Fps30;
@@ -296,6 +298,7 @@ void Load() {
         {"BB_SHOW_FPS", "show_fps"},
         {"BB_WINDOW_MODE", "window_mode"},
         {"BB_RETINA", "retina"},
+        {"BB_CONFIRM_NATIVE", "confirm_native_mode"},
         {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
         {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
@@ -471,6 +474,9 @@ void Save() {
     put("frame_generation", flag(v.frame_generation));
     put("window_mode", v.window_mode == WindowBorderless ? "borderless"
                             : v.window_mode == WindowFullscreen ? "fullscreen" : "windowed");
+    // bbport_confirm.cpp: whether a resolution change that lands on the display's native 1x mode
+    // asks first (1) or applies at once (0) — the file keeps the answer either way.
+    put("confirm_native_mode", flag(v.confirm_native_mode));
     put("fps_mode", v.fps_mode == Fps30 ? "30" : v.fps_mode == Fps60 ? "60"
                           : v.fps_mode == Fps90 ? "90" : "uncap");
     put("fps_limit", std::to_string(v.fps_limit.load()));

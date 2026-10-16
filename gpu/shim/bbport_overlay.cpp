@@ -24,21 +24,38 @@
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
 
-// DejaVu Sans (Cyrillic), embedded (third_party/fonts, Bitstream Vera license).
+// The menu's own text is DejaVu Sans (Cyrillic, third_party/fonts, Bitstream Vera license); the
+// confirmation modal asks in EB Garamond (third_party/fonts/EBGaramond.ttf, SIL OFL 1.1, the
+// license next to the file), whose lettering sits with the game's own. Both are embedded:
+// the port is a library next to the game, with no font files of its own to install.
+// The paths come from CMake (gpu/CMakeLists.txt, absolute: .incbin is resolved by the
+// assembler); the fallbacks are for editors that read this file without the target's flags.
+#ifndef BB_FONT_PATH
+#define BB_FONT_PATH "third_party/fonts/DejaVuSans.ttf"
+#endif
+#ifndef BB_SERIF_FONT_PATH
+#define BB_SERIF_FONT_PATH "third_party/fonts/EBGaramond.ttf"
+#endif
+#define BB_EMBED_FONT(symbol, path)                                                              \
+    asm(".section __TEXT,__const\n"                                                             \
+        ".p2align 4\n"                                                                          \
+        ".private_extern _" symbol "\n"                                                         \
+        ".globl _" symbol "\n"                                                                  \
+        "_" symbol ":\n"                                                                        \
+        ".incbin \"" path "\"\n"                                                                \
+        ".private_extern _" symbol "_end\n"                                                    \
+        ".globl _" symbol "_end\n"                                                              \
+        "_" symbol "_end:\n"                                                                    \
+        ".text\n")
 #ifdef __APPLE__
-// bbport (macOS): Mach-O: read-only data section, C symbols carry a leading underscore,
-// .private_extern hides.
-asm(".section __TEXT,__const\n"
-    ".p2align 4\n"
-    ".private_extern _bb_font_ttf\n"
-    ".globl _bb_font_ttf\n"
-    "_bb_font_ttf:\n"
-    ".incbin \"" BB_FONT_PATH "\"\n"
-    ".private_extern _bb_font_ttf_end\n"
-    ".globl _bb_font_ttf_end\n"
-    "_bb_font_ttf_end:\n"
-    ".text\n");
+BB_EMBED_FONT("bb_font_ttf", BB_FONT_PATH);
+BB_EMBED_FONT("bb_serif_font_ttf", BB_SERIF_FONT_PATH);
+extern "C" const unsigned char bb_font_ttf[];
+extern "C" const unsigned char bb_font_ttf_end[];
+extern "C" const unsigned char bb_serif_font_ttf[];
+extern "C" const unsigned char bb_serif_font_ttf_end[];
 #else
+#undef BB_EMBED_FONT
 #ifdef _WIN32
 #define BB_FONT_SECTION ".section .rdata,\"dr\"\n"
 #define BB_FONT_HIDDEN(name) ""
@@ -48,19 +65,14 @@ asm(".section __TEXT,__const\n"
 #define BB_FONT_HIDDEN(name) ".hidden " name "\n"
 #define BB_FONT_END ".previous\n"
 #endif
-asm(BB_FONT_SECTION
-    ".balign 16\n"
-    BB_FONT_HIDDEN("bb_font_ttf")
-    ".global bb_font_ttf\n"
-    "bb_font_ttf:\n"
-    ".incbin \"" BB_FONT_PATH "\"\n"
-    BB_FONT_HIDDEN("bb_font_ttf_end")
-    ".global bb_font_ttf_end\n"
-    "bb_font_ttf_end:\n"
-    BB_FONT_END);
+#define BB_EMBED_FONT(symbol, path)                                                             \
+    asm(BB_FONT_SECTION ".balign 16\n" BB_FONT_HIDDEN(symbol) ".global " symbol "\n" symbol     \
+        ":\n"                                                                                   \
+        ".incbin \"" path "\"\n" BB_FONT_HIDDEN(symbol "_end") ".global " symbol "_end\n" symbol \
+        "_end:\n" BB_FONT_END)
+BB_EMBED_FONT("bb_font_ttf", BB_FONT_PATH);
+BB_EMBED_FONT("bb_serif_font_ttf", BB_SERIF_FONT_PATH);
 #endif
-extern "C" const unsigned char bb_font_ttf[];
-extern "C" const unsigned char bb_font_ttf_end[];
 
 extern "C" void runtime_restart(void); // bb-probe (probe.c)
 extern Frontend::WindowSDL* g_window; // bbgpu.cpp: the game's window (the menu's window mode)
@@ -77,6 +89,9 @@ std::atomic<bool> menu_open{false};
 bool l3_down = false, r3_down = false;
 bool dirty = false; // settings changed while open: saved on close
 float base_scale = 1.0f;
+/// The confirmation modal's font (EB Garamond, Init): the game's own lettering, where the menu
+/// keeps DejaVu Sans. Null if the atlas refused it (the modal then falls back to the menu's font).
+ImFont* serif_font = nullptr;
 // The game's text dialog (ImeDialog, the character name), typed on the keyboard: drawn while it
 // is open. In fullscreen the window title that showed it is not visible (issues #17, #19).
 std::mutex prompt_mutex;
@@ -937,6 +952,11 @@ void Menu() {
             "Читается при запуске — применяется после перезапуска."));
     }
     Checkbox(BbSettings::MenuText("FPS counter in corner", "Счётчик FPS в углу"), s.show_fps);
+    Hint(BbSettings::MenuText(
+        "A resolution change that lands on the display's native 1x mode applies without a "
+        "question (confirm_native_mode in bbport.ini, 0 asks again).",
+        "Смена разрешения на нативный режим 1x экрана применяется без вопроса (confirm_native_mode "
+        "в bbport.ini, 0 — спрашивать снова)."));
 
     ImGui::Spacing();
     if (ImGui::Button(BbSettings::MenuText("Close", "Закрыть"))) {
@@ -1067,6 +1087,7 @@ void ScriptedKeys() {
     }
 }
 
+
 } // namespace
 
 void SetTextPrompt(bool active, const std::string& prompt, const std::string& text) {
@@ -1102,6 +1123,22 @@ void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count) 
     font_config.FontDataOwnedByAtlas = false;
     io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_font_ttf),
                                    int(bb_font_ttf_end - bb_font_ttf), 18.0f, &font_config);
+    // The confirmation modal's own lettering (EB Garamond, the serif embedded above): a second
+    // font, so the question over the game reads as the game's prompt and not as this menu. Larger
+    // than the menu's text, as the game's own notices are.
+    ImFontConfig serif_config;
+    serif_config.FontDataOwnedByAtlas = false;
+    serif_font = io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(bb_serif_font_ttf),
+                                               int(bb_serif_font_ttf_end - bb_serif_font_ttf),
+                                               28.0f, &serif_config);
+    if (!serif_font) {
+        std::printf("Overlay: the confirmation modal's serif font did not load; its text falls "
+                    "back to the menu's own\n");
+    } else {
+        std::printf("Overlay: fonts ready (menu 18 px DejaVu Sans, confirmation modal 28 px EB "
+                    "Garamond, %d KB embedded)\n",
+                    int((bb_serif_font_ttf_end - bb_serif_font_ttf) / 1024));
+    }
 
     const vk::Instance vk_instance = instance.GetInstance();
     ImGui_ImplVulkan_LoadFunctions(
@@ -1413,31 +1450,99 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
                               size.width, size.height);
             }
             auto* draw = ImGui::GetForegroundDrawList();
-            draw->AddRectFilled({0, 0}, io.DisplaySize, IM_COL32(0, 0, 0, 100));
-            ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.42f},
+            // The game's own notices dim what is behind them; the same, so the question reads as
+            // the game waiting for an answer rather than as a settings window over it.
+            draw->AddRectFilled({0, 0}, io.DisplaySize, IM_COL32(0, 0, 0, 130));
+
+            // Bloodborne's prompt: a near-black parchment panel, one thin pale-gold rule around
+            // it, parchment text, and its own Cross/Circle wording — not this port's menu (which
+            // stays DejaVu Sans on its own dark blue-grey). Sizes are already scaled to the
+            // display (style.ScaleAllSizes above), so the units here are the display's pixels.
+            const float unit = base_scale;
+            const ImVec4 parchment(228.0f / 255.0f, 222.0f / 255.0f, 208.0f / 255.0f, 1.0f);
+            const ImVec4 quiet(168.0f / 255.0f, 158.0f / 255.0f, 138.0f / 255.0f, 1.0f);
+            const ImVec4 rule(196.0f / 255.0f, 178.0f / 255.0f, 130.0f / 255.0f, 1.0f);
+            const ImVec4 button(28.0f / 255.0f, 24.0f / 255.0f, 20.0f / 255.0f, 0.85f);
+            const float panel_width = 660.0f * unit;
+            const float padding = 38.0f * unit;
+            const float gap = 22.0f * unit;
+            const float content = panel_width - padding * 2.0f;
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(12.0f / 255.0f, 10.0f / 255.0f,
+                                                            9.0f / 255.0f, 235.0f / 255.0f));
+            ImGui::PushStyleColor(ImGuiCol_Border, rule);
+            ImGui::PushStyleColor(ImGuiCol_Text, parchment);
+            ImGui::PushStyleColor(ImGuiCol_TextDisabled, quiet);
+            ImGui::PushStyleColor(ImGuiCol_Separator,
+                                  ImVec4(rule.x, rule.y, rule.z, 0.4f));
+            ImGui::PushStyleColor(ImGuiCol_Button, button);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                  ImVec4(rule.x, rule.y, rule.z, 0.18f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(rule.x, rule.y, rule.z, 0.32f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padding, 30.0f * unit));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, 16.0f * unit));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20.0f * unit, 9.0f * unit));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+            const bool serif = serif_font != nullptr;
+            if (serif) {
+                ImGui::PushFont(serif_font, 0.0f); // the modal's own size, from the atlas
+            }
+            ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f},
                                     ImGuiCond_Always, {0.5f, 0.5f});
-            ImGui::SetNextWindowBgAlpha(0.92f);
+            ImGui::SetNextWindowSize({panel_width, 0.0f}, ImGuiCond_Always); // height: fit the text
             ImGui::Begin("##bbconfirm", nullptr,
                          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                              ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-                             ImGuiWindowFlags_NoFocusOnAppearing);
-            bool answer = false;
-            bool answered = false;
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoScrollbar);
+            // Centred lines: the panel is a fixed width, so each line finds its own middle.
+            const auto centred = [&](const char* text) {
+                ImGui::SetCursorPosX(padding + (content - ImGui::CalcTextSize(text).x) * 0.5f);
+            };
+            centred(question);
             ImGui::TextUnformatted(question);
             ImGui::Spacing();
-            if (ImGui::Button(BbSettings::MenuText("Switch (Enter / Cross)", "Переключить (Enter / Крест)"))) {
+            ImGui::Separator();
+            ImGui::Spacing();
+            const char* switch_text = BbSettings::MenuText("Switch  (Cross)", "Переключить  (Крест)");
+            const char* keep_text =
+                BbSettings::MenuText("Keep current  (Circle)", "Оставить текущее  (Круг)");
+            const float switch_width = ImGui::CalcTextSize(switch_text).x + 40.0f * unit;
+            const float keep_width = ImGui::CalcTextSize(keep_text).x + 40.0f * unit;
+            bool answer = false;
+            bool answered = false;
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(rule.x, rule.y, rule.z, 0.55f));
+            ImGui::SetCursorPosX(padding + (content - switch_width - keep_width - gap) * 0.5f);
+            if (ImGui::Button(switch_text, {switch_width, 0.0f})) {
                 answer = true;
                 answered = true;
             }
-            ImGui::SameLine();
-            if (ImGui::Button(BbSettings::MenuText("Keep current (Esc / Circle)", "Оставить текущее (Esc / Круг)"))) {
+            ImGui::SameLine(0.0f, gap);
+            if (ImGui::Button(keep_text, {keep_width, 0.0f})) {
                 answered = true;
             }
-            ImGui::TextDisabled(BbSettings::MenuText("Keeping the current one in %d s",
-                                                     "Текущее останется через %d s"),
-                                BbConfirm::SecondsLeft());
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+            ImGui::Spacing();
+            // The keyboard, and the countdown, as one quiet line under the prompts.
+            char subtitle[192];
+            std::snprintf(subtitle, sizeof(subtitle),
+                          BbSettings::MenuText(
+                              "Keeping the current setting in %d s  —  Enter switches, Esc keeps",
+                              "Текущее останется через %d с  —  Enter — переключить, Esc — оставить"),
+                          BbConfirm::SecondsLeft());
+            ImGui::PushFont(nullptr, 17.0f); // smaller than the question, the same serif
+            centred(subtitle);
+            ImGui::TextDisabled("%s", subtitle);
+            ImGui::PopFont();
             ImGui::End();
+            if (serif) {
+                ImGui::PopFont();
+            }
+            ImGui::PopStyleVar(7);
+            ImGui::PopStyleColor(8);
             if (answered) {
                 BbConfirm::Decide(answer);
             }

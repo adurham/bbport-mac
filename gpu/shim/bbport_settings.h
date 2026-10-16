@@ -142,6 +142,11 @@ struct Values {
     /// The game window's mode (WindowMode; window.cpp applies it at creation and live). The
     /// legacy BB_FULLSCREEN=1 asks for fullscreen when the file does not choose a mode.
     std::atomic<int> window_mode{WindowWindowed};
+    /// Whether a resolution change that lands on the display's native 1x mode applies without the
+    /// confirmation modal (bbport_confirm.cpp, BB_CONFIRM_NATIVE): the reference ports show no
+    /// dialog for the native size at all, and it is the size most changes pick. Off: ask for
+    /// every change, as before.
+    std::atomic<bool> confirm_native_mode{true};
     /// The frame rate the port's hooks aim for (FpsMode; bbport_frame_rate.cpp changed live).
     std::atomic<int> fps_mode{FpsUncapped};
     /// Rate limit in FPS for the pacer (0: none; FIFO still follows the display's refresh).

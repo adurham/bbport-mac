@@ -16,6 +16,11 @@
 #define BBPORT_CONFIRM_REMOTE 1
 #endif
 
+// window.cpp: whether an output of this size resolves to the display's own native 1x mode (the
+// display mode is derived from the output there). False with no window yet, or when the pick
+// would land elsewhere: then there is something to ask about.
+extern "C" int bb_output_is_native_mode(int width, int height);
+
 namespace BbConfirm {
 namespace {
 
@@ -47,9 +52,31 @@ const char* KindName(Kind k) {
     return k == Kind::WindowMode ? "window mode" : "resolution";
 }
 
+/// What an answered "switch to it" does for a resolution: write it and let the renderer's live
+/// path pick it up (Decide). The suppressed native-mode change below applies exactly this.
+void ApplyOutputRes(int packed) {
+    auto& s = BbSettings::Get();
+    s.output_res = std::uint32_t(packed);
+    BbSettings::Save();
+}
+
 } // namespace
 
 void Request(Kind k, int v, int prev) {
+    // A resolution that lands on the panel's own native 1x mode is what the reference ports apply
+    // without a word (and what the game's own options do): the display is already showing it, so
+    // there is nothing to warn about. The pick itself is window.cpp's (the display mode is derived
+    // from the output resolution there); anything else — another size, another density, no window
+    // yet — keeps the question. confirm_native_mode / BB_CONFIRM_NATIVE turns it off again.
+    if (k == Kind::OutputRes && BbSettings::Get().confirm_native_mode.load() &&
+        bb_output_is_native_mode(int(v & 0xffff), int(unsigned(v) >> 16)) != 0) {
+        ApplyOutputRes(v);
+        std::printf("Confirm: resolution %dx%d is the display's native 1x mode: applied without "
+                    "asking (confirm_native_mode=0 to ask again)\n",
+                    int(v & 0xffff), int(unsigned(v) >> 16));
+        std::fflush(stdout);
+        return;
+    }
     std::scoped_lock lock{mutex};
     if (active) {
         if (kind == k && value == v) {
@@ -134,8 +161,7 @@ void Decide(bool apply) {
         if (apply) {
             // Nothing was stored while the question was up: write it now and the renderer's
             // live path picks it up.
-            s.output_res = v;
-            BbSettings::Save();
+            ApplyOutputRes(v);
             printf("Confirm: resolution %dx%d confirmed\n", int(v & 0xffff), int(unsigned(v) >> 16));
         } else {
             // The menu that asked already wrote the new size to bbport.ini (the game process's
