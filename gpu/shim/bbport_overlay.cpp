@@ -1510,6 +1510,10 @@ std::atomic<std::uint32_t> warming_count{0}; ///< compiles so far when the count
 /// a warm launch shows nothing, the first run after an update says what it is doing instead of
 /// leaving a black window that reads as a hang (bbport).
 bool Warming() {
+    // Opt-in (BB_WARM_NOTICE=1): the owner called the notice distracting during normal play;
+    // warming is background housekeeping and shows nothing unless asked for.
+    static const bool notice = std::getenv("BB_WARM_NOTICE") != nullptr;
+    if (!notice) return false;
     static std::uint32_t last_count = 0;
     static std::chrono::steady_clock::time_point last_change = std::chrono::steady_clock::now();
     static bool ever = false;
