@@ -30,6 +30,7 @@
 #include "memory/fault_sites.h"
 #include "vulkan/instance.h"
 #include "render/scheduler.h"
+#include "remote/bb_remote.h"
 
 extern "C" void runtime_sleep_stats(uint64_t* calls, uint64_t* ns);
 extern "C" void runtime_wait_report(double frames);
@@ -37,6 +38,8 @@ extern "C" void runtime_wait_report(double frames);
 namespace Vulkan {
 extern std::atomic<u64> g_bb_compile_ns;
 extern std::atomic<u32> g_bb_compiles;
+extern std::atomic<u64> g_bb_compile_port_ns;
+extern std::atomic<u64> g_bb_compile_driver_ns;
 } // namespace Vulkan
 
 namespace BbVideoOut {
@@ -121,6 +124,25 @@ static void PrintMemory() {
                 (unsigned long long)(BbStats::gc_trigger_bytes.load() >> 20),
                 (unsigned long long)BbStats::gc_freed_images.exchange(0),
                 (unsigned long long)BbStats::gc_kept_images.exchange(0));
+}
+
+/// bbport: the frame log (BB_FRAME_LOG), opened once. One stream for the log and for the capture
+/// hotkey's marker: the log's own file offset advances with its writes, so a second stream's
+/// marker (written at the end of the file) would be written over by the log's next flush.
+static FILE* OpenFrameLog() {
+    static FILE* const log = [] () -> FILE* {
+        const char* path = std::getenv("BB_FRAME_LOG");
+        FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
+        if (file) {
+            std::fprintf(file, "t_s,frame_ms,present_wait_ms,tick_wait_ms,stage_a_cpu_ms,"
+                               "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
+                               "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
+                               "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
+                               "free_mb\n");
+        }
+        return file;
+    }();
+    return log;
 }
 
 void OnFlipStats() {
@@ -250,18 +272,7 @@ void OnFlipStats() {
     }
     // bbport: BB_FRAME_LOG=path (with BB_FRAME_STATS): one line per flip, to find what the
     // long frames (stutter) have in common.
-    static FILE* const frame_log = [] () -> FILE* {
-        const char* path = std::getenv("BB_FRAME_LOG");
-        FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
-        if (file) {
-            std::fprintf(file, "t_s,frame_ms,present_wait_ms,tick_wait_ms,stage_a_cpu_ms,"
-                               "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
-                               "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
-                               "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
-                               "free_mb\n");
-        }
-        return file;
-    }();
+    static FILE* const frame_log = OpenFrameLog();
     if (frame_log) {
         static const auto log_start = now;
         static u64 log_twf, log_tick, log_present, log_compiles, log_rf, log_preupload;
@@ -325,6 +336,8 @@ void OnFlipStats() {
     if (window >= 5.0) {
         const u32 compiles = Vulkan::g_bb_compiles.exchange(0);
         const u64 compile_ns = Vulkan::g_bb_compile_ns.exchange(0);
+        const u64 compile_port_ns = Vulkan::g_bb_compile_port_ns.exchange(0);
+        const u64 compile_driver_ns = Vulkan::g_bb_compile_driver_ns.exchange(0);
         const u64 direct = Vulkan::Scheduler::direct_recordings.exchange(0);
         const u64 faults = BbStats::tracker_faults.exchange(0);
         // GPU command thread CPU time per draw: comparable between builds even when the scene
@@ -339,13 +352,15 @@ void OnFlipStats() {
         window_draws = all_draws;
         window_gpu_us = gpu_us;
         std::printf("Frame stats: %.1f FPS, worst frame %.1f ms (vblank %u Hz); "
-                    "%u shader/pipeline compiles, %.1f ms; %llu recorder syncs; "
+                    "%u shader/pipeline compiles, %.1f ms (%.1f translating, %.1f in the driver); "
+                    "%llu recorder syncs; "
                     "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
                     "%.0f draws/frame, idle %.1f%%; blocked: recorder %.1f%%, host copies "
                     "%.1f%% (%.0f/frame, %.0f/frame not needed), copy threads %.1f%%, GPU ticks %.1f%%; "
                     "reduced-size draws %.0f/frame of %.0f in the scene\n",
                     frames / window, worst_ms, EmulatorSettings.GetVblankFrequency(), compiles,
-                    compile_ns / 1e6, static_cast<unsigned long long>(direct),
+                    compile_ns / 1e6, compile_port_ns / 1e6, compile_driver_ns / 1e6,
+                    static_cast<unsigned long long>(direct),
                     faults / window, static_cast<long long>(BbStats::hot_pages.load()),
                     us_per_draw, draws_per_frame,
                     BbStats::gpu_idle_ns.exchange(0) / (window * 1e7),
@@ -400,14 +415,21 @@ void OnFlipStats() {
         if (BbStats::range_allocators[0].load()) {
             std::printf("\n");
         }
-        std::printf("Gnm: %.1f sceGnmSubmitDone/frame, %.1f sceGnmAreSubmitsAllowed/frame, %.1f refused/frame; "
-                    "guest waited for the previous frame %.1fx %.2f ms/frame; %.1f compute queue submissions/frame\n",
-                    BbStats::submit_done_calls.exchange(0) / double(frames),
-                    BbStats::submits_allowed_queries.exchange(0) / double(frames),
-                    BbStats::submits_refused.exchange(0) / double(frames),
-                    BbStats::gnm_frame_waits.exchange(0) / double(frames),
-                    BbStats::gnm_frame_wait_ns.exchange(0) / (1e6 * double(frames)),
-                    BbStats::asc_submits.exchange(0) / double(frames));
+        // Native GPU process: the guest's Gnm calls are counted in the game process
+        // (MsgGameStats prints them there).
+        if (!BbRemote::BackActive()) {
+            std::printf("Gnm: %.1f sceGnmSubmitDone/frame, %.1f sceGnmAreSubmitsAllowed/frame, %.1f refused/frame; "
+                        "guest waited for the previous frame %.1fx %.2f ms/frame; %.1f compute queue submissions/frame\n",
+                        BbStats::submit_done_calls.exchange(0) / double(frames),
+                        BbStats::submits_allowed_queries.exchange(0) / double(frames),
+                        BbStats::submits_refused.exchange(0) / double(frames),
+                        BbStats::gnm_frame_waits.exchange(0) / double(frames),
+                        BbStats::gnm_frame_wait_ns.exchange(0) / (1e6 * double(frames)),
+                        BbStats::asc_submits.exchange(0) / double(frames));
+        } else {
+            std::printf("Gnm: %.1f compute queue submissions/frame\n",
+                        BbStats::asc_submits.exchange(0) / double(frames));
+        }
         std::printf("EOP fences: %llu decoded, %llu labels written, %lld pending; %.1f labels/frame "
                     "written by the GPU\n",
                     (unsigned long long)BbStats::eop_decoded.load(),
@@ -466,13 +488,26 @@ void OnFlipStats() {
 #ifdef __APPLE__
         // bbport (macOS): CPU time of every thread, by name and by owner (bbport_thread_cpu_mac).
         if (const std::string threads = BbThreads::ReportProcessThreads(window); !threads.empty()) {
-            std::printf("%s\n", threads.c_str());
+            std::printf("%s%s\n", BbRemote::BackActive() ? "GPU process: " : "", threads.c_str());
         }
 #endif
+        if (BbRemote::BackActive()) {
+            BbRemote::Back::GameStats(window, frames);
+        }
         intervals.clear();
         window_start = now;
         frames = 0;
         worst_ms = 0;
+    }
+}
+
+/// The capture hotkey's marker in the frame log (window.cpp, Ctrl+Shift+C). Written through the
+/// log's own stream, so the log's next flush keeps the marker where it is; a "#" line is not a
+/// data row, so a reader that expects one line per flip skips it (grep -v '^#').
+extern "C" void bb_frame_log_marker(const char* text) {
+    if (FILE* log = OpenFrameLog(); log && text) {
+        std::fprintf(log, "# CAPTURE %s\n", text);
+        std::fflush(log); // the marker is there even if the session dies right after
     }
 }
 
