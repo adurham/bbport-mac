@@ -8,12 +8,25 @@
 #include <string>
 #include <unistd.h>
 #include "gpu/shim/bbport_settings.h"
+#include "gpu/shim/bbport_confirm.h"
+
+// bbport_settings.cpp's ReloadLive asks the confirmation modal (BbConfirm::Request lives in
+// bbport_confirm.cpp, which needs SDL and the remote channel): this target links neither, so the
+// test stands in for it. Nothing here calls it.
+namespace BbConfirm {
+void Request(Kind, int, int) {}
+} // namespace BbConfirm
 
 static std::string Read(const char* path) {
     std::ifstream file(path);
     std::stringstream text;
     text << file.rdbuf();
     return text.str();
+}
+
+/// The braces of a braced initializer list would split an assert's argument: compare through here.
+static bool SizeIs(BbSettings::OutputSize size, int width, int height) {
+    return size == BbSettings::OutputSize{width, height};
 }
 
 int main() {
@@ -58,6 +71,47 @@ int main() {
     s.menu_language_chosen = false;
     BbSettings::Load();
     assert(s.menu_language == BbSettings::MenuLanguage::Russian && s.menu_language_chosen);
+
+    // fullscreen_mode: fill (the default) is render-and-scale, exclusive is the display-mode switch
+    // (window.cpp). The file keeps the choice and BB_FULLSCREEN_MODE overrides it.
+    assert(s.fullscreen_mode == BbSettings::FullscreenFill && BbSettings::FullscreenFills());
+    s.fullscreen_mode = BbSettings::FullscreenExclusive;
+    BbSettings::Save();
+    assert(Read(path).find("fullscreen_mode=exclusive\n") != std::string::npos);
+    BbSettings::Load();
+    assert(s.fullscreen_mode == BbSettings::FullscreenExclusive && !BbSettings::FullscreenFills());
+    setenv("BB_FULLSCREEN_MODE", "fill", 1);
+    BbSettings::Load();
+    assert(s.fullscreen_mode == BbSettings::FullscreenFill);
+    unsetenv("BB_FULLSCREEN_MODE");
+
+    // A resolution can only move the display mode where fullscreen puts the display itself on it
+    // (exclusive); everywhere else the confirmation modal has nothing to ask about.
+    s.window_mode = BbSettings::WindowFullscreen;
+    assert(!BbSettings::ResolutionMovesDisplayMode());
+    s.fullscreen_mode = BbSettings::FullscreenExclusive;
+    assert(BbSettings::ResolutionMovesDisplayMode());
+    s.fullscreen_mode = BbSettings::FullscreenFill;
+
+    // The aspect ratio drives the output, one direction: the aspect ratio's list holds it and the
+    // height is kept (BbSettings::SetAspect). Entry 5 of the 16:9 list is not entry 5 of 21:9's —
+    // the game's Display page mapped a bare row index across the two and picked 2560x1440 for a
+    // 21:9 setting, which pillarboxed the owner's panel.
+    assert(SizeIs(BbSettings::Outputs(BbSettings::Aspect16x9).sizes[5], 1920, 1080));
+    assert(SizeIs(BbSettings::Outputs(BbSettings::Aspect21x9).sizes[5], 3840, 1600));
+    s.aspect = BbSettings::AspectAuto;
+    s.output_res = BbSettings::PackSize({3440, 1440});
+    // No window in this process: Auto follows the output in effect, so the game's Display page lists
+    // the same sizes as the overlay (a 16:9 fallback made an ultrawide panel offer 16:9 sizes).
+    assert(BbSettings::ResolvedAspect(BbSettings::AspectAuto) == BbSettings::Aspect21x9);
+    assert(SizeIs(BbSettings::CurrentOutput(), 3440, 1440));
+    BbSettings::SetAspect(BbSettings::Aspect16x9);
+    assert(s.aspect == BbSettings::Aspect16x9 && SizeIs(BbSettings::CurrentOutput(), 2560, 1440));
+    BbSettings::SetAspect(BbSettings::Aspect21x9);
+    assert(SizeIs(BbSettings::CurrentOutput(), 3440, 1440));
+    assert(BbSettings::Outputs(s.aspect).IndexOf(BbSettings::CurrentOutput()) >= 0);
+
     unlink(path);
-    std::puts("PASS: settings save keeps other keys, menu position, menu language");
+    std::puts("PASS: settings save keeps other keys, menu position, menu language, fullscreen_mode, "
+              "aspect-to-output");
 }
