@@ -7,6 +7,26 @@ composited), so the choice is: fix the artifact with `opaque=1`, or give Direct 
 
 This page is the procedure that decides which. `layer_opaque` stays `1` by default until it is run.
 
+## The owner's own description (2026-10-17, asked to route the matrix)
+
+Asked one word (flickering or static), the owner corrected the picture: it is **not** around the
+title art; it sits at the **very bottom right of the screen**, it is **static** (the same every
+frame), and it looked **"stretched way too much"**. His session: 16:9 2560x1440 exclusive
+fullscreen, i.e. condition 1 of the matrix below (opaque=1, Fifo).
+
+What that routes, before any capture: a tear moves or flickers, so the tearing explanations
+(rules 2 and 4) are deprioritized as the primary mechanism. The survivors are rule 1 (a band in
+the frame the port drew — it would sit identically in the port's own pre-present capture) and
+rules 3/5 (the opaque=1 Metal 4 drawable path, or the scaled 2560x1440 scanout mode — "stretched"
+points at a scaling seam). The captures still decide:
+
+- First, owner-free: a hidden run stopped at the **title** (no Continue press) with a port capture
+  (`BB_BUGREPORT_TRIGGER`) at the title. Static band present in that capture → render-side (rule 1);
+  the whole visible-condition matrix is then unnecessary for attribution. Absent → present/scanout
+  side, and the visible conditions 1-5 (each needs the owner's go-ahead) are what remain.
+- Successive real screen captures ~100 ms apart should show a static band in the SAME place
+  (a tear would not).
+
 ## What is already known (from the owner's logs, before any new run)
 
 - **The owner's runs were already vsynced.** The video core asks for Mailbox; KosmicKrisp offers
