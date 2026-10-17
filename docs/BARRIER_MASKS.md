@@ -167,3 +167,44 @@ overlap unchanged at about 1.2%. The default stays `legacy`. The switch, the tra
 new-stage chain, the carried accesses) and the stats line remain as the base for the driver-side
 experiment above. Once the driver stops counting transfer destinations as vertex-side, `safe` is the
 mode to measure again.
+
+## Update 2026-10-17: patch 0006 measured — the driver-side experiment is closed
+
+The experiment both docs above pointed at: KosmicKrisp patch 0006, `BB_KK_TRANSFER_WAIT`
+(branch `fix/kk-transfer`). In `vk` mode with the masks, transfer destinations no longer hold
+the next render encoder's vertex stage (`=0`; `=1` reproduces patch 0005's classification).
+Series `tools/macos/ab_transfer.sh` in `~/repos/bbport-transfer-build`: 4 alternated pairs
+(ttw1/ttw0) + 2 legacy runs, hidden, same standing route, 3440x1440, **zero voids, zero
+retries, no foreign `bb-probe` in any run** (a pre-reboot attempt was voided by contention and
+was re-run clean).
+
+frame_ms p50 (draws>=500, t_s>=60; all tags 883-890 draws):
+
+| pair | ttw1 (wait on) | ttw0 (patch 0006) | delta (1→0) |
+|---|---|---|---|
+| 1 | 27.23 | 27.34 | +0.11 |
+| 2 | 27.58 | 28.02 | +0.44 |
+| 3 | 27.69 | 27.29 | -0.40 |
+| 4 | 28.03 | 28.23 | +0.20 |
+
+Mean **-0.09 ms**, signs mixed — no effect. Legacy baselines: 27.01 and one outlier at 29.66
+(that run is 2.65 ms above its twin with no foreign probe; the whole series also sits ~+0.6 ms
+above the pre-reboot band with a monotonic upward drift — machine state, not the patch; the
+alternated pairs cancel drift).
+
+**The mechanism fired in every experiment run** (KK counters): "transfer-only barriers kept
+off the vertex stage" reads 0 in all four ttw1 runs and ~445-467k per 10 s in the ttw0 runs;
+vertex-side barriers from memory/buffers drop ~720k → ~350k, and render encoders waiting before
+their vertex stage fall ~1.04M → 0.91M (per 10 s). None of it moves the frame: the same lesson
+as the masks themselves — with passes still overwhelmingly holding their vertex stage, the
+overlaps this frees never occur, and the wall is fragment work plus the serialization.
+
+Conclusion: the driver-side barrier line (0005 modes, masks, 0006 transfer classification) is
+**measured and closed** — no frame-time win anywhere along it; `legacy` remains the default and
+`vk` stays unproven (~0.5-0.9 ms at best). Harness note: one `xctrace record` hung at its 3 s
+limit during this series (0 % CPU, frozen trace, 22 min stall — killed; that run's
+`mtl-tleg1-gpu.xml` is 0 bytes). The bench scripts have no timeout around xctrace; wrap it in a
+watchdog when scheduling long series.
+
+Evidence: `~/repos/bbport-transfer-build/out/ab_transfer2.log`, `transfer_results.json`,
+`frames-ttw*.csv`, `run-ttw*.log` (counter blocks), 20 captures.
