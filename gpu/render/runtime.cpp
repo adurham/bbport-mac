@@ -164,6 +164,9 @@ namespace {
 struct BarrierMaskStats {
     u64 memory_all = 0, memory_vertex = 0, memory_fragment = 0, images_vertex = 0,
         images_fragment = 0, image_only = 0, chains = 0, merged = 0;
+    // Vertex-side flushes by the destination bits that made them so.
+    u64 why_input = 0, why_vs = 0, why_indirect = 0, why_transfer = 0, why_image_vertex = 0,
+        why_other = 0;
     std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
 };
 BarrierMaskStats mask_stats;
@@ -184,13 +187,26 @@ void NoteBarrier(bool memory, vk::PipelineStageFlags2 memory_dst,
     } else {
         ++s.image_only;
     }
+    vk::PipelineStageFlags2 image_dst{};
     if (!images.empty()) {
-        vk::PipelineStageFlags2 dst{};
         for (const auto& b : images) {
-            dst |= b.dstStageMask;
+            image_dst |= b.dstStageMask;
             s.chains += b.oldLayout == b.newLayout && !b.srcAccessMask;
         }
-        ++(IsVertexSide(dst) ? s.images_vertex : s.images_fragment);
+        ++(IsVertexSide(image_dst) ? s.images_vertex : s.images_fragment);
+    }
+    const auto all = (memory ? memory_dst : vk::PipelineStageFlags2{}) | image_dst;
+    if (IsVertexSide(all) && !(all & Stage::eAllCommands)) {
+        using S = Stage;
+        if (all & (S::eVertexInput | S::eIndexInput | S::eVertexAttributeInput)) ++s.why_input;
+        if (all & S::eVertexShader) ++s.why_vs;
+        if (all & S::eDrawIndirect) ++s.why_indirect;
+        if (all & (S::eAllTransfer | S::eCopy | S::eClear | S::eResolve | S::eBlit)) ++s.why_transfer;
+        if (image_dst & (S::eVertexShader | S::eAllGraphics)) ++s.why_image_vertex;
+        if (all & ~(FragmentSideStages | S::eVertexInput | S::eIndexInput |
+                    S::eVertexAttributeInput | S::eVertexShader | S::eDrawIndirect |
+                    S::eAllTransfer | S::eCopy | S::eClear | S::eResolve | S::eBlit))
+            ++s.why_other;
     }
     const auto now = std::chrono::steady_clock::now();
     if (now - s.last >= std::chrono::seconds(10)) {
@@ -198,14 +214,19 @@ void NoteBarrier(bool memory, vk::PipelineStageFlags2 memory_dst,
         std::printf("Barrier masks (10 s, %s): memory barriers waiting in all %llu, vertex side "
                     "%llu, fragment side %llu; image barrier batches vertex side %llu, fragment "
                     "side %llu (%llu without a memory barrier); %llu new-stage chains, %llu "
-                    "merged into a queued barrier\n",
+                    "merged into a queued barrier; vertex side because of: vertex input %llu, "
+                    "vertex shader %llu, indirect %llu, transfer %llu, images in vertex/all "
+                    "graphics %llu, other %llu\n",
                     GetBarrierMasks() == BarrierMasks::Legacy   ? "legacy"
                     : GetBarrierMasks() == BarrierMasks::Strict ? "strict"
                                                                 : "safe",
                     (unsigned long long)s.memory_all, (unsigned long long)s.memory_vertex,
                     (unsigned long long)s.memory_fragment, (unsigned long long)s.images_vertex,
                     (unsigned long long)s.images_fragment, (unsigned long long)s.image_only,
-                    (unsigned long long)s.chains, (unsigned long long)s.merged);
+                    (unsigned long long)s.chains, (unsigned long long)s.merged,
+                    (unsigned long long)s.why_input, (unsigned long long)s.why_vs,
+                    (unsigned long long)s.why_indirect, (unsigned long long)s.why_transfer,
+                    (unsigned long long)s.why_image_vertex, (unsigned long long)s.why_other);
         const auto keep = s.last;
         s = {};
         s.last = keep;
