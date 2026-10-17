@@ -1,0 +1,110 @@
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index ad0e081..3112196 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -623,6 +623,20 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+       for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++)
+          dst |= pDependencyInfo->pImageMemoryBarriers[i].dstStageMask;
+       bb_vtx = kk_bb_dst_needs_vertex_wait(dst);
++      /* bbport (BB_KK_TRANSFER_WAIT=0, kk_device.h): in vk mode a transfer
++       * consumer waits on all prior queue work on its own, so a transfer
++       * destination does not hold the next pass's vertex stage. The barrier
++       * still becomes a fragment-side wait and still orders an open compute
++       * encoder (below). */
++      if (bb_vtx && bb_mode == KK_BB_BARRIER_VK && !kk_bb_transfer_wait() &&
++          !kk_bb_dst_needs_vertex_wait(dst & ~VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT &
++                                       ~VK_PIPELINE_STAGE_2_COPY_BIT &
++                                       ~VK_PIPELINE_STAGE_2_RESOLVE_BIT &
++                                       ~VK_PIPELINE_STAGE_2_BLIT_BIT &
++                                       ~VK_PIPELINE_STAGE_2_CLEAR_BIT)) {
++         bb_vtx = false;
++         kk_bbstat_add(KK_BBSTAT_VTX_TRANSFER_RELAXED, 1);
++      }
+       if (kk_bbstats_enabled() && bb_vtx) {
+          /* Which part of the barrier asks for the vertex-side wait. */
+          VkPipelineStageFlags2 m = 0, b = 0, im = 0;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_clear.c b/src/kosmickrisp/vulkan/kk_cmd_clear.c
+index 3d47aec..386c83b 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_clear.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_clear.c
+@@ -43,6 +43,12 @@ clear_image(struct kk_cmd_buffer *cmd, struct kk_image *image,
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    ASSERTED VkResult result;
+ 
++   /* bbport (BB_KK_TRANSFER_WAIT=0, vk mode): this transfer runs as a render
++    * pass (the clear load action), so the barrier before it no longer holds
++    * it; wait for all prior queue work here instead. */
++   if (kk_bb_barrier_mode() == KK_BB_BARRIER_VK && !kk_bb_transfer_wait())
++      kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_OTHER);
++
+    for (uint32_t r = 0; r < range_count; r++) {
+       const uint32_t level_count =
+          vk_image_subresource_level_count(&image->vk, &ranges[r]);
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 446cf53..d69b0ab 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -64,6 +64,21 @@ kk_bb_pool_fix(void)
+    return kk_bb_env_flag(&enabled, "BB_KK_POOL_FIX");
+ }
+ 
++bool
++kk_bb_transfer_wait(void)
++{
++   static int on = -1;
++   int v = p_atomic_read(&on);
++   if (v < 0) {
++      v = debug_get_bool_option("BB_KK_TRANSFER_WAIT", true) ? 1 : 0;
++      p_atomic_set(&on, v);
++      if (!v)
++         fprintf(stderr, "KosmicKrisp: transfer-destination barriers are not "
++                         "vertex-side (BB_KK_TRANSFER_WAIT=0, vk mode only)\n");
++   }
++   return v != 0;
++}
++
+ enum kk_bb_barrier_mode
+ kk_bb_barrier_mode(void)
+ {
+@@ -131,12 +146,12 @@ kk_bbstats_maybe_print(void)
+    fprintf(stderr,
+            "KosmicKrisp: encoders ended: render lite %lld, render full %lld, compute %lld; "
+            "vertex waits from: command buffer start %lld, barriers %lld, other commands %lld, "
+-           "in-pass splits %lld; render encoders that waited (vk) %lld, of them before the vertex stage %lld; vertex-side barriers from memory/buffer %lld, from images %lld\n",
++           "in-pass splits %lld; render encoders that waited (vk) %lld, of them before the vertex stage %lld; vertex-side barriers from memory/buffer %lld, from images %lld; transfer-only barriers kept off the vertex stage %lld\n",
+            s[KK_BBSTAT_ENC_RENDER_LITE], s[KK_BBSTAT_ENC_RENDER_FULL],
+            s[KK_BBSTAT_ENC_COMPUTE], s[KK_BBSTAT_DEP_BEGIN], s[KK_BBSTAT_DEP_BARRIER],
+            s[KK_BBSTAT_DEP_OTHER], s[KK_BBSTAT_DEP_SPLIT], s[KK_BBSTAT_ENC_RENDER_WAITS],
+            s[KK_BBSTAT_ENC_RENDER_WAITS_ALL], s[KK_BBSTAT_VTX_FROM_MEMORY],
+-           s[KK_BBSTAT_VTX_FROM_IMAGE]);
++           s[KK_BBSTAT_VTX_FROM_IMAGE], s[KK_BBSTAT_VTX_TRANSFER_RELAXED]);
+ }
+ 
+ struct kk_mtl_compiler {
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index 2d0e78c..f1cf6ba 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -171,6 +171,7 @@ enum kk_bbstat {
+    KK_BBSTAT_ENC_RENDER_WAITS_ALL,
+    KK_BBSTAT_VTX_FROM_MEMORY,
+    KK_BBSTAT_VTX_FROM_IMAGE,
++   KK_BBSTAT_VTX_TRANSFER_RELAXED,
+    KK_BBSTAT_COUNT,
+ };
+ extern int64_t kk_bbstats[KK_BBSTAT_COUNT];
+@@ -208,5 +209,14 @@ enum kk_bb_barrier_mode {
+    KK_BB_BARRIER_VK = 4,
+ };
+ enum kk_bb_barrier_mode kk_bb_barrier_mode(void);
++/* bbport (BB_KK_TRANSFER_WAIT, vk mode only): 1 (default) = a Vulkan barrier
++ * whose destination names a transfer stage (COPY, CLEAR, BLIT, RESOLVE,
++ * ALL_TRANSFER) holds the next render encoder's vertex stage, as patch 0005
++ * shipped. 0 = transfer destinations count as not vertex-side: every transfer
++ * consumer already waits on all prior queue work in vk mode (copies and query
++ * copies in a compute encoder that starts with barrierAfterQueueStages(ALL),
++ * fill/update/blit/resolve through kk_meta_begin), and the one render-encoder
++ * transfer, vkCmdClear{Color,DepthStencil}Image, is given its own full wait. */
++bool kk_bb_transfer_wait(void);
+ 
+ #endif // KK_DEVICE_H
