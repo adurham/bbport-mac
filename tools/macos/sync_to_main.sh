@@ -16,14 +16,17 @@ cd "$N"
 FILES=$(git diff --name-only "$RANGE"..HEAD | sort -u)
 [ -n "$FILES" ] || { echo "range $RANGE..HEAD touches nothing"; exit 0; }
 cd "$R"
-for f in $FILES; do
+# main keeps its OWN renderer core: single-process architecture differs from the native split.
+RENDERER_CORE='^gpu/(render|platform|buffers|cp|vulkan|common|shader|memory)/|^gpu/bbgpu\.h$|^gpu/shim/bbgpu\.cpp$|^gpu/shim/remote/.*\.(cpp|h)$|^gpu/CMakeLists.txt$|^src/probe\.c$'
+while IFS= read -r f; do
   case "$f" in
-    gpu/shim/remote/*|gpu/CMakeLists.txt) echo "skip: $f"; continue;;
+    gpu/shim/remote/bb_remote.h) echo "skip (main's stub): $f"; continue;;
   esac
+  if printf '%s\n' "$f" | grep -qE "$RENDERER_CORE"; then echo "skip (main-owned): $f"; continue; fi
   [ -f "$N/$f" ] || { echo "skip (absent in native): $f"; continue; }
   mkdir -p "$(dirname "$f")"
   if ! cmp -s "$N/$f" "$f" 2>/dev/null; then cp "$N/$f" "$f" && echo "copy: $f"; else echo "same: $f"; fi
-done
+done <<< "$FILES"
 # shellcheck disable=SC2086
 git add -A -- $FILES
 git status --short | grep -vE '^\?\?|^ m ' || echo "(no staged change: main is already in sync)"
