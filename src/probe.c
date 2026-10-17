@@ -9,6 +9,7 @@
 #include "runtime.h"
 #include "platform.h"
 #include "gpu/bbgpu.h"
+#include "bbgame.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
 #error This prototype requires x86-64 GCC or Clang (including MinGW).
 #endif
@@ -124,6 +125,51 @@ static void protect(void *p, size_t size, unsigned flags) {
     if (mprotect(p, size, mode)) fail("mprotect failed");
 #endif
 }
+/* Game library (BB_GAME_LIB, bbgame.h), ported from the Yharnam-Hunters fork (Paleblood's runtime
+ * scaffold, commit ce7a6ff). Hooks are installed into the relocated image before its final page
+ * protections and before any game code runs. A hook is an absolute jump at the function entry:
+ * jmp [rip+0]; .quad target. Addresses are only valid for the executable game_check.py pins, so a
+ * skipped game check refuses the library. macOS: this runs in the game process (x86-64 under
+ * Rosetta), so the library is an x86_64 dylib; docs/GAME_LIBRARY.md. */
+static const Segment *hook_segments;
+static uint64_t hook_segment_count, hooks_installed;
+static int install_hook(uint64_t offset, uint64_t size, const void *target) {
+    int executable = 0;
+    for (uint64_t i = 0; i < hook_segment_count; ++i)
+        if ((hook_segments[i].flags & 1) && offset >= hook_segments[i].address &&
+            size <= hook_segments[i].size && offset - hook_segments[i].address <= hook_segments[i].size - size)
+            executable = 1;
+    if (!executable || size < 14 || !target) return -1;
+    /* bbport: the GPU library's own hooks (bbgpu_patch_image, before this) leave their pages
+       read-only and executable; the image gets its final protection after the library is in. */
+    const uint64_t first = offset & ~(uint64_t)(page_size - 1);
+    protect(image + first, bb_round_page(offset + 14) - first, 7);
+    unsigned char *p = image + offset;
+    uint64_t address = (uint64_t)(uintptr_t)target;
+    p[0] = 0xff; p[1] = 0x25; memset(p + 2, 0, 4);
+    memcpy(p + 6, &address, 8);
+    ++hooks_installed;
+    return 0;
+}
+static void load_game_library(const char *path, const Segment *segments, uint64_t ns, uint64_t size) {
+#ifdef _WIN32
+    (void)path; (void)segments; (void)ns; (void)size;
+    fail("BB_GAME_LIB is not supported on Windows");
+#else
+    const char *skip = getenv("BB_SKIP_GAME_CHECK");
+    if (skip && !strcmp(skip, "1")) fail("BB_GAME_LIB needs the supported executable; unset BB_SKIP_GAME_CHECK");
+    void *library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!library) { fprintf(stderr, "dlopen: %s\n", dlerror()); fail("cannot load the game library"); }
+    BbGameInit init = (BbGameInit)dlsym(library, BBGAME_INIT_SYMBOL);
+    if (!init) fail("game library has no " BBGAME_INIT_SYMBOL);
+    hook_segments = segments; hook_segment_count = ns;
+    BbGameHost host = { BBGAME_API_VERSION, image, size, install_hook };
+    int result = init(&host);
+    printf("Game library %s: %" PRIu64 " hooks installed, init returned %d\n", path, hooks_installed, result);
+    if (result) fail("game library init failed");
+#endif
+}
+
 static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argument) {
     if (id >= import_count) fail("bad import trap index");
     printf("STOP: first unsupported PS4 import: %s (index %u)\n", names[id], id);
@@ -663,6 +709,13 @@ static int probe_main(int argc, char **argv) {
     }
 #endif
     if (!cpu_only) bbgpu_patch_image(image, size);
+    /* Game library (BB_GAME_LIB): after relocations, patches, the TLS fixups and the port's own
+     * guest hooks (bbgpu_patch_image), so a replacement wins where it overlaps one of them; before
+     * the data moves into shared memory, the final protections and any game code. Unset: nothing. */
+    {
+        const char *game_lib = getenv("BB_GAME_LIB");
+        if (game_lib && *game_lib) load_game_library(game_lib, segments, ns, size);
+    }
     /* bbport (native GPU process, BB_NATIVE_GPU=1): the GPU reads some of the game's own data
      * (resource tables in its data segments), so those move into memory the GPU process shares.
      * Only segments whose 16 KiB pages hold nothing else; before the protection below (all of it
