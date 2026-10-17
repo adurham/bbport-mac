@@ -103,10 +103,14 @@ remain the gate before anything becomes a default.
      difference isolates the upscaler's true cost (verify the old 720p=14.4 ms datum was the
      same route/day before leaning on it).
   2. Encoder count per frame, and: did the `none` barrier diagnostic actually MERGE encoders or
-     only drop fences? If only fences, the serialization line is not fully closed. Candidate
-     lever: encoder merging (one compute encoder for the FSR chain with a memoryBarrier instead
-     of per-dispatch encoders; render passes to unchanged attachments merged). Note: on a TBDR,
-     encoder splits force attachment store/load — bandwidth that reads as "fragment" in traces.
+     only drop fences? If only fences, the serialization line is not fully closed. Quick check of
+     the stored kk-build counters (same day, no GPU): the per-10 s encoder totals of
+     none/legacy/vk sit within a few percent of each other — no merge-scale drop, consistent with
+     fences-only; fps-normalized confirmation (mtl_gaps on the stored traces) is the proper next
+     step. Candidate lever: encoder merging (one compute encoder for the FSR chain with a
+     memoryBarrier instead of per-dispatch encoders; render passes to unchanged attachments
+     merged). Note: on a TBDR, encoder splits force attachment store/load — bandwidth that reads
+     as "fragment" in traces.
 - MetalFX: "dead on this driver" is over-claimed — dead as INTEGRATED (exportable-buffer copy +
   synchronous host wait), not architecturally. A zero-copy handoff (VK_EXT_metal_objects +
   MTLSharedEvent) is the fix if ever revisited; MetalFX Spatial is the low-ghosting fallback if
