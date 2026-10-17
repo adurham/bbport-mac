@@ -22,8 +22,13 @@ void ScanDcb(std::span<const u32> dcb, int depth);
 /// WAIT_REG_MEM outcomes: 0 display buffer label, 1 pending fence, 2 met at once, 3 waited.
 void NoteWait(int outcome, double ms = 0);
 
-/// A packet that cannot be decoded: where, in which buffer, what surrounds it.
-void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq, int depth);
+struct SubmittedCopy;
+/// A packet that cannot be decoded: where, in which buffer, what surrounds it, the packets the
+/// walk decoded before it in that buffer, and - for the submission's own buffer decoded from its
+/// copy (BB_COPY_GPU_BUFFERS) - where the game's memory now differs from the copy (a submission
+/// torn while it was copied shows the two versions side by side).
+void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq, int depth,
+                     const SubmittedCopy* copy = nullptr);
 
 /// Where a label for the guest is (a fence, an end-of-pipe or release event's value).
 enum class LabelStep : u8 {

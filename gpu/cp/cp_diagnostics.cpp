@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 #include <magic_enum/magic_enum.hpp>
 
+#include "bbport_portable.h"
 #include "bbport_write_log.h"
 #include "core/emulator_settings.h"
 #include "cp/cp_diagnostics.h"
@@ -260,7 +261,8 @@ void ScanDcb(std::span<const u32> dcb, int depth) {
     st = DcbStats{};
 }
 
-void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq, int depth) {
+void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq, int depth,
+                     const SubmittedCopy* copy) {
     const uintptr_t address = reinterpret_cast<uintptr_t>(at);
     int prot = 0, type = -1;
     uintptr_t end = 0;
@@ -279,6 +281,78 @@ void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq,
             std::fprintf(stderr, q == at ? " [%08x]" : " %08x", *q);
         }
         std::fprintf(stderr, "\n");
+    }
+    // The packets before it, as the walk saw them (the buffer from its start; the last 16).
+    const auto* words = reinterpret_cast<const u32*>(base);
+    const std::size_t stop = std::size_t(at - words);
+    std::array<std::size_t, 16> recent{};
+    std::size_t count = 0;
+    for (std::size_t p = 0; p < stop;) {
+        const u32 header = words[p];
+        if ((header >> 30) == 2) {
+            ++p;
+            continue;
+        }
+        if ((header >> 30) != 3) {
+            break;
+        }
+        recent[count++ % recent.size()] = p;
+        p += ((header >> 16) & 0x3fff) + 2;
+    }
+    std::fprintf(stderr, "  the %zu packets before it (of %zu):\n",
+                 std::min(count, recent.size()), count);
+    for (std::size_t i = count > recent.size() ? count - recent.size() : 0; i < count; ++i) {
+        const std::size_t p = recent[i % recent.size()];
+        const u32 header = words[p];
+        const u32 body = ((header >> 16) & 0x3fff) + 1;
+        std::string line = fmt::format("    +{:#x} {} ({} dwords):", p * 4,
+                                       OpName((header >> 8) & 0xff), body);
+        for (u32 k = 0; k < std::min<u32>(body, 8) && p + 1 + k < dwords; ++k) {
+            line += fmt::format(" {:08x}", words[p + 1 + k]);
+        }
+        if (p + 1 + body > stop) {
+            line += fmt::format("  <- runs {} dwords past the bad dword's start",
+                                p + 1 + body - stop);
+        }
+        std::fprintf(stderr, "%s\n", line.c_str());
+    }
+    // The game's memory now, next to the copy that was decoded.
+    if (copy && copy->data.data() == words && copy->guest_dcb) {
+        const std::size_t from = stop >= 16 ? stop - 16 : 0;
+        const std::size_t to = std::min(copy->dcb_dwords, stop + 16);
+        std::array<u32, 32> now{};
+        const bool readable =
+            BbPortable::ReadSelf(now.data(), copy->guest_dcb + from, (to - from) * 4);
+        std::size_t differ = 0;
+        std::array<u32, 1024> chunk{};
+        bool all_readable = true;
+        for (std::size_t a = 0; a < copy->dcb_dwords; a += chunk.size()) {
+            const std::size_t n = std::min(chunk.size(), copy->dcb_dwords - a);
+            if (!BbPortable::ReadSelf(chunk.data(), copy->guest_dcb + a, n * 4)) {
+                all_readable = false;
+                break;
+            }
+            for (std::size_t k = 0; k < n; ++k) {
+                differ += chunk[k] != copy->data[a + k];
+            }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - copy->submitted)
+                              .count();
+        std::fprintf(stderr,
+                     "  the game's buffer at %p now (copied %.3f ms ago): %s; %zu of %zu dwords "
+                     "differ from the copy\n",
+                     static_cast<const void*>(copy->guest_dcb), ms,
+                     all_readable ? "readable" : "not readable", differ, copy->dcb_dwords);
+        if (readable) {
+            std::string copied = "    copy:", guest = "    game:";
+            for (std::size_t i = from; i < to; ++i) {
+                const char* mark = i == stop ? "[" : " ";
+                copied += fmt::format("{}{:08x}{}", mark, copy->data[i], i == stop ? "]" : "");
+                guest += fmt::format("{}{:08x}{}", mark, now[i - from], i == stop ? "]" : "");
+            }
+            std::fprintf(stderr, "%s\n%s\n", copied.c_str(), guest.c_str());
+        }
     }
     BbWriteLog::DumpRange(base, dwords * 4);
     std::fflush(stderr);

@@ -199,7 +199,7 @@ CommandProcessor::Status CommandProcessor::RunGraphics(Work& work) {
         if (type != 3) {
             Diagnostics::ReportBadPacket(reinterpret_cast<uintptr_t>(level.begin),
                                          size_t(level.end - level.begin), level.at, work.seq,
-                                         level.depth);
+                                         level.depth, work.copy.get());
             UNREACHABLE_MSG("PM4 type {} packet ({:#x})", type, header);
         }
         const u32 body_words = Header{header}.BodyWords();
