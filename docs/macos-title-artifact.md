@@ -24,6 +24,8 @@ points at a scaling seam). The captures still decide:
   (`BB_BUGREPORT_TRIGGER`) at the title. Static band present in that capture → render-side (rule 1);
   the whole visible-condition matrix is then unnecessary for attribution. Absent → present/scanout
   side, and the visible conditions 1-5 (each needs the owner's go-ahead) are what remain.
+  Script ready (untested): `<metalfx worktree>/out/title_capture.sh` — boots hidden, never presses
+  Continue, triggers the capture once the title is up; run it on an idle docked machine.
 - Successive real screen captures ~100 ms apart should show a static band in the SAME place
   (a tear would not).
 
