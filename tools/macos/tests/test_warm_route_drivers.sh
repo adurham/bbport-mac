@@ -97,5 +97,45 @@ BB_GAME_DIR=$work/game BB_WARM_USER=$work/sandbox-cold TITLE_WAIT=1 LOAD_WAIT=1 
 check "a sandbox is made anyway, empty" test -d "$work/sandbox-cold"
 check "and no cache store was invented" test ! -e "$work/sandbox-cold/cache"
 
+echo "== the timing a route line depends on: the pad moves at title_wait + load_wait, not before"
+# The first entry of the route above is ly=0 (running). It must not appear before the title's cross
+# and the load are behind us: a route's walk that started early would press into the title's
+# Continue a second time, and one that started late would spend the run standing still.
+first_stick=$(awk '$0 ~ /ly=/ {print $1; exit}' "$work/pad.log")
+check "the first stick the route asks for arrives around title_wait + load_wait (4 s)" \
+    bash -c "t=$((first_stick - start)); [ \"\$t\" -ge 3 ] && [ \"\$t\" -le 8 ]"
+check "and the cross came before it" \
+    bash -c "c=\$(awk '\$0 ~ /cross\$/ {print \$1; exit}' '$work/pad.log'); [ -n \"\$c\" ] && [ \"\$c\" -le \"$first_stick\" ]"
+
+echo "== a route line from the pack, driven as written"
+# One of the pack's own pad lines (tools/macos/warmfill.sh), not a test's: the tokens a route is
+# made of are only proved to be drivable by warm_route.sh itself. 'stairs' opens with a look down.
+pack_pad=$(awk -F'|' '$1 == "stairs" {print $5}' "$root/tools/macos/warmfill.sh")
+check "warmfill.sh has a stairs route with a pad line" test -n "$pack_pad"
+rm -f "$work/pad.log"
+(
+    last=
+    for _ in $(seq 1 400); do
+        now=$(cat "$work/out/warm_pad" 2>/dev/null || true)
+        if [[ $now != "$last" ]]; then
+            printf '%s %s\n' "$(date +%s)" "$now" >>"$work/pad.log"
+            last=$now
+        fi
+        sleep 0.25
+    done
+) &
+watcher=$!
+rm -rf "$work/sandbox-stairs"
+BB_GAME_DIR=$work/game BB_WARM_USER=$work/sandbox-stairs TITLE_WAIT=1 LOAD_WAIT=1 \
+    ROUTE="$pack_pad" bash "$work/tools/macos/warm_route.sh" 35 >"$work/stairs.out" 2>&1 || true
+kill "$watcher" 2>/dev/null || true
+wait "$watcher" 2>/dev/null || true
+awk '{sub(/^[0-9]+ /, ""); printf "  [%s]\n", $0}' "$work/pad.log" | head -6
+check "its first state is the look down (ry=190), as the line says" \
+    grep -q '^[0-9]* ry=190$' "$work/pad.log"
+check "then the run forward, as the line says" grep -q 'ly=0 rx=128$' "$work/pad.log"
+check "and the second look down (ry=205) is reached" grep -q 'ry=205' "$work/pad.log"
+check "the run still ended hidden and by itself" grep -q 'BB_WARM_ONLY=1' "$work/env.txt"
+
 printf '\n%d checks passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))

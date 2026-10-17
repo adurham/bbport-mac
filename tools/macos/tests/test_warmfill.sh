@@ -79,6 +79,58 @@ check "and previews the merge of the sandbox it has" grep -q 'store CUSA00000-ar
 echo "== 3. --list-routes needs neither game nor user dir"
 check "it lists the built-in routes" bash -c "bash '$warmfill' --list-routes | grep -q yharnam"
 
+echo "== 3b. the pack: --check-routes, and what the default selects"
+check "the pack's own lines check out (tokens, stick ranges, lengths, descriptions)" \
+    bash -c "bash '$warmfill' --check-routes"
+listed=$(bash "$warmfill" --list-routes | grep -c '  (title ')
+check "the pack is more than the three it started with ($listed routes)" test "$listed" -ge 8
+check "the new walks are in it: roam" bash -c "bash '$warmfill' --list-routes | grep -q '^roam '"
+check "the long combat route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^combat '"
+check "the stairs route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^stairs '"
+check "the headings-and-sky route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^sweep '"
+check "every route says what it walks, and no route is shorter than it takes to walk" \
+    bash -c "bash '$warmfill' --list-routes | grep -q 'pad:'"
+# The default is the whole pack: what a bare fill runs is what a fill is for. (--routes yharnam is
+# the one short walk, for a quick fill.)
+fill "$work/pack.log" --dry-run --user-dir "$work/real-user" --sandbox "$work/sandbox"
+selected_n=$(grep -c '^  route ' "$work/pack.log")
+check "the default selects the whole pack ($selected_n of $listed routes)" test "$selected_n" = "$listed"
+check "and says so" grep -q "routes 'all'" "$work/pack.log"
+check "'--routes all' is the same set" \
+    bash -c "bash '$warmfill' --dry-run --user-dir '$work/real-user' --sandbox '$work/sandbox' --routes all | grep -c '^  route ' | grep -qx $selected_n"
+
+echo "== 3c. --check-routes refuses a line that would cost a run and measure nothing"
+cat >"$work/bad-token.conf" <<'CONF'
+typo|300|45|30|ly=0,rxx=128:4 r1:2|a stick the pad does not read
+CONF
+st=0
+WARMFILL_ROUTES_FILE=$work/bad-token.conf bash "$warmfill" --check-routes >"$work/bad-token.log" 2>&1 || st=$?
+check "a misspelled stick is refused" test "$st" != 0
+check "and the token is named" grep -q 'rxx=128' "$work/bad-token.log"
+st=0
+cat >"$work/bad-short.conf" <<'CONF'
+sit|60|45|30|ly=0:4|shorter than title_wait + load_wait + 15, so it never walks
+CONF
+WARMFILL_ROUTES_FILE=$work/bad-short.conf bash "$warmfill" --check-routes >"$work/bad-short.log" 2>&1 || st=$?
+check "a route too short to walk is refused" test "$st" != 0
+check "and the reason names the length it needs" grep -q 'never walks' "$work/bad-short.log"
+st=0
+cat >"$work/bad-stick.conf" <<'CONF'
+push|300|45|30|ly=300:4|a stick past the pad's 0..255
+CONF
+WARMFILL_ROUTES_FILE=$work/bad-stick.conf bash "$warmfill" --check-routes >"$work/bad-stick.log" 2>&1 || st=$?
+check "a stick past 255 is refused" test "$st" != 0
+check "and the range is named" grep -q 'not 0..255' "$work/bad-stick.log"
+st=0
+cat >"$work/bad-field.conf" <<'CONF'
+half|300|45|30|no seconds on this entry
+CONF
+WARMFILL_ROUTES_FILE=$work/bad-field.conf bash "$warmfill" --check-routes >"$work/bad-field.log" 2>&1 || st=$?
+check "a pad entry with no :seconds is refused" test "$st" != 0
+check "and the entry is named" grep -q 'has no :seconds' "$work/bad-field.log"
+check "a file's version of a built-in route replaces it, and the built-in itself is untouched" \
+    bash -c "WARMFILL_ROUTES_FILE='$work/bad-stick.conf' bash '$warmfill' --list-routes | grep -q '^roam '"
+
 echo "== 4. refusals (each one exits non-zero and does nothing)"
 st=0
 fill "$work/three.log" --routes nope --no-run --user-dir "$work/real-user" --sandbox "$work/sandbox" || st=$?
@@ -115,9 +167,13 @@ check "the run never started: no sandbox was made" test ! -e "$work/sandbox9"
 check "and neither user dir moved" \
     test "$(find "$work/real-user" "$work/sandbox" -print0 | sort -z | md5)" = "$before"
 st=0
-fill "$work/ten.log" --user-dir "$work/real-user" --sandbox "$work/sandbox10" || st=$?
-check "with BB_GAME_DIR unset the game is looked for and, if absent, said so" \
-    grep -q 'no game data\|out/bb-probe is missing' "$work/ten.log"
+# HOME is redirected so the game is not found where warmfill looks for it: this check is about the
+# refusal, and on a machine that has the game installed the old form of it started a real fill.
+env -u BB_GAME_DIR HOME="$work/no-home" bash "$warmfill" --user-dir "$work/real-user" \
+    --sandbox "$work/sandbox10" >"$work/ten.log" 2>&1 || st=$?
+check "with BB_GAME_DIR unset and no game where it looks, the fill refuses" \
+    grep -q 'no game data' "$work/ten.log"
+check "and it ran nothing at all" test ! -e "$work/sandbox10"
 
 printf '\n%d checks passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))
