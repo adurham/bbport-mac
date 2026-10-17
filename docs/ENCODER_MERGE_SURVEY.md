@@ -165,10 +165,18 @@ no-op (and `kk_queue_submit` already batches commits per VkCommandBuffer); the o
 6.7 ms is **fewer kicks** — i.e. eliminating breaks/passes outright (why do the ~28 breaks exist,
 can each be avoided — port-side, hazard-gated), not how they are packaged.
 
-Revised attack order: (1) the once-per-frame `DownloadImage` drain
-(`BB_DOWNLOAD_SYNC_PROBE`, measured next); (2) a Metal 4 micro-benchmark (300 small dependent
-encoders: one CB vs 300 CBs in one commit array vs 300 individual commits) to settle whether
-packaging matters at all before any driver surgery; (3) break-elimination analysis against the
-ranked list above, with its risk rules (never reorder a copy past a draw that reads its
-destination or writes its source; an attachment written then read must still be stored;
-suspend/resume only for pure command-buffer-boundary splits with an identical attachment set).
+Revised attack order — now MEASURED (both probes done, 2026-10-17): the drain is null at
+present-bound configs (`docs/SUBMISSION_SURVEY.md`, probe ab6d408); the Metal 4 micro-benchmark
+(`docs/METAL4_PACKING_PROBE.md`, commit 5096605) closed the packaging question: 300 command
+buffers in one commit array = 10.658 ms, 300 individual commits = 10.635 ms, one command buffer
+with 300 encoders = 11.308 ms (8.28 ms with the barriers removed) — packaging and commit shape
+are a **no-op**, the cost sits at the encoder boundary itself (~27-35 µs per encoder; frame time
+scales linearly with encoder count and is independent of pass size). `kk_queue_submit` already
+commits one `commit:count:` array per VkCommandBuffer (kk_queue.c:104-107/289), so there is no
+batching win on the driver side either. **The only lever is FEWER ENCODERS** (fewer blocks/passes
+or cheaper per-encoder transitions). Next step: encoder attribution — which producers create the
+~200 render + ~129 compute encoders per frame (especially the ~92 sub-20 µs render blocks), then
+eliminate/merge them port-side under the hazard rules below (never reorder a copy past a draw
+that reads its destination or writes its source; an attachment written then read must still be
+stored; suspend/resume only for pure command-buffer-boundary splits with an identical attachment
+set).
