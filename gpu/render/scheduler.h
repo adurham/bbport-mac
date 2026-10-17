@@ -129,6 +129,13 @@ public:
     /// Runs the deferred operations whose tick the GPU has finished.
     void PopPendingOperations();
 
+    /// BB_COPY_MERGE: called once the open render pass has been closed (a break, a cut of the
+    /// command stream, a submission), before the next command is recorded: work recorded from
+    /// here on is outside the pass. The runtime records the copies that waited for its end.
+    void SetPassEndCallback(std::function<void()> callback) {
+        after_pass_end = std::move(callback);
+    }
+
     /// Opens a render pass with `state`, unless one with exactly it is open.
     void BeginRendering(const RenderState& state);
 
@@ -548,6 +555,14 @@ private:
     CommandPool command_pool;
     DynamicState dynamic_state;
     SubmitFunc on_submit{};
+    /// BB_COPY_MERGE: run right after a render pass closed (empty with the gate off).
+    std::function<void()> after_pass_end{};
+    /// Runs the pass-end callback, if any: the pass is closed, nothing is recorded into it now.
+    void AfterPassEnd() {
+        if (after_pass_end) {
+            after_pass_end();
+        }
+    }
     vk::CommandBuffer current_cmdbuf;
     struct PendingOp {
         Common::UniqueFunction<void> callback;

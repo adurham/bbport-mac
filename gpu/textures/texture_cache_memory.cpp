@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "bbport_free_check.h"
 #include "common/scope_exit.h"
@@ -38,6 +39,23 @@ u64 EnvU64(const char* name, u64 fallback) {
     return env ? std::strtoull(env, nullptr, 10) : fallback;
 }
 
+/// BB_DOWNLOAD_SYNC_PROBE=1: TIMING PROBE, NOT A FIX. Forces the per-frame readback drain
+/// (ProcessDownloadImages -> DownloadImageMemory(sync=true) -> scheduler.Finish(), a full GPU
+/// drain) onto the already-existing deferred branch, to measure the upper bound of removing it.
+/// ACCEPTED CONSEQUENCE: the CPU write-back then lands at the next priority-operation pump
+/// instead of before the fence returns, so the guest may read stale/garbage readback data
+/// (the issue #122 class of bug). Numbers are a bound, never shippable behavior.
+/// The GC eviction download is deliberately left synchronous: it frees the image immediately
+/// after, so a deferred copy would reference a destroyed image and its write-back could land
+/// over pages the game reused -- that needs new machinery, out of a probe's scope.
+bool ForceAsyncDownload() {
+    static const bool forced = [] {
+        const char* env = std::getenv("BB_DOWNLOAD_SYNC_PROBE");
+        return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
+    }();
+    return forced;
+}
+
 } // namespace
 
 void TextureCache::UpdateMemoryBudget() {
@@ -64,8 +82,12 @@ void TextureCache::ProcessDownloadImages() {
     }
     std::scoped_lock lk{download_mutex};
     downloads_queued.store(false, std::memory_order_relaxed);
+    // The once-per-frame drain: sync=true is scheduler.Finish() per image (a full pipeline
+    // drain). BB_DOWNLOAD_SYNC_PROBE=1 takes the deferred branch instead -- see
+    // ForceAsyncDownload() for what that costs in guest-visible correctness.
+    const bool sync = !ForceAsyncDownload();
     for (const ImageId image_id : download_images) {
-        DownloadImageMemory(image_id, true);
+        DownloadImageMemory(image_id, sync);
     }
     download_images.clear();
 }

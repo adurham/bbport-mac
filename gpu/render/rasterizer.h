@@ -489,6 +489,10 @@ private:
     void EmitIndexBuffer();
 
     void ResetBindings(bool is_compute);
+    /// BB_COPY_MERGE: whether one of the ranges this draw is about to touch (its shaders'
+    /// buffers, index and vertex buffers, or a paged binding that may touch anything) overlaps a
+    /// copy waiting for the render pass's end.
+    [[nodiscard]] bool DeferredCopyHazard() const;
 
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline, bool dry_run = false);
@@ -538,6 +542,10 @@ private:
         bool is_written;
     };
     boost::container::static_vector<BoundBuffer, Shader::NUM_BUFFERS> bound_buffers;
+    /// BB_COPY_MERGE: ranges a draw reads that the access tracker does not record (vertex input
+    /// streams and GDS are only checked for barriers, never inserted): a copy waiting for the
+    /// pass's end must not be reordered past them either.
+    boost::container::static_vector<BoundBuffer, 48> untracked_reads;
 
     u32 set_write_index{};
     Pipeline::DescriptorWrites set_writes;

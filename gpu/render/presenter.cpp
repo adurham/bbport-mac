@@ -110,11 +110,19 @@ Presenter::Presenter(Frontend::WindowSDL& window_, BbCp::CommandProcessor* cp_)
         free_frames.push_back(&frames[i]);
     }
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, count);
+    if (Runtime::CopyMergeEnabled()) {
+        // BB_COPY_MERGE: the copies that waited for a render pass's end are recorded when the
+        // scheduler closes it (Runtime::FlushDeferredCopies).
+        draw_scheduler.SetPassEndCallback([this] { runtime.FlushDeferredCopies(); });
+    }
 }
 
 Presenter::~Presenter() {
     draw_scheduler.Finish();
     present_scheduler.Finish();
+    // BB_COPY_MERGE: nothing may call into the runtime once it is destroyed (the schedulers
+    // outlive it); the last submission above recorded whatever was still waiting.
+    draw_scheduler.SetPassEndCallback({});
     const vk::Device device = instance.GetDevice();
     for (auto& frame : frames) {
         device.destroyImageView(frame.image_view);
