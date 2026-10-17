@@ -6,6 +6,7 @@
 #include <cstring>
 #include <optional>
 
+#include <immintrin.h>
 #include <pthread.h>
 #include <sys/resource.h>
 #ifndef _WIN32
@@ -19,7 +20,6 @@
 #include <fmt/format.h>
 
 #include "bbport_ce_stats.h"
-#include "bbport_cpu.h"
 #include "bbport_free_check.h"
 #include "bbport_threads.h"
 #include "bbport_timeline.h"
@@ -263,7 +263,7 @@ void CommandProcessor::WaitForWork(std::stop_token stop) {
     if (spin_time.count() > 0) {
         const auto spin_until = idle_start + spin_time;
         for (u32 spins = 1; !has_work() && !stop.stop_requested(); ++spins) {
-            BbCpu::Pause();
+            _mm_pause();
             if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
                 break;
             }
@@ -273,11 +273,10 @@ void CommandProcessor::WaitForWork(std::stop_token stop) {
         std::unique_lock lock{submit_mutex};
         Common::CondvarWait(submit_cv, lock, stop, has_work);
     }
-    const u64 idle_ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                std::chrono::steady_clock::now() - idle_start)
-                                .count());
-    BbStats::gpu_idle_ns.fetch_add(idle_ns, std::memory_order_relaxed);
-    BbStats::gpu_idle_total_ns.fetch_add(idle_ns, std::memory_order_relaxed); // never reset
+    BbStats::gpu_idle_ns.fetch_add(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now() - idle_start)
+                                           .count()),
+                                   std::memory_order_relaxed);
     BbTimeline::Note(BbTimeline::DecoderIdleEnd);
 }
 
@@ -392,7 +391,6 @@ void CommandProcessor::ReportStall(const char* why) {
 
 void CommandProcessor::Run(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:GpuComm");
-    BbStats::gpu_thread_port.store(BbThreads::CurrentThreadPort(), std::memory_order_release);
     BbSections::command_thread = true;
 #ifndef __APPLE__ // bbport (macOS): no clock for another thread's CPU time
     if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {
@@ -431,7 +429,7 @@ void CommandProcessor::Run(std::stop_token stop) {
                 status = current_queue == GfxQueueId ? RunGraphics(*work) : RunCompute(*work);
             }
             if (status == Status::Wait) {
-                BbCpu::Pause(); // the other queues' turn
+                _mm_pause(); // the other queues' turn
                 continue;
             }
             BbTimeline::Note(BbTimeline::DecodeEnd, u64(current_queue), decoded_total + 1);

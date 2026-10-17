@@ -92,6 +92,7 @@ if defaults.object(forKey: "nativeGpu") as? Bool ?? true {
 }
 // Every run leaves per-frame data (the port's stats in the log + a CSV): owner-launched runs had
 // none, which left the performance numbers to guesswork.
+setenv("BB_ASYNC_STATIC_VI", "1", 1) // async compiles without dynamic vertex input (judged live)
 setenv("BB_FRAME_STATS", "1", 1)
 setenv("BB_FRAME_LOG", NSHomeDirectory() + "/Games/Bloodborne/frames-app.csv", 1)
 let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"

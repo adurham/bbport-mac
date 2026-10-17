@@ -1173,9 +1173,6 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
         BB_SECTION(ObtainStream);
-        if (BbStats::enabled) {
-            BbStats::bind_copy_bytes.fetch_add(size, std::memory_order_relaxed);
-        }
         if (stats) {
             auto& region = Stats().regions[RegionKey(device_addr)];
             ++region.stream_count;

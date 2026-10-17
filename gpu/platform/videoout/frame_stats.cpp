@@ -19,7 +19,6 @@
 #include <mach/mach.h>
 #endif
 
-#include "bbport_cpu.h"
 #include "bbport_heap_sites.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
@@ -39,10 +38,6 @@ namespace BbRemote {
 inline bool BackActive() { return false; }
 namespace Back {
 inline void GameStats(double, double) {}
-struct GamePhaseTotals {
-    u64 fault_ns, faults, call_ns, calls, file_reads, file_bytes, file_ns, cpu_us, majflt;
-};
-inline bool GamePhases(GamePhaseTotals&) { return false; }
 } // namespace Back
 } // namespace BbRemote
 #endif
@@ -153,141 +148,11 @@ static FILE* OpenFrameLog() {
                                "images,image_mb,buffer_mb,protect_ms,resident_ms,create_ms,"
                                "refresh_ms,write_fault_ms,read_faults,guest_copy_mb,draws,"
                                "dispatches,submissions,compiles,preupload_mb,kernel_ms,alloc_mb,"
-                               "free_mb,"
-                               // The frame phases (FramePhases): which one owns a long frame.
-                               "translate_ms,translates,pipeline_sync_ms,pipelines_sync,"
-                               "async_skips,descriptor_ms,descriptor_batches,ipc_ms,ipc_calls,"
-                               "gpu_idle_ms,game_fault_ms,game_faults,game_call_ms,game_calls,"
-                               "game_read_ms,game_read_mb,game_reads,game_cpu_ms,game_majflt,"
-                               "fault_handler_ms,fault_handlers,fault_drain_ms,fault_drains,"
-                               // The steady-state probe (FrameProbe below).
-                               "ga_wall_ms,ga_user_ms,ga_sys_ms,ga_drain_ms,ga_drains,ga_yields,"
-                               "b_busy_ms,b_user_ms,b_sys_ms,cat_state_ms,cat_pipeline_ms,"
-                               "cat_bind_ms,bind_copy_mb,cat_emit_ms\n");
+                               "free_mb\n");
         }
         return file;
     }();
     return log;
-}
-
-/// bbport: the frame phases (BbStats::t_translate and the rest, and the game process's
-/// SharedState totals in the native split) as per-frame deltas: what a long frame that has no
-/// compiles spent its time on. Taken once per flip; the totals only count with BB_FRAME_STATS.
-struct FramePhases {
-    double translate_ms, pipeline_sync_ms, descriptor_ms, ipc_ms, gpu_idle_ms;
-    u64 translates, pipelines_sync, async_skips, descriptor_batches, ipc_calls;
-    double fault_handler_ms, fault_drain_ms; ///< bb-gpu's side of the game's page faults
-    u64 fault_handlers, fault_drains;
-    bool game; ///< the game process's columns are valid (native split)
-    double game_fault_ms, game_call_ms, game_read_ms, game_read_mb, game_cpu_ms;
-    u64 game_faults, game_calls, game_reads, game_majflt;
-};
-static FramePhases TakeFramePhases() {
-    static u64 last[14]{};
-    static BbRemote::Back::GamePhaseTotals last_game{};
-    static bool have_game = false;
-    const u64 now[14] = {BbStats::t_translate.load(),        BbStats::translates.load(),
-                         BbStats::t_pipeline_sync.load(),    BbStats::pipelines_sync.load(),
-                         BbStats::async_skips.load(),        BbStats::t_descriptors.load(),
-                         BbStats::descriptor_batches.load(), BbStats::t_ipc_call.load(),
-                         BbStats::ipc_calls.load(),          BbStats::gpu_idle_total_ns.load(),
-                         BbStats::t_fault_handler.load(),    BbStats::fault_handlers.load(),
-                         BbStats::t_fault_drain.load(),      BbStats::fault_drains.load()};
-    u64 d[14];
-    for (int i = 0; i < 14; ++i) {
-        d[i] = now[i] - last[i];
-        last[i] = now[i];
-    }
-    FramePhases p{};
-    p.translate_ms = d[0] / 1e6;
-    p.translates = d[1];
-    p.pipeline_sync_ms = d[2] / 1e6;
-    p.pipelines_sync = d[3];
-    p.async_skips = d[4];
-    p.descriptor_ms = d[5] / 1e6;
-    p.descriptor_batches = d[6];
-    p.ipc_ms = d[7] / 1e6;
-    p.ipc_calls = d[8];
-    p.gpu_idle_ms = d[9] / 1e6;
-    p.fault_handler_ms = d[10] / 1e6;
-    p.fault_handlers = d[11];
-    p.fault_drain_ms = d[12] / 1e6;
-    p.fault_drains = d[13];
-    BbRemote::Back::GamePhaseTotals game{};
-    if (BbRemote::BackActive() && BbRemote::Back::GamePhases(game)) {
-        if (have_game) {
-            p.game = true;
-            p.game_fault_ms = (game.fault_ns - last_game.fault_ns) / 1e6;
-            p.game_faults = game.faults - last_game.faults;
-            p.game_call_ms = (game.call_ns - last_game.call_ns) / 1e6;
-            p.game_calls = game.calls - last_game.calls;
-            p.game_read_ms = (game.file_ns - last_game.file_ns) / 1e6;
-            p.game_read_mb = (game.file_bytes - last_game.file_bytes) / 1e6;
-            p.game_reads = game.file_reads - last_game.file_reads;
-            p.game_cpu_ms = (game.cpu_us - last_game.cpu_us) / 1e3;
-            p.game_majflt = game.majflt - last_game.majflt;
-        }
-        last_game = game;
-        have_game = true;
-    }
-    return p;
-}
-
-/// bbport (fix/perf-stage-a): the steady-state probe, per flip. The two threads every frame goes
-/// through (BbStats::gpu_thread_port, record_thread_port), their user and system CPU time read
-/// from Mach at the flip itself (stage_a_cpu_ms is sampled at the last graphics submission). Stage
-/// A's busy wall (the frame minus its wait for guest work) against its CPU time: user ~ wall is
-/// work to optimize, a large sys share is syscalls (its drains' sched_yield fallbacks, counted),
-/// wall >> user+sys is waiting off-CPU. Stage B's busy time, and the four categories of draw work.
-struct FrameProbe {
-    double ga_wall_ms, ga_user_ms, ga_sys_ms, ga_drain_ms, b_busy_ms, b_user_ms, b_sys_ms;
-    double cat_ms[BbStats::CatCount], bind_copy_mb;
-    u64 ga_drains, ga_yields;
-};
-static FrameProbe TakeFrameProbe(double frame_ms, double gpu_idle_ms) {
-    static u64 last_ga[2], last_b[2], last_counts[3], last_cat[BbStats::CatCount], last_bytes;
-    static const double ticks_per_ms = double(BbCpu::TicksFromUs(1000000)) / 1000.0;
-    FrameProbe p{};
-    const auto cpu = [](std::atomic<std::uint32_t>& port, u64 (&last)[2], double& user_ms,
-                        double& sys_ms) {
-        u64 user = 0, sys = 0;
-#ifdef __APPLE__
-        if (!BbThreads::ThreadCpuUs(port.load(std::memory_order_acquire), user, sys)) {
-            return;
-        }
-#else
-        (void)port;
-        return;
-#endif
-        if (last[0] || last[1]) {
-            user_ms = (user - last[0]) / 1e3;
-            sys_ms = (sys - last[1]) / 1e3;
-        }
-        last[0] = user;
-        last[1] = sys;
-    };
-    cpu(BbStats::gpu_thread_port, last_ga, p.ga_user_ms, p.ga_sys_ms);
-    cpu(BbStats::record_thread_port, last_b, p.b_user_ms, p.b_sys_ms);
-    p.ga_wall_ms = std::max(0.0, frame_ms - gpu_idle_ms);
-    const u64 counts[3] = {BbStats::ga_drain_ticks.load(), BbStats::ga_drains.load(),
-                           BbStats::ga_yields.load()};
-    p.ga_drain_ms = (counts[0] - last_counts[0]) / ticks_per_ms;
-    p.ga_drains = counts[1] - last_counts[1];
-    p.ga_yields = counts[2] - last_counts[2];
-    std::copy(std::begin(counts), std::end(counts), std::begin(last_counts));
-    static u64 last_busy;
-    const u64 busy = BbStats::b_busy_ticks.load();
-    p.b_busy_ms = (busy - last_busy) / ticks_per_ms;
-    last_busy = busy;
-    for (u32 c = 0; c < BbStats::CatCount; ++c) {
-        const u64 now = BbStats::cat_ticks[c].load(std::memory_order_relaxed);
-        p.cat_ms[c] = (now - last_cat[c]) / ticks_per_ms;
-        last_cat[c] = now;
-    }
-    const u64 bytes = BbStats::bind_copy_bytes.load();
-    p.bind_copy_mb = (bytes - last_bytes) / 1e6;
-    last_bytes = bytes;
-    return p;
 }
 
 void OnFlipStats() {
@@ -321,7 +186,6 @@ void OnFlipStats() {
     last_rf = rf;
     last_trf = trf;
     last_twf = twf;
-    const FramePhases phases = TakeFramePhases();
     const u64 copy_ns = BbStats::t_copy.load(), copy_bytes = BbStats::copy_bytes.load();
     u64 proc_flt = 0;
     if (rusage usage{}; getrusage(RUSAGE_SELF, &usage) == 0) {
@@ -369,29 +233,6 @@ void OnFlipStats() {
                     (t_now[0] - last_t[0]) / 1e6, (t_now[1] - last_t[1]) / 1e6,
                     (t_now[2] - last_t[2]) / 1e6, (t_now[3] - last_t[3]) / 1e6,
                     (t_now[4] - last_t[4]) / 1e6, (t_now[5] - last_t[5]) / 1e6);
-    }
-    if (frame_ms > 40.0 && last_gpu_ns != 0) {
-        std::printf("       phases ms: translate %.1f (%llu), pipelines on the GPU thread %.1f (%llu), "
-                    "%llu draws without their pipeline (async), descriptors %.1f (%llu batches), "
-                    "calls into the game process %.1f (%llu), GPU thread waiting for the game "
-                    "%.1f, page faults handled %.1f (%llu; draw pipe drains in them %.1f)",
-                    phases.translate_ms, (unsigned long long)phases.translates,
-                    phases.pipeline_sync_ms, (unsigned long long)phases.pipelines_sync,
-                    (unsigned long long)phases.async_skips, phases.descriptor_ms,
-                    (unsigned long long)phases.descriptor_batches, phases.ipc_ms,
-                    (unsigned long long)phases.ipc_calls, phases.gpu_idle_ms,
-                    phases.fault_handler_ms, (unsigned long long)phases.fault_handlers,
-                    phases.fault_drain_ms);
-        if (phases.game) {
-            std::printf("; game process: faults to bb-gpu %.1f (%llu), calls %.1f (%llu), file "
-                        "reads %.1f (%llu, %.1f MB), CPU %.1f, page-ins %llu",
-                        phases.game_fault_ms, (unsigned long long)phases.game_faults,
-                        phases.game_call_ms, (unsigned long long)phases.game_calls,
-                        phases.game_read_ms, (unsigned long long)phases.game_reads,
-                        phases.game_read_mb, phases.game_cpu_ms,
-                        (unsigned long long)phases.game_majflt);
-        }
-        std::printf("\n");
     }
     static std::array<u64, 12> last_layer{};
     static u64 last_mprotects = 0, last_entries = 0;
@@ -449,7 +290,6 @@ void OnFlipStats() {
         const u64 tick = BbStats::tick_wait_ns.load(), present = BbStats::present_wait_ns.load();
         const u64 compiles_now = Vulkan::g_bb_compiles.load();
         // tick_wait_ns and the compile count are reset every stats window.
-        const FrameProbe probe = TakeFrameProbe(frame_ms, phases.gpu_idle_ms);
         const auto delta = [](u64 now_value, u64& last_value) {
             const u64 d = now_value >= last_value ? now_value - last_value : now_value;
             last_value = now_value;
@@ -457,10 +297,7 @@ void OnFlipStats() {
         };
         std::fprintf(frame_log,
                      "%.4f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,"
-                     "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f,"
-                     "%.2f,%llu,%.2f,%llu,%llu,%.2f,%llu,%.2f,%llu,%.2f,"
-                     "%.2f,%llu,%.2f,%llu,%.2f,%.2f,%llu,%.2f,%llu,%.2f,%llu,%.2f,%llu,"
-                     "%.2f,%.2f,%.2f,%.2f,%llu,%llu,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                     "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f\n",
                      std::chrono::duration<double>(now - log_start).count(), frame_ms,
                      delta(present, log_present) / 1e6, delta(tick, log_tick) / 1e6,
                      last_gpu_ns ? (gpu_ns - last_gpu_ns) / 1e6 : 0.0,
@@ -478,24 +315,7 @@ void OnFlipStats() {
                      delta(BbStats::preupload_bytes.load(), log_preupload) / 1e6,
                      last_gpu_ns ? (sys_us - last_sys) / 1e3 : 0.0,
                      delta(BbStats::device_alloc_bytes.load(), log_alloc) / 1e6,
-                     delta(BbStats::device_free_bytes.load(), log_free) / 1e6,
-                     phases.translate_ms, (unsigned long long)phases.translates,
-                     phases.pipeline_sync_ms, (unsigned long long)phases.pipelines_sync,
-                     (unsigned long long)phases.async_skips, phases.descriptor_ms,
-                     (unsigned long long)phases.descriptor_batches, phases.ipc_ms,
-                     (unsigned long long)phases.ipc_calls, phases.gpu_idle_ms,
-                     phases.game_fault_ms, (unsigned long long)phases.game_faults,
-                     phases.game_call_ms, (unsigned long long)phases.game_calls,
-                     phases.game_read_ms, phases.game_read_mb,
-                     (unsigned long long)phases.game_reads, phases.game_cpu_ms,
-                     (unsigned long long)phases.game_majflt, phases.fault_handler_ms,
-                     (unsigned long long)phases.fault_handlers, phases.fault_drain_ms,
-                     (unsigned long long)phases.fault_drains, probe.ga_wall_ms, probe.ga_user_ms,
-                     probe.ga_sys_ms, probe.ga_drain_ms, (unsigned long long)probe.ga_drains,
-                     (unsigned long long)probe.ga_yields, probe.b_busy_ms, probe.b_user_ms,
-                     probe.b_sys_ms, probe.cat_ms[BbStats::CatState],
-                     probe.cat_ms[BbStats::CatPipeline], probe.cat_ms[BbStats::CatBind],
-                     probe.bind_copy_mb, probe.cat_ms[BbStats::CatEmit]);
+                     delta(BbStats::device_free_bytes.load(), log_free) / 1e6);
         static u32 unflushed = 0;
         if (++unflushed >= 120) {
             std::fflush(frame_log);

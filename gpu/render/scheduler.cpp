@@ -15,7 +15,6 @@
 #include <unistd.h>
 
 #include "bbport_copy.h"
-#include "bbport_cpu.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "bbport_wait_trace.h"
@@ -712,7 +711,7 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
             for (u32 spins = 1; worker.queued.load(std::memory_order_acquire) == 0 &&
                                 ordered_queued.load(std::memory_order_acquire) == 0;
                  ++spins) {
-                BbCpu::Pause();
+                __builtin_ia32_pause();
                 // The clock is read every 256 pauses, not per iteration.
                 if (!(spins & 255) &&
                     (stoken.stop_requested() || std::chrono::steady_clock::now() >= spin_until)) {
@@ -747,11 +746,8 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
             }
         }
         if (!ordered.empty()) {
-            {
-                BbStats::CatTimer category{BbStats::CatEmit};
-                for (auto& task : ordered) {
-                    task->Execute({});
-                }
+            for (auto& task : ordered) {
+                task->Execute({});
             }
             std::scoped_lock lk{recorder_mutex};
             for (auto& task : ordered) {
@@ -768,10 +764,7 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
         if (!cmdbuf) {
             cmdbuf = BeginCommandBuffer(*worker.pool);
         }
-        {
-            BbStats::CatTimer category{BbStats::CatEmit};
-            chunk->Execute(cmdbuf);
-        }
+        chunk->Execute(cmdbuf);
         {
             std::scoped_lock lk{recorder_mutex};
             ++chunk->batch->recorded[chunk->segment];
@@ -899,11 +892,7 @@ void Scheduler::QueueSubmit(std::span<const vk::CommandBuffer> cmdbufs, SubmitIn
     for (auto& operation : info.before_submit) {
         operation();
     }
-    vk::Result result;
-    {
-        BbStats::CatTimer category{BbStats::CatEmit};
-        result = instance.GetGraphicsQueue().submit(submit, info.fence);
-    }
+    const vk::Result result = instance.GetGraphicsQueue().submit(submit, info.fence);
     if (result == vk::Result::eErrorDeviceLost) {
         Breadcrumbs::ReportDeviceLost("submit");
     }

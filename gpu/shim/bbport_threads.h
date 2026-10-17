@@ -21,16 +21,6 @@
 
 namespace BbThreads {
 
-/// Mach port of the calling thread (macOS; 0 elsewhere): another thread may read its CPU times
-/// with thread_info (the frame log, frame_stats.cpp). pthread_mach_thread_np adds no reference.
-inline std::uint32_t CurrentThreadPort() {
-#ifdef __APPLE__
-    return static_cast<std::uint32_t>(pthread_mach_thread_np(pthread_self()));
-#else
-    return 0;
-#endif
-}
-
 /// Kernel thread id of the calling thread (diagnostics, write log, draw pipe).
 inline unsigned long HostTid() {
 #ifdef __APPLE__
@@ -78,9 +68,6 @@ inline void MakeBackground() {
 /// CPU time of the calling thread in microseconds (macOS has no RUSAGE_THREAD).
 /// Defined in bbport_thread_cpu_mac.cpp so Mach headers stay out of shared headers.
 bool CurrentThreadCpuUs(std::uint64_t& user_us, std::uint64_t& sys_us);
-/// The same for another thread, by its Mach port (CurrentThreadPort). False for port 0 or a
-/// thread that has exited.
-bool ThreadCpuUs(std::uint32_t port, std::uint64_t& user_us, std::uint64_t& sys_us);
 /// BB_FRAME_STATS: CPU time of every thread of the process since the last call, by thread name
 /// and by owner (this port, the game, the system): where a native GPU process would help.
 std::string ReportProcessThreads(double window_s);

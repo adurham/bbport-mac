@@ -397,7 +397,6 @@ void Rasterizer::BeginDraw(const GraphicsPipeline* pipeline, const RenderState& 
                            bool is_indexed, bool jitter_eligible) {
     {
         BB_SECTION(PipelineBind);
-        BbStats::CatTimer category{BbStats::CatBind};
         pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                                 {buffer_infos.data(), buffer_infos.size()});
     }
