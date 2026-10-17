@@ -239,7 +239,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
 
     if (needs_barrier) {
-        runtime.FlushBarriers();
+        runtime.FlushBarriersFor();
     }
 
     ScaleToTarget(pipeline);
@@ -513,7 +513,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
     const auto [buffer, base] =
         buffer_cache.ObtainBuffer(indirect.args, stride * max_count, false);
-    needs_barrier |= runtime.IsBufferAccessed(buffer, base, stride * max_count);
+    needs_barrier |=
+        runtime.IsBufferAccessed(buffer, base, stride * max_count, false, IndirectConsumer());
     // The arguments checked on the GPU first (vk_indirect_guard.h): a dispatch, outside the
     // render pass.
     vk::Buffer checked_args = buffer->Handle();
@@ -523,7 +524,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
             indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
         }
         if (needs_barrier) {
-            runtime.FlushBarriers();
+            runtime.FlushBarriersFor();
             needs_barrier = false;
         }
         scheduler.EndRendering();
@@ -541,11 +542,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     u64 count_offset;
     if (count_address != 0) {
         std::tie(count_buffer, count_offset) = buffer_cache.ObtainBuffer(count_address, 4, false);
-        needs_barrier |= runtime.IsBufferAccessed(count_buffer, count_offset, 4);
+        needs_barrier |=
+            runtime.IsBufferAccessed(count_buffer, count_offset, 4, false, IndirectConsumer());
     }
 
     if (needs_barrier) {
-        runtime.FlushBarriers();
+        runtime.FlushBarriersFor();
     }
 
     ScaleToTarget(pipeline);
@@ -650,7 +652,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     }
 
     if (needs_barrier) {
-        runtime.FlushBarriers();
+        runtime.FlushBarriersFor();
     }
 
     scheduler.EndRendering();
@@ -704,10 +706,10 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
         return;
     }
     const auto [buffer, base] = buffer_cache.ObtainBuffer(address, size, false);
-    needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
+    needs_barrier |= runtime.IsBufferAccessed(buffer, base, size, false, IndirectConsumer());
 
     if (needs_barrier) {
-        runtime.FlushBarriers();
+        runtime.FlushBarriersFor();
     }
 
     scheduler.EndRendering();

@@ -2,6 +2,9 @@
 #include "render/runtime.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 #include <boost/container/small_vector.hpp>
 #include <vulkan/vulkan_format_traits.hpp>
@@ -9,6 +12,7 @@
 #include "bbport_toggles.h"
 #include "render/gcn_to_vk.h"
 #include "render/vk_gpu_profiler.h"
+#include "vulkan/barrier_masks.h"
 #include "textures/blitter.h"
 #include "upscale/vk_scene_resolution.h"
 #include "vulkan/instance.h"
@@ -100,14 +104,29 @@ void Runtime::TickFrame() {
 }
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* buffer, u64 offset, u64 size,
-                               bool check_read) {
-    if (global_write) {
-        return true; // a paged write may have touched it (AccessGlobal)
-    }
+                               bool check_read, vk::PipelineStageFlags2 consumer) {
     const u64 id = reinterpret_cast<u64>(buffer);
     const u64 last = offset + size - 1;
-    return accesses.Overlaps(id, offset, last, AccessTracker::Kind::Write) ||
-           (check_read && accesses.Overlaps(id, offset, last, AccessTracker::Kind::Read));
+    const auto overlaps = [&](const AccessTracker& tracker) {
+        return tracker.Overlaps(id, offset, last, AccessTracker::Kind::Write) ||
+               (check_read && tracker.Overlaps(id, offset, last, AccessTracker::Kind::Read));
+    };
+    if (!NarrowBarriers()) {
+        // a paged write may have touched it (AccessGlobal)
+        return global_write || overlaps(accesses);
+    }
+    // BB_BARRIER_MASKS: accesses since the last barrier, or before a narrowed one that did not
+    // order this consumer's stages after them.
+    // (A paged read of any memory before a narrowed barrier: a later writer in other stages
+    // waits for it. Legacy orders it only through whatever full barrier happens in between.)
+    const bool hit = global_write || overlaps(accesses) ||
+                     (bool(consumer & ~carried_visible) &&
+                      ((!carried.Empty() && overlaps(carried)) ||
+                       (check_read && carried_global_read)));
+    if (hit) {
+        flush_consumers |= consumer;
+    }
+    return hit;
 }
 
 void Runtime::AccessBuffer(const VideoCore::Buffer* buffer, u64 offset, u64 size,
@@ -133,13 +152,152 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* buffer, u64 offset, u64 size
 
 void Runtime::AccessGlobal(vk::PipelineStageFlags2 stage, vk::AccessFlags2 access) {
     pending_stages |= stage;
+    pending_global_read = true;
     if (access & AccessBit::eShaderWrite) {
         pending_writes |= AccessBit::eShaderWrite;
         global_write = true;
     }
 }
 
+namespace {
+/// BB_FRAME_STATS: what the barriers of Runtime waited in (vulkan/barrier_masks.h).
+struct BarrierMaskStats {
+    u64 memory_all = 0, memory_vertex = 0, memory_fragment = 0, images_vertex = 0,
+        images_fragment = 0, image_only = 0, chains = 0, merged = 0;
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+};
+BarrierMaskStats mask_stats;
+bool MaskStatsEnabled() {
+    static const bool enabled = std::getenv("BB_FRAME_STATS") != nullptr;
+    return enabled;
+}
+void NoteBarrier(bool memory, vk::PipelineStageFlags2 memory_dst,
+                 std::span<const vk::ImageMemoryBarrier2> images) {
+    if (!MaskStatsEnabled()) {
+        return;
+    }
+    auto& s = mask_stats;
+    if (memory) {
+        ++(memory_dst & Stage::eAllCommands ? s.memory_all
+           : IsVertexSide(memory_dst)        ? s.memory_vertex
+                                             : s.memory_fragment);
+    } else {
+        ++s.image_only;
+    }
+    if (!images.empty()) {
+        vk::PipelineStageFlags2 dst{};
+        for (const auto& b : images) {
+            dst |= b.dstStageMask;
+            s.chains += b.oldLayout == b.newLayout && !b.srcAccessMask;
+        }
+        ++(IsVertexSide(dst) ? s.images_vertex : s.images_fragment);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s.last >= std::chrono::seconds(10)) {
+        s.last = now;
+        std::printf("Barrier masks (10 s, %s): memory barriers waiting in all %llu, vertex side "
+                    "%llu, fragment side %llu; image barrier batches vertex side %llu, fragment "
+                    "side %llu (%llu without a memory barrier); %llu new-stage chains, %llu "
+                    "merged into a queued barrier\n",
+                    GetBarrierMasks() == BarrierMasks::Legacy   ? "legacy"
+                    : GetBarrierMasks() == BarrierMasks::Strict ? "strict"
+                                                                : "safe",
+                    (unsigned long long)s.memory_all, (unsigned long long)s.memory_vertex,
+                    (unsigned long long)s.memory_fragment, (unsigned long long)s.images_vertex,
+                    (unsigned long long)s.images_fragment, (unsigned long long)s.image_only,
+                    (unsigned long long)s.chains, (unsigned long long)s.merged);
+        const auto keep = s.last;
+        s = {};
+        s.last = keep;
+    }
+}
+} // namespace
+
+void Runtime::FlushBarriersFor(vk::PipelineStageFlags2 consumers) {
+    if (!NarrowBarriers()) {
+        FlushBarriers();
+        return;
+    }
+    FlushNarrowed(consumers);
+}
+
+void Runtime::FlushNarrowed(vk::PipelineStageFlags2 consumers) {
+    BeforeImageAccess();
+    consumers |= flush_consumers;
+    vk::PipelineStageFlags2 image_dst{};
+    for (const auto& b : image_barriers) {
+        image_dst |= b.dstStageMask;
+    }
+    // safe: a memory barrier whenever legacy emitted one (pending accesses), waiting in the
+    // buffer consumers and the stages of the image barriers it goes with. strict: only for a
+    // buffer conflict a consumer was named for (the tracked hazards).
+    const bool strict = GetBarrierMasks() == BarrierMasks::Strict;
+    const bool narrowed_any = bool(consumers | image_dst);
+    // Every stage waits when the consumer is unknown, or a paged write may have touched anything.
+    const bool full = bool(consumers & Stage::eAllCommands) || global_write ||
+                      (!strict && !narrowed_any && bool(pending_stages));
+    const vk::PipelineStageFlags2 src = pending_stages | carried_stages;
+    const bool memory =
+        full ? bool(pending_stages | carried_stages) || global_write
+             : bool(src) && (strict ? bool(consumers) : bool(pending_stages) || bool(consumers));
+    if (!memory && image_barriers.empty()) {
+        flush_consumers = {};
+        return;
+    }
+    const vk::PipelineStageFlags2 dst = full ? vk::PipelineStageFlags2(Stage::eAllCommands)
+                                      : strict ? consumers
+                                               : consumers | image_dst;
+    scheduler.EndRendering();
+    NoteBarrier(memory, dst, {image_barriers.data(), image_barriers.size()});
+    scheduler.Record([barrier = vk::MemoryBarrier2{
+                          .srcStageMask = src,
+                          .srcAccessMask = pending_writes | carried_writes,
+                          .dstStageMask = dst,
+                          .dstAccessMask = AccessBit::eMemoryRead | AccessBit::eMemoryWrite,
+                      },
+                      memory,
+                      images = scheduler.RecordData(std::span<const vk::ImageMemoryBarrier2>(
+                          image_barriers.data(), image_barriers.size()))](vk::CommandBuffer cmdbuf) {
+        cmdbuf.pipelineBarrier2({
+            .memoryBarrierCount = memory ? 1u : 0u,
+            .pMemoryBarriers = &barrier,
+            .imageMemoryBarrierCount = u32(images.size()),
+            .pImageMemoryBarriers = images.data(),
+        });
+    });
+    image_barriers.clear();
+    flush_consumers = {};
+    if (!memory) {
+        return; // the buffer accesses still wait for a barrier that orders them
+    }
+    if (full) {
+        accesses.Clear();
+        carried.Clear();
+        pending_stages = carried_stages = carried_visible = {};
+        pending_writes = carried_writes = {};
+        global_write = false;
+        pending_global_read = carried_global_read = false;
+        return;
+    }
+    // Ordered before (and visible to) `dst` only: a later consumer in another stage needs one
+    // more barrier from these stages. Earlier carried accesses are in this barrier's first
+    // scope too, so all of them are now ordered before `dst` (and no more is known).
+    carried.MergeFrom(accesses);
+    accesses.Clear();
+    carried_stages |= pending_stages;
+    carried_writes |= pending_writes;
+    carried_visible = dst;
+    carried_global_read |= pending_global_read;
+    pending_global_read = false;
+    pending_stages = {};
+    pending_writes = {};
+}
+
 void Runtime::FlushBarriers() {
+    if (NarrowBarriers()) {
+        FlushNarrowed(Stage::eAllCommands);
+        return;
+    }
     BeforeImageAccess();
     const bool memory = bool(pending_stages);
     if (!memory && image_barriers.empty()) {
@@ -179,7 +337,74 @@ bool Runtime::Transit(VideoCore::Image* image, vk::ImageLayout dst_layout,
     }
     const size_t before = image_barriers.size();
     image->GetBarriers(image_barriers, dst_layout, dst_access, dst_stage, range);
+    if (NarrowBarriers() && before != 0) {
+        MergeQueuedChains(before);
+    }
     return image_barriers.size() != before;
+}
+
+namespace {
+bool Covers(const vk::ImageSubresourceRange& outer, const vk::ImageSubresourceRange& inner,
+            u32 levels, u32 layers) {
+    const auto end = [](u32 base, u32 count, u32 total) {
+        return count == VK_REMAINING_MIP_LEVELS ? total : base + count;
+    };
+    return (outer.aspectMask & inner.aspectMask) == inner.aspectMask &&
+           outer.baseMipLevel <= inner.baseMipLevel &&
+           end(outer.baseMipLevel, outer.levelCount, levels) >=
+               end(inner.baseMipLevel, inner.levelCount, levels) &&
+           outer.baseArrayLayer <= inner.baseArrayLayer &&
+           end(outer.baseArrayLayer, outer.layerCount, layers) >=
+               end(inner.baseArrayLayer, inner.layerCount, layers);
+}
+bool Overlap(const vk::ImageSubresourceRange& a, const vk::ImageSubresourceRange& b, u32 levels,
+             u32 layers) {
+    const auto end = [](u32 base, u32 count, u32 total) {
+        return count == VK_REMAINING_MIP_LEVELS ? total : base + count;
+    };
+    return bool(a.aspectMask & b.aspectMask) && a.baseMipLevel < end(b.baseMipLevel, b.levelCount, levels) &&
+           b.baseMipLevel < end(a.baseMipLevel, a.levelCount, levels) &&
+           a.baseArrayLayer < end(b.baseArrayLayer, b.layerCount, layers) &&
+           b.baseArrayLayer < end(a.baseArrayLayer, a.layerCount, layers);
+}
+} // namespace
+
+void Runtime::MergeQueuedChains(size_t first_new) {
+    // BB_BARRIER_MASKS: barriers in one vkCmdPipelineBarrier2 are not ordered against each other,
+    // yet the image state treats a barrier queued after another for the same image as running
+    // after it (its first scope is the earlier one's second). Each new barrier that overlaps a
+    // queued one: the queued one also waits in the new one's stages (its layout transition and
+    // visibility reach them), and the new one also starts from the queued one's first scope (so it
+    // orders what that one ordered). A same-layout read the queued one covers is folded into it.
+    // Under legacy every sampled destination is ALL_COMMANDS, which covered all of this.
+    constexpr u32 Many = 1u << 16;
+    for (size_t i = first_new; i < image_barriers.size();) {
+        auto& added = image_barriers[i];
+        const bool is_chain = added.oldLayout == added.newLayout && !added.srcAccessMask;
+        bool covered = false;
+        for (size_t j = 0; j < first_new; ++j) {
+            auto& queued = image_barriers[j];
+            if (queued.image != added.image ||
+                !Overlap(queued.subresourceRange, added.subresourceRange, Many, Many)) {
+                continue;
+            }
+            queued.dstStageMask |= added.dstStageMask;
+            queued.dstAccessMask |= added.dstAccessMask;
+            added.srcStageMask |= queued.srcStageMask;
+            added.srcAccessMask |= queued.srcAccessMask;
+            covered = covered || (is_chain && queued.newLayout == added.newLayout &&
+                                  Covers(queued.subresourceRange, added.subresourceRange, Many,
+                                         Many));
+        }
+        if (covered) {
+            if (MaskStatsEnabled()) {
+                ++mask_stats.merged;
+            }
+            image_barriers.erase(image_barriers.begin() + i);
+        } else {
+            ++i;
+        }
+    }
 }
 
 Runtime::TransferMark::TransferMark(Runtime& runtime, const char* what,
@@ -221,16 +446,16 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
             dst_min = std::min<u64>(dst_min, copy.dstOffset);
             dst_max = std::max<u64>(dst_max, copy.dstOffset + copy.size);
         } else {
-            needs_flush = needs_flush || IsBufferAccessed(src, copy.srcOffset, copy.size) ||
-                          IsBufferAccessed(dst, copy.dstOffset, copy.size, true);
+            needs_flush = needs_flush || IsBufferAccessed(src, copy.srcOffset, copy.size, false, TransferConsumer()) ||
+                          IsBufferAccessed(dst, copy.dstOffset, copy.size, true, TransferConsumer());
         }
     }
     if (bounded) {
-        needs_flush = IsBufferAccessed(src, src_min, src_max - src_min) ||
-                      IsBufferAccessed(dst, dst_min, dst_max - dst_min, true);
+        needs_flush = IsBufferAccessed(src, src_min, src_max - src_min, false, TransferConsumer()) ||
+                      IsBufferAccessed(dst, dst_min, dst_max - dst_min, true, TransferConsumer());
     }
     if (needs_flush) {
-        FlushBarriers();
+        FlushBarriersFor();
     }
     scheduler.Record([src = src->Handle(), dst = dst->Handle(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
@@ -249,8 +474,8 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
 
 void Runtime::FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32 value) {
     scheduler.EndRendering();
-    if (IsBufferAccessed(dst, offset, size, true)) {
-        FlushBarriers();
+    if (IsBufferAccessed(dst, offset, size, true, TransferConsumer())) {
+        FlushBarriersFor();
     }
     scheduler.Record([dst = dst->Handle(), offset, size, value](vk::CommandBuffer cmdbuf) {
         cmdbuf.fillBuffer(dst, offset, size, value);
@@ -265,10 +490,10 @@ void Runtime::CopyFromGuestChunk(vk::Buffer src, const VideoCore::Buffer* dst,
     }
     scheduler.EndRendering();
     const bool needs_flush = std::ranges::any_of(copies, [&](const vk::BufferCopy& copy) {
-        return IsBufferAccessed(dst, copy.dstOffset, copy.size, true);
+        return IsBufferAccessed(dst, copy.dstOffset, copy.size, true, TransferConsumer());
     });
     if (needs_flush) {
-        FlushBarriers();
+        FlushBarriersFor();
     }
     scheduler.Record([src, dst = dst->Handle(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
@@ -284,8 +509,8 @@ void Runtime::UpdateBuffer(const VideoCore::Buffer* dst, u64 offset, std::span<c
         return;
     }
     scheduler.EndRendering();
-    if (IsBufferAccessed(dst, offset, data.size(), true)) {
-        FlushBarriers();
+    if (IsBufferAccessed(dst, offset, data.size(), true, TransferConsumer())) {
+        FlushBarriersFor();
     }
     constexpr size_t Piece = 32 * 1024; // vkCmdUpdateBuffer takes 64 KiB at most
     for (size_t at = 0; at < data.size(); at += Piece) {
@@ -308,10 +533,11 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
     for (const auto& copy : copies) {
         needs_flush = needs_flush ||
                       IsBufferAccessed(src, copy.bufferOffset,
-                                       BufferImageCopySize(copy, dst->info.pixel_format));
+                                       BufferImageCopySize(copy, dst->info.pixel_format), false,
+                                       TransferConsumer());
     }
     if (needs_flush) {
-        FlushBarriers();
+        FlushBarriersFor();
     }
     scheduler.Record([src = src->Handle(), image = dst->GetImage(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
@@ -335,10 +561,11 @@ void Runtime::DownloadImage(VideoCore::Image* src, const VideoCore::Buffer* dst,
     for (const auto& copy : copies) {
         needs_flush = needs_flush ||
                       IsBufferAccessed(dst, copy.bufferOffset,
-                                       BufferImageCopySize(copy, src->info.pixel_format), true);
+                                       BufferImageCopySize(copy, src->info.pixel_format), true,
+                                       TransferConsumer());
     }
     if (needs_flush) {
-        FlushBarriers();
+        FlushBarriersFor();
     }
     scheduler.Record([image = src->GetImage(), dst = dst->Handle(),
                       regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
@@ -357,7 +584,7 @@ void Runtime::PrepareTransfer(VideoCore::Image* src, VideoCore::Image* dst,
     bool needs_flush = Transit(src, Layout::eTransferSrcOptimal, stage, AccessBit::eTransferRead);
     needs_flush |= Transit(dst, Layout::eTransferDstOptimal, stage, AccessBit::eTransferWrite);
     if (needs_flush || extra_flush) {
-        FlushBarriers();
+        FlushBarriersFor();
     }
 }
 
@@ -426,7 +653,7 @@ void Runtime::CopyImageThroughBuffer(VideoCore::Image* src, VideoCore::Image* ds
         .imageExtent = {src->info.size.width, src->info.size.height, src->info.size.depth},
     };
     const u32 size = BufferImageCopySize(download, src->info.pixel_format);
-    PrepareTransfer(src, dst, Stage::eCopy, IsBufferAccessed(buffer, offset, size, true));
+    PrepareTransfer(src, dst, Stage::eCopy, IsBufferAccessed(buffer, offset, size, true, TransferConsumer()));
     vk::BufferImageCopy upload = download;
     upload.imageSubresource.aspectMask = dst->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
     scheduler.Record([src = src->GetImage(), dst = dst->GetImage(), buffer = buffer->Handle(),
@@ -493,7 +720,7 @@ void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
                                Stage::eEarlyFragmentTests | Stage::eLateFragmentTests,
                                AccessBit::eDepthStencilAttachmentWrite);
         if (needs_flush) {
-            FlushBarriers();
+            FlushBarriersFor();
         }
         blitter->ColorAsMsDepth(dst->info.size.width, dst->info.size.height,
                                 dst->info.num_samples, src->info.pixel_format,
@@ -556,7 +783,7 @@ void Runtime::ClearImage(VideoCore::Image* dst, const VideoCore::SubresourceRang
     }
     if (Transit(dst, Layout::eTransferDstOptimal, Stage::eClear, AccessBit::eTransferWrite,
                 range)) {
-        FlushBarriers();
+        FlushBarriersFor();
     }
     const vk::ImageSubresourceRange vk_range{vk::ImageAspectFlagBits::eColor, range.base.level,
                                              range.extent.levels, range.base.layer,

@@ -55,7 +55,8 @@ Rasterizer::ImageDescCacheEntry& Rasterizer::CachedImageDescEntry(const Gcn::Ima
 
 bool Rasterizer::TransitSampled(VideoCore::Image& image,
                                 const VideoCore::TextureCache::ImageDesc& desc,
-                                const VideoCore::Image::Binding& binding, bool is_storage) {
+                                const VideoCore::Image::Binding& binding, bool is_storage,
+                                vk::PipelineStageFlags2 sampled_stages) {
     // Also a storage image of this draw (its own descriptor) or a render target (a feedback
     // loop): the whole image in the general or feedback loop layout. Depth images are never
     // storage, and a feedback loop makes no sense for them.
@@ -78,8 +79,7 @@ bool Rasterizer::TransitSampled(VideoCore::Image& image,
     return runtime.Transit(&image,
                            image.info.props.is_depth ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
                                                      : vk::ImageLayout::eShaderReadOnlyOptimal,
-                           vk::PipelineStageFlagBits2::eAllCommands,
-                           vk::AccessFlagBits2::eShaderRead, desc.view_info.range);
+                           sampled_stages, vk::AccessFlagBits2::eShaderRead, desc.view_info.range);
 }
 
 void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* prepared,
@@ -421,7 +421,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                     continue;
                 }
             }
-            barrier |= TransitSampled(image, desc, binding, is_storage);
+            barrier |= TransitSampled(image, desc, binding, is_storage, ConsumerStages(stage, true));
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
             if (FrameCapture::Active()) {
@@ -617,7 +617,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
         const auto new_layout = image.info.props.is_depth
                                     ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
                                     : vk::ImageLayout::eShaderReadOnlyOptimal;
-        barrier |= runtime.Transit(&image, new_layout, vk::PipelineStageFlagBits2::eAllCommands,
+        barrier |= runtime.Transit(&image, new_layout, ConsumerStages(stage, true),
                                    vk::AccessFlagBits2::eShaderRead, entry.range);
         image_infos.emplace_back(VK_NULL_HANDLE, entry.view, image.backing->state.layout);
     }

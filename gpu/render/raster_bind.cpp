@@ -4,6 +4,7 @@
 
 #include "bbport_button_prompts.h"
 #include "render/raster_internal.h"
+#include "vulkan/barrier_masks.h"
 
 namespace Vulkan {
 
@@ -231,8 +232,54 @@ void NoteResStats(const Pipeline* pipeline) {
 }
 } // namespace
 
+namespace {
+vk::PipelineStageFlags2 StageBit(Shader::SwStage stage) {
+    using S = vk::PipelineStageFlagBits2;
+    switch (stage) {
+    case Shader::SwStage::Fragment:
+        return S::eFragmentShader;
+    case Shader::SwStage::TessellationControl:
+        return S::eTessellationControlShader;
+    case Shader::SwStage::TessellationEval:
+        return S::eTessellationEvaluationShader;
+    case Shader::SwStage::Vertex:
+        return S::eVertexShader;
+    case Shader::SwStage::Geometry:
+        return S::eGeometryShader;
+    case Shader::SwStage::Compute:
+        return S::eComputeShader;
+    default:
+        return S::eAllCommands;
+    }
+}
+} // namespace
+
+vk::PipelineStageFlags2 Rasterizer::ConsumerStages(const Shader::Info& stage, bool image) const {
+    switch (Vulkan::GetBarrierMasks()) {
+    case Vulkan::BarrierMasks::Legacy:
+        return vk::PipelineStageFlagBits2::eAllCommands;
+    case Vulkan::BarrierMasks::Strict:
+        return StageBit(stage.sw_stage);
+    case Vulkan::BarrierMasks::Safe:
+    default: {
+        const auto stages = image ? pipeline_image_stages : pipeline_buffer_stages;
+        return stages ? stages | StageBit(stage.sw_stage) : StageBit(stage.sw_stage);
+    }
+    }
+}
+
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
     BB_SECTION(BindResources);
+    pipeline_image_stages = {};
+    pipeline_buffer_stages = {};
+    for (const auto* stage : pipeline->GetStages()) {
+        if (stage && !stage->images.empty()) {
+            pipeline_image_stages |= StageBit(stage->sw_stage);
+        }
+        if (stage && !stage->buffers.empty()) {
+            pipeline_buffer_stages |= StageBit(stage->sw_stage);
+        }
+    }
     BbStats::CatTimer category{BbStats::CatBind};
     NoteResStats(pipeline);
     {
@@ -556,7 +603,8 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     for (auto& range : ranges) {
         const u64 size = memory->ClampRangeSize(range.begin, range.end - range.begin);
         std::tie(range.buffer, range.offset) = buffer_cache.ObtainBuffer(range.begin, size, false);
-        needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size);
+        needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size, false,
+                                                  VertexInputConsumer());
     }
 
     // Each stream at its offset in its range's buffer (null for streams without memory).
@@ -602,7 +650,7 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const VAddr address = regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
     const u32 size = regs.num_indices * index_size;
     const auto [buffer, offset] = buffer_cache.ObtainBuffer(address, size, false);
-    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
+    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, false, VertexInputConsumer());
     // Tracked as a graphics read after the draw (ResetBindings): an upload into a mirrored index
     // range must not overtake the draw's fixed-function index fetches.
     bound_buffers.emplace_back(buffer, offset, size, false);
@@ -717,7 +765,8 @@ void Rasterizer::BindSpecialBuffer(const Shader::BufferResource& desc, const Sha
     case Shader::BufferType::GdsBuffer: {
         const auto* gds = buffer_cache.GetGdsBuffer();
         buffer_infos.emplace_back(gds->Handle(), 0, gds->SizeBytes());
-        needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes());
+        needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes(), false,
+                                                  ConsumerStages(stage, false));
         break;
     }
     case Shader::BufferType::Flatbuf: {
@@ -823,6 +872,9 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
                 address, memory->ClampRangeSize(address, vsharp.GetSize()));
         }
         needs_barrier = true;
+        // Any of the game's memory: the barrier orders everything since the last full one before
+        // this binding's stages (its writes make the next barrier a full one: AccessGlobal).
+        runtime.RequireBarrierFor(ConsumerStages(stage, false));
         return;
     }
     const u64 size = memory->ClampRangeSize(address, vsharp.GetSize());
@@ -849,7 +901,8 @@ void Rasterizer::BindGuestBuffer(const Shader::BufferResource& desc, const Gcn::
         // Raw storage-buffer writes can also make an aliased cached image stale.
         texture_cache.InvalidateMemoryFromGPU(address, size);
     }
-    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
+    needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written,
+                                              ConsumerStages(stage, false));
 }
 
 void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,

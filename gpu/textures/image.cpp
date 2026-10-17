@@ -16,6 +16,7 @@
 #include "render/gcn_to_vk.h"
 #include "vulkan/instance.h"
 #include "render/runtime.h"
+#include "vulkan/barrier_masks.h"
 
 namespace VideoCore {
 
@@ -98,6 +99,19 @@ constexpr vk::AccessFlags2 WriteAccess = vk::AccessFlagBits2::eTransferWrite |
 bool NeedsBarrier(const Image::State& state, vk::ImageLayout layout, vk::AccessFlags2 access) {
     return state.layout != layout || state.access_mask != access ||
            bool(state.access_mask & WriteAccess);
+}
+
+/// BB_BARRIER_MASKS=safe|strict: a read in the same layout, nothing written since the last
+/// barrier. `pl_stage` then holds every stage already ordered after the last writer (also the
+/// first scope of the next writer's barrier): a read in those stages needs nothing, a read in
+/// another stage a barrier from them (an execution dependency chain from the writer; the earlier
+/// barrier made the writes available).
+bool IsReadInSameLayout(const Image::State& state, vk::ImageLayout layout,
+                        vk::AccessFlags2 access) {
+    constexpr vk::AccessFlags2 AnyWrite = WriteAccess | vk::AccessFlagBits2::eColorAttachmentWrite |
+                                          vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    return Vulkan::NarrowBarriers() && state.layout == layout && !(state.access_mask & AnyWrite) &&
+           !(access & AnyWrite) && state.layout != vk::ImageLayout::eUndefined;
 }
 
 } // namespace
@@ -263,9 +277,11 @@ void Image::GetBarriers(Barriers& out, vk::ImageLayout dst_layout, vk::AccessFla
                                    range->extent != info.resources);
     const State target{dst_stage, dst_mask, dst_layout};
     const auto barrier = [&](const State& from, u32 level, u32 levels, u32 layer, u32 layers) {
+        const bool chain = IsReadInSameLayout(from, dst_layout, dst_mask);
         out.push_back(vk::ImageMemoryBarrier2{
             .srcStageMask = from.pl_stage,
-            .srcAccessMask = from.access_mask,
+            // A chain makes nothing available: the barrier after the last write did.
+            .srcAccessMask = chain ? vk::AccessFlags2{} : from.access_mask,
             .dstStageMask = dst_stage,
             .dstAccessMask = dst_mask,
             .oldLayout = from.layout,
@@ -277,12 +293,24 @@ void Image::GetBarriers(Barriers& out, vk::ImageLayout dst_layout, vk::AccessFla
         });
     };
 
+    // The state after reaching `target` from `from` and whether that needs a barrier.
+    const auto step = [&](const State& from, bool& needs) -> State {
+        if (IsReadInSameLayout(from, dst_layout, dst_mask)) {
+            needs = (dst_stage & ~from.pl_stage) || (dst_mask & ~from.access_mask);
+            return State{from.pl_stage | dst_stage, from.access_mask | dst_mask, dst_layout};
+        }
+        needs = NeedsBarrier(from, dst_layout, dst_mask);
+        return target;
+    };
+
     if (!partial && parts.empty()) {
         backing->settled = false;
-        if (NeedsBarrier(whole, dst_layout, dst_mask)) {
+        bool needs = false;
+        const State next = step(whole, needs);
+        if (needs) {
             barrier(whole, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS);
         }
-        whole = target;
+        whole = next;
         return;
     }
 
@@ -337,11 +365,17 @@ void Image::GetBarriers(Barriers& out, vk::ImageLayout dst_layout, vk::AccessFla
         parts.assign(info.resources.levels * num_layers, whole);
     }
     const SubresourceRange walk = partial ? *range : SubresourceRange{{}, info.resources};
-    if (backing->settled && backing->settled_range == walk && backing->settled_state == target &&
-        !NeedsBarrier(target, dst_layout, dst_mask)) {
-        whole = target;
-        return;
+    if (backing->settled && backing->settled_range == walk) {
+        bool needs = true;
+        const State next = step(backing->settled_state, needs);
+        if (!needs && next == backing->settled_state) {
+            whole = next;
+            return;
+        }
     }
+    State result = target;
+    bool have_result = false;
+    bool uniform = true;
     const u32 first_level = walk.base.level;
     const u32 end_level = first_level + walk.extent.levels;
     const u32 first_layer = walk.base.layer;
@@ -355,20 +389,29 @@ void Image::GetBarriers(Barriers& out, vk::ImageLayout dst_layout, vk::AccessFla
             while (layer + run < end_layer && parts[index + run] == from) {
                 ++run;
             }
-            if (NeedsBarrier(from, dst_layout, dst_mask)) {
+            bool needs = false;
+            const State next = step(from, needs);
+            if (needs) {
                 barrier(from, level, 1, layer, run);
             }
-            std::fill_n(parts.begin() + index, run, target);
+            if (!have_result) {
+                result = next;
+                have_result = true;
+            }
+            uniform = uniform && next == result;
+            std::fill_n(parts.begin() + index, run, next);
             layer += run;
         }
     }
-    if (!partial) {
+    if (!partial && uniform) {
         parts.clear(); // all in one state: whole-image transitions again
     }
-    backing->settled = partial;
+    // (BB_BARRIER_MASKS: chained reads can leave the parts in different states; they then keep
+    // their own.)
+    backing->settled = partial && uniform;
     backing->settled_range = walk;
-    backing->settled_state = target;
-    whole = target;
+    backing->settled_state = result;
+    whole = result;
 }
 
 } // namespace VideoCore

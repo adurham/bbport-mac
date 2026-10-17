@@ -104,15 +104,27 @@ public:
     /// Records an access of [offset, offset + size) of `buffer` by commands just recorded.
     void AccessBuffer(const VideoCore::Buffer* buffer, u64 offset, u64 size,
                       vk::PipelineStageFlags2 stage, vk::AccessFlags2 access);
-    /// Whether a barrier must come before reading (or with `check_read`, writing) the range.
+    /// Whether a barrier must come before reading (or with `check_read`, writing) the range
+    /// in `consumer` stages (BB_BARRIER_MASKS: the barrier the caller flushes then waits in
+    /// those stages; ALL_COMMANDS when the caller does not know them).
     bool IsBufferAccessed(const VideoCore::Buffer* buffer, u64 offset, u64 size,
-                          bool check_read = false);
+                          bool check_read = false,
+                          vk::PipelineStageFlags2 consumer = vk::PipelineStageFlagBits2::eAllCommands);
     /// BB_LAYER_MEMORY: a shader reached memory through the page table (any buffer of the
     /// game's memory). A write there makes every later access wait for a barrier.
     void AccessGlobal(vk::PipelineStageFlags2 stage, vk::AccessFlags2 access);
 
-    /// Records the queued barriers (memory and image layouts).
+    /// Records the queued barriers (memory and image layouts); later work in every stage waits.
     void FlushBarriers();
+    /// The same where the consumers are known (BB_BARRIER_MASKS=safe|strict): the barrier waits
+    /// in the stages IsBufferAccessed was given, the stages of the queued image barriers and
+    /// `consumers`. Under legacy it is FlushBarriers().
+    void FlushBarriersFor(vk::PipelineStageFlags2 consumers = {});
+    /// The next flush waits in `stages` too, whatever the tracker found (a binding that may read
+    /// any of the game's memory).
+    void RequireBarrierFor(vk::PipelineStageFlags2 stages) {
+        flush_consumers |= stages;
+    }
 
     /// Runs before this thread changes image state (layouts, pending image barriers): the
     /// rasterizer joins its texture binding helper there (BindHelper).
@@ -148,6 +160,17 @@ private:
     vk::PipelineStageFlags2 pending_stages{};  ///< of accesses since the last barrier
     vk::AccessFlags2 pending_writes{};         ///< their write accesses
     bool global_write = false;                 ///< AccessGlobal wrote since the last barrier
+    // BB_BARRIER_MASKS=safe|strict (vulkan/barrier_masks.h): accesses that a narrowed barrier
+    // ordered before `carried_visible` stages only; a consumer in another stage needs one more.
+    void FlushNarrowed(vk::PipelineStageFlags2 consumers);
+    void MergeQueuedChains(size_t first_new);
+    vk::PipelineStageFlags2 flush_consumers{};  ///< consumers the next flush must cover
+    AccessTracker carried;
+    vk::PipelineStageFlags2 carried_stages{};
+    vk::AccessFlags2 carried_writes{};
+    vk::PipelineStageFlags2 carried_visible{};
+    bool pending_global_read = false; ///< AccessGlobal since the last barrier
+    bool carried_global_read = false; ///< ... before a narrowed barrier
 };
 
 } // namespace Vulkan

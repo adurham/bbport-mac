@@ -35,6 +35,7 @@
 #include "render/rasterizer.h"
 #include "render/runtime.h"
 #include "render/scheduler.h"
+#include "vulkan/barrier_masks.h"
 #include "render/shader_hle.h"
 #include "render/vk_button_prompts.h"
 #include "render/vk_frame_capture.h"

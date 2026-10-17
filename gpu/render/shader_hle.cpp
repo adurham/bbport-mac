@@ -19,6 +19,7 @@
 #include "render/rasterizer.h"
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
+#include "vulkan/barrier_masks.h"
 
 extern std::unique_ptr<BbCp::CommandProcessor> liverpool;
 
@@ -108,9 +109,9 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
     }
     scheduler.EndRendering();
     const u64 src_size = src_max - src_min, dst_size = dst_max - dst_min;
-    if (runtime.IsBufferAccessed(src, src_min, src_size) ||
-        runtime.IsBufferAccessed(dst, dst_min, dst_size, true)) {
-        runtime.FlushBarriers();
+    if (runtime.IsBufferAccessed(src, src_min, src_size, false, ComputeConsumer()) ||
+        runtime.IsBufferAccessed(dst, dst_min, dst_size, true, ComputeConsumer())) {
+        runtime.FlushBarriersFor();
     }
     const u32 count = static_cast<u32>(copies.size());
     scheduler.RecordCrumb({.name = "HLE copy shader"}, [src = src->Handle(), dst = dst->Handle(), table = stream.Handle(), src_min,

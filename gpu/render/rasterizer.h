@@ -433,7 +433,8 @@ private:
     /// The layout transition of an image a shader reads (or writes, `is_storage`); true when
     /// it records a barrier.
     bool TransitSampled(VideoCore::Image& image, const VideoCore::TextureCache::ImageDesc& desc,
-                        const VideoCore::Image::Binding& binding, bool is_storage);
+                        const VideoCore::Image::Binding& binding, bool is_storage,
+                        vk::PipelineStageFlags2 sampled_stages);
     void ForceAnisotropy(Gcn::Sampler& sharp, bool is_depth) const;
     void BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
                       Shader::Backend::Bindings& binding, u32& write_index);
@@ -747,6 +748,13 @@ private:
     u64 proxy_samples = 0; ///< texture bindings that read a scene proxy (statistics)
     float sampler_lod_bias = 0.0f; ///< bbport: extra bias of this draw's samplers
     bool pipeline_is_compute = false; ///< bbport: the bound pipeline of BindResources
+    /// BB_BARRIER_MASKS (vulkan/barrier_masks.h): the shader stages of the bound pipeline that
+    /// bind images / buffers (set by BindResources).
+    vk::PipelineStageFlags2 pipeline_image_stages{};
+    vk::PipelineStageFlags2 pipeline_buffer_stages{};
+    /// The stages a barrier for a resource `stage` binds waits in: ALL_COMMANDS (legacy), the
+    /// pipeline's stages binding that kind (safe) or the binding's own stage (strict).
+    vk::PipelineStageFlags2 ConsumerStages(const Shader::Info& stage, bool image) const;
     bool scene_debug_frame = false; ///< BB_SCENE_DEBUG: this frame's passes are printed
     u32 preupload_frame = ~0u; ///< bbport: frame of the last background pre-upload
     bool PendingWriteOverlaps(VAddr address, u64 size);

@@ -25,6 +25,7 @@
 #include "bbgpu/shaders/detile_micro_64_comp.h"
 #include "bbgpu/shaders/detile_micro_8_comp.h"
 #include "bbgpu/shaders/detile_micro_96_comp.h"
+#include "vulkan/barrier_masks.h"
 
 namespace VideoCore {
 
@@ -210,7 +211,7 @@ std::pair<const Buffer*, u64> Detiler::DetileImage(const Buffer* in_buffer, u64 
     const auto levels = LevelTable(info, info.resources.levels);
     const auto staging = runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
     scheduler.EndRendering();
-    runtime.FlushBarriers();
+    runtime.FlushBarriersFor(Vulkan::ComputeConsumer());
     Dispatch(Pipeline(info, false), {in_buffer->Handle(), in_offset, info.guest_size},
              {staging.buffer->Handle(), staging.offset, info.guest_size}, levels,
              info.guest_size / (info.num_bits / 8));
@@ -240,7 +241,7 @@ void Detiler::TileImage(Image& image, std::span<vk::BufferImageCopy> buffer_copi
         copy.bufferOffset += staging.offset;
     }
     runtime.DownloadImage(&image, staging.buffer, buffer_copies);
-    runtime.FlushBarriers();
+    runtime.FlushBarriersFor(Vulkan::ComputeConsumer());
     Dispatch(Pipeline(info, true), {out_buffer->Handle(), out_offset, info.guest_size},
              {staging.buffer->Handle(), staging.offset, info.guest_size}, levels,
              info.guest_size / (info.num_bits / 8));

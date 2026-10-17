@@ -47,6 +47,23 @@ public:
         return empty;
     }
 
+    /// Adds every range of `other` (BB_BARRIER_MASKS: accesses carried past a narrowed barrier).
+    void MergeFrom(const AccessTracker& other) {
+        for (u32 i = 0; i < other.used; ++i) {
+            const Resource& from = other.resources[i];
+            for (u32 kind = 0; kind < 2; ++kind) {
+                if (from.ranges[kind].empty()) {
+                    continue;
+                }
+                auto& to = Get(from.id).ranges[kind];
+                for (const Range& range : from.ranges[kind]) {
+                    Insert(to, range.first, range.last);
+                }
+                empty = false;
+            }
+        }
+    }
+
 private:
     struct Range {
         u64 first;
