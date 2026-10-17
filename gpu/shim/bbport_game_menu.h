@@ -13,5 +13,6 @@ namespace BbGameMenu {
 void PatchImage(unsigned char* image, std::uint64_t size);
 
 /// Applies what the player changed on the port's pages (each presented frame).
-void Poll();
+/// Applies what the pages changed; true when something changed (and was saved).
+bool Poll();
 } // namespace BbGameMenu

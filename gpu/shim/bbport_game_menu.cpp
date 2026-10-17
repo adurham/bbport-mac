@@ -17,7 +17,10 @@
 #include <vector>
 
 #include "bbport_settings.h"
-#include "remote/bb_remote.h"
+#if __has_include("remote/bb_remote.h")
+#include "remote/bb_remote.h" // the native line: the game front's settings relay
+#define BBPORT_GAME_MENU_REMOTE 1
+#endif
 #include "bbport_frame_rate.h"
 #include "sdl_window.h"
 
@@ -255,9 +258,11 @@ void Fill(const BbSettings::Values& s, int* values) {
 void LoadValues() {
     // bbport (macOS native GPU process): the settings menu runs in bb-gpu; its changes reach this
     // process through bbport.ini.
+#ifdef BBPORT_GAME_MENU_REMOTE
     if (BbRemote::FrontActive()) {
         BbSettings::ReloadLive();
     }
+#endif
     const int aspect = BbSettings::Get().aspect;
     menu_outputs = BbSettings::Outputs(aspect);
     RefreshOutputs(aspect);
