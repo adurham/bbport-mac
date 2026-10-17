@@ -83,6 +83,7 @@ bool UsesOpValue(Gcn::StencilFunc fail, Gcn::StencilFunc zpass, Gcn::StencilFunc
 
 void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool is_indexed) const {
     BB_SECTION(UpdateDynamicState);
+    BbStats::CatTimer category{BbStats::CatState};
     UpdateViewportScissorState();
     UpdateDepthStencilState();
     UpdatePrimitiveState(is_indexed);

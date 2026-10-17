@@ -747,8 +747,11 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
             }
         }
         if (!ordered.empty()) {
-            for (auto& task : ordered) {
-                task->Execute({});
+            {
+                BbStats::CatTimer category{BbStats::CatEmit};
+                for (auto& task : ordered) {
+                    task->Execute({});
+                }
             }
             std::scoped_lock lk{recorder_mutex};
             for (auto& task : ordered) {
@@ -765,7 +768,10 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
         if (!cmdbuf) {
             cmdbuf = BeginCommandBuffer(*worker.pool);
         }
-        chunk->Execute(cmdbuf);
+        {
+            BbStats::CatTimer category{BbStats::CatEmit};
+            chunk->Execute(cmdbuf);
+        }
         {
             std::scoped_lock lk{recorder_mutex};
             ++chunk->batch->recorded[chunk->segment];
@@ -893,7 +899,11 @@ void Scheduler::QueueSubmit(std::span<const vk::CommandBuffer> cmdbufs, SubmitIn
     for (auto& operation : info.before_submit) {
         operation();
     }
-    const vk::Result result = instance.GetGraphicsQueue().submit(submit, info.fence);
+    vk::Result result;
+    {
+        BbStats::CatTimer category{BbStats::CatEmit};
+        result = instance.GetGraphicsQueue().submit(submit, info.fence);
+    }
     if (result == vk::Result::eErrorDeviceLost) {
         Breadcrumbs::ReportDeviceLost("submit");
     }

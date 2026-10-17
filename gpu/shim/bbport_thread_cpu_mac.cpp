@@ -27,6 +27,21 @@ bool CurrentThreadCpuUs(std::uint64_t& user_us, std::uint64_t& sys_us) {
     return true;
 }
 
+bool ThreadCpuUs(std::uint32_t port, std::uint64_t& user_us, std::uint64_t& sys_us) {
+    if (port == 0) {
+        return false;
+    }
+    thread_basic_info_data_t info{};
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    if (thread_info(static_cast<thread_act_t>(port), THREAD_BASIC_INFO,
+                    reinterpret_cast<thread_info_t>(&info), &count) != KERN_SUCCESS) {
+        return false;
+    }
+    user_us = std::uint64_t(info.user_time.seconds) * 1000000 + std::uint64_t(info.user_time.microseconds);
+    sys_us = std::uint64_t(info.system_time.seconds) * 1000000 + std::uint64_t(info.system_time.microseconds);
+    return true;
+}
+
 namespace {
 struct ThreadSample {
     std::uint64_t cpu_ns = 0;

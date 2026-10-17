@@ -19,6 +19,7 @@
 #include <mach/mach.h>
 #endif
 
+#include "bbport_cpu.h"
 #include "bbport_heap_sites.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
@@ -158,7 +159,11 @@ static FILE* OpenFrameLog() {
                                "async_skips,descriptor_ms,descriptor_batches,ipc_ms,ipc_calls,"
                                "gpu_idle_ms,game_fault_ms,game_faults,game_call_ms,game_calls,"
                                "game_read_ms,game_read_mb,game_reads,game_cpu_ms,game_majflt,"
-                               "fault_handler_ms,fault_handlers,fault_drain_ms,fault_drains\n");
+                               "fault_handler_ms,fault_handlers,fault_drain_ms,fault_drains,"
+                               // The steady-state probe (FrameProbe below).
+                               "ga_wall_ms,ga_user_ms,ga_sys_ms,ga_drain_ms,ga_drains,ga_yields,"
+                               "b_busy_ms,b_user_ms,b_sys_ms,cat_state_ms,cat_pipeline_ms,"
+                               "cat_bind_ms,bind_copy_mb,cat_emit_ms\n");
         }
         return file;
     }();
@@ -225,6 +230,63 @@ static FramePhases TakeFramePhases() {
         last_game = game;
         have_game = true;
     }
+    return p;
+}
+
+/// bbport (fix/perf-stage-a): the steady-state probe, per flip. The two threads every frame goes
+/// through (BbStats::gpu_thread_port, record_thread_port), their user and system CPU time read
+/// from Mach at the flip itself (stage_a_cpu_ms is sampled at the last graphics submission). Stage
+/// A's busy wall (the frame minus its wait for guest work) against its CPU time: user ~ wall is
+/// work to optimize, a large sys share is syscalls (its drains' sched_yield fallbacks, counted),
+/// wall >> user+sys is waiting off-CPU. Stage B's busy time, and the four categories of draw work.
+struct FrameProbe {
+    double ga_wall_ms, ga_user_ms, ga_sys_ms, ga_drain_ms, b_busy_ms, b_user_ms, b_sys_ms;
+    double cat_ms[BbStats::CatCount], bind_copy_mb;
+    u64 ga_drains, ga_yields;
+};
+static FrameProbe TakeFrameProbe(double frame_ms, double gpu_idle_ms) {
+    static u64 last_ga[2], last_b[2], last_counts[3], last_cat[BbStats::CatCount], last_bytes;
+    static const double ticks_per_ms = double(BbCpu::TicksFromUs(1000000)) / 1000.0;
+    FrameProbe p{};
+    const auto cpu = [](std::atomic<std::uint32_t>& port, u64 (&last)[2], double& user_ms,
+                        double& sys_ms) {
+        u64 user = 0, sys = 0;
+#ifdef __APPLE__
+        if (!BbThreads::ThreadCpuUs(port.load(std::memory_order_acquire), user, sys)) {
+            return;
+        }
+#else
+        (void)port;
+        return;
+#endif
+        if (last[0] || last[1]) {
+            user_ms = (user - last[0]) / 1e3;
+            sys_ms = (sys - last[1]) / 1e3;
+        }
+        last[0] = user;
+        last[1] = sys;
+    };
+    cpu(BbStats::gpu_thread_port, last_ga, p.ga_user_ms, p.ga_sys_ms);
+    cpu(BbStats::record_thread_port, last_b, p.b_user_ms, p.b_sys_ms);
+    p.ga_wall_ms = std::max(0.0, frame_ms - gpu_idle_ms);
+    const u64 counts[3] = {BbStats::ga_drain_ticks.load(), BbStats::ga_drains.load(),
+                           BbStats::ga_yields.load()};
+    p.ga_drain_ms = (counts[0] - last_counts[0]) / ticks_per_ms;
+    p.ga_drains = counts[1] - last_counts[1];
+    p.ga_yields = counts[2] - last_counts[2];
+    std::copy(std::begin(counts), std::end(counts), std::begin(last_counts));
+    static u64 last_busy;
+    const u64 busy = BbStats::b_busy_ticks.load();
+    p.b_busy_ms = (busy - last_busy) / ticks_per_ms;
+    last_busy = busy;
+    for (u32 c = 0; c < BbStats::CatCount; ++c) {
+        const u64 now = BbStats::cat_ticks[c].load(std::memory_order_relaxed);
+        p.cat_ms[c] = (now - last_cat[c]) / ticks_per_ms;
+        last_cat[c] = now;
+    }
+    const u64 bytes = BbStats::bind_copy_bytes.load();
+    p.bind_copy_mb = (bytes - last_bytes) / 1e6;
+    last_bytes = bytes;
     return p;
 }
 
@@ -387,6 +449,7 @@ void OnFlipStats() {
         const u64 tick = BbStats::tick_wait_ns.load(), present = BbStats::present_wait_ns.load();
         const u64 compiles_now = Vulkan::g_bb_compiles.load();
         // tick_wait_ns and the compile count are reset every stats window.
+        const FrameProbe probe = TakeFrameProbe(frame_ms, phases.gpu_idle_ms);
         const auto delta = [](u64 now_value, u64& last_value) {
             const u64 d = now_value >= last_value ? now_value - last_value : now_value;
             last_value = now_value;
@@ -396,7 +459,8 @@ void OnFlipStats() {
                      "%.4f,%.2f,%.2f,%.2f,%.2f,%llu,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%llu,"
                      "%.2f,%llu,%llu,%llu,%llu,%.2f,%.2f,%.1f,%.1f,"
                      "%.2f,%llu,%.2f,%llu,%llu,%.2f,%llu,%.2f,%llu,%.2f,"
-                     "%.2f,%llu,%.2f,%llu,%.2f,%.2f,%llu,%.2f,%llu,%.2f,%llu,%.2f,%llu\n",
+                     "%.2f,%llu,%.2f,%llu,%.2f,%.2f,%llu,%.2f,%llu,%.2f,%llu,%.2f,%llu,"
+                     "%.2f,%.2f,%.2f,%.2f,%llu,%llu,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                      std::chrono::duration<double>(now - log_start).count(), frame_ms,
                      delta(present, log_present) / 1e6, delta(tick, log_tick) / 1e6,
                      last_gpu_ns ? (gpu_ns - last_gpu_ns) / 1e6 : 0.0,
@@ -426,7 +490,12 @@ void OnFlipStats() {
                      (unsigned long long)phases.game_reads, phases.game_cpu_ms,
                      (unsigned long long)phases.game_majflt, phases.fault_handler_ms,
                      (unsigned long long)phases.fault_handlers, phases.fault_drain_ms,
-                     (unsigned long long)phases.fault_drains);
+                     (unsigned long long)phases.fault_drains, probe.ga_wall_ms, probe.ga_user_ms,
+                     probe.ga_sys_ms, probe.ga_drain_ms, (unsigned long long)probe.ga_drains,
+                     (unsigned long long)probe.ga_yields, probe.b_busy_ms, probe.b_user_ms,
+                     probe.b_sys_ms, probe.cat_ms[BbStats::CatState],
+                     probe.cat_ms[BbStats::CatPipeline], probe.cat_ms[BbStats::CatBind],
+                     probe.bind_copy_mb, probe.cat_ms[BbStats::CatEmit]);
         static u32 unflushed = 0;
         if (++unflushed >= 120) {
             std::fflush(frame_log);

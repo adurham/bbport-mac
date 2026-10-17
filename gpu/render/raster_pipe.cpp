@@ -203,6 +203,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             return false;
         }
         BB_SECTION(ARingCopy);
+        if (BbStats::enabled) {
+            BbStats::bind_copy_bytes.fetch_add(size, std::memory_order_relaxed);
+        }
         if (BbSections::Enabled()) {
             BbSections::ring_copies.fetch_add(1, std::memory_order_relaxed);
             BbSections::ring_bytes.fetch_add(size, std::memory_order_relaxed);

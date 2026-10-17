@@ -392,6 +392,7 @@ void CommandProcessor::ReportStall(const char* why) {
 
 void CommandProcessor::Run(std::stop_token stop) {
     Common::SetCurrentThreadName("bb:GpuComm");
+    BbStats::gpu_thread_port.store(BbThreads::CurrentThreadPort(), std::memory_order_release);
     BbSections::command_thread = true;
 #ifndef __APPLE__ // bbport (macOS): no clock for another thread's CPU time
     if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {

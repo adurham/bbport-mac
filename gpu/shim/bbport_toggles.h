@@ -261,4 +261,59 @@ inline std::atomic<std::uint64_t> gpu_signal_faults{0};
 /// Protection changes: calls and pages, those removing write access (TLB shootdowns) apart.
 inline std::atomic<std::uint64_t> protect_calls{0}, protect_pages{0}, protect_revoke_calls{0},
     protect_revoke_pages{0};
+
+/// The steady-state frame probe (BB_FRAME_LOG's ga_*/b_*/cat_* columns, fix/perf-stage-a).
+/// The two threads every frame goes through, by Mach port (macOS; 0: not started), so the frame
+/// log can read their user/system CPU time exactly at each flip (thread_info on another thread's
+/// port) instead of at the last graphics submission: the GPU command thread (stage A: PM4 decode,
+/// pipeline selection) and the draw recording thread (stage B: caches, bindings, recording).
+inline std::atomic<std::uint32_t> gpu_thread_port{0}, record_thread_port{0};
+/// Stage A's waits for stage B (DrawPipe::Drain/WaitForPacket) in CatTimer::Ticks: drains that
+/// had to wait, and how many of their spins fell back to sched_yield (a syscall each, which is
+/// what shows as the waiting thread's system time). Stage A's busy wall is the frame minus
+/// gpu_idle_total_ns (CommandProcessor::WaitForWork).
+inline std::atomic<std::uint64_t> ga_drain_ticks{0}, ga_drains{0}, ga_yields{0};
+/// Stage B: wall time running packets (draws and ordered tasks; a task may itself wait), ticks.
+inline std::atomic<std::uint64_t> b_busy_ticks{0};
+/// Per-category CPU work of a draw, in BbCpu::Ticks (wall, the thread running): what a lean
+/// translator would spend its per-draw microseconds on.
+enum Category : std::uint32_t {
+    CatState,    ///< stage B: render targets, dynamic state, render pass begin
+    CatPipeline, ///< stage A: pipeline lookup (GetGraphicsPipeline / GetComputePipeline)
+    CatBind,     ///< stage B: descriptors, buffers and textures (BindResources, vertex/index)
+    CatEmit,     ///< Vulkan recording threads: replaying the commands into the driver (Metal
+                 ///< encoders), and vkQueueSubmit
+    CatCount,
+};
+inline std::array<std::atomic<std::uint64_t>, CatCount> cat_ticks{};
+/// Bytes copied from guest memory for bindings (constant ring and stream buffer copies).
+inline std::atomic<std::uint64_t> bind_copy_bytes{0};
+/// Counts the outermost timer of a category on a thread only (the bind paths nest).
+inline thread_local std::array<std::uint8_t, CatCount> cat_depth{};
+struct CatTimer {
+    explicit CatTimer(Category category_)
+        : category{category_}, start{enabled && cat_depth[category_]++ == 0 ? Ticks() : 0} {}
+    ~CatTimer() {
+        if (!enabled) {
+            return;
+        }
+        --cat_depth[category];
+        if (start) {
+            cat_ticks[category].fetch_add(Ticks() - start, std::memory_order_relaxed);
+        }
+    }
+    static std::uint64_t Ticks() {
+#if defined(__aarch64__)
+        std::uint64_t value;
+        asm volatile("mrs %0, cntvct_el0" : "=r"(value));
+        return value;
+#elif defined(__x86_64__)
+        return __builtin_ia32_rdtsc();
+#else
+        return 0;
+#endif
+    }
+    Category category;
+    std::uint64_t start;
+};
 } // namespace BbStats

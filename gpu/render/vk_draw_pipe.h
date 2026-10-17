@@ -15,6 +15,7 @@
 #include "bbport_threads.h"
 #include "bbport_sections.h"
 #include "bbport_timeline.h"
+#include "bbport_toggles.h"
 
 #include <array>
 #include <atomic>
@@ -112,7 +113,8 @@ public:
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = BbCpu::Ticks();
-        for (u32 spins = 0; consumed.load(std::memory_order_acquire) != head; ++spins) {
+        u32 spins_done = 0;
+        for (u32& spins = spins_done; consumed.load(std::memory_order_acquire) != head; ++spins) {
             if (spins < 4096) {
                 BbCpu::Pause();
             } else {
@@ -122,6 +124,7 @@ public:
         const u64 waited = BbCpu::Ticks() - start;
         drain_cycles += waited;
         cycles_by_reason[slot] += waited;
+        NoteWait(waited, spins_done);
     }
 
     /// Stage A: the number the next committed packet gets (packets are numbered from 1), and
@@ -141,7 +144,8 @@ public:
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = BbCpu::Ticks();
-        for (u32 spins = 0; !ReachedPacket(number); ++spins) {
+        u32 spins_done = 0;
+        for (u32& spins = spins_done; !ReachedPacket(number); ++spins) {
             if (spins < 4096) {
                 BbCpu::Pause();
             } else {
@@ -151,6 +155,7 @@ public:
         const u64 waited = BbCpu::Ticks() - start;
         drain_cycles += waited;
         cycles_by_reason[slot] += waited;
+        NoteWait(waited, spins_done);
     }
 
     /// Stage A: position after the last committed packet; Reached(position) once B ran it.
@@ -179,6 +184,18 @@ public:
     std::atomic<u64> busy_cycles{0};
 
 private:
+    /// The frame probe (BB_FRAME_LOG ga_drain_ms/ga_drains/ga_yields): a drain that waited.
+    static void NoteWait(u64 waited, u32 spins) {
+        if (!BbStats::enabled) {
+            return;
+        }
+        BbStats::ga_drain_ticks.fetch_add(waited, std::memory_order_relaxed);
+        BbStats::ga_drains.fetch_add(1, std::memory_order_relaxed);
+        if (spins > 4096) {
+            BbStats::ga_yields.fetch_add(spins - 4096, std::memory_order_relaxed);
+        }
+    }
+
     struct Header {
         u32 size;    ///< bytes to the next packet (0: wrap to the ring start)
         u32 payload; ///< bytes written by the producer
@@ -197,6 +214,7 @@ private:
 
     void Run(std::stop_token stop) {
         Common::SetCurrentThreadName("bb:DrawRec");
+        BbStats::record_thread_port.store(BbThreads::CurrentThreadPort(), std::memory_order_release);
         on_stage_b = true;
         BbSections::recording_thread = true;
         stage_b_tid.store(static_cast<u32>(BbThreads::HostTid()), std::memory_order_release);
@@ -242,7 +260,11 @@ private:
             }
             const u64 start = BbCpu::Ticks();
             handler(context, reinterpret_cast<const u8*>(header + 1), header->payload);
-            busy_cycles.fetch_add(BbCpu::Ticks() - start, std::memory_order_relaxed);
+            const u64 ran = BbCpu::Ticks() - start;
+            busy_cycles.fetch_add(ran, std::memory_order_relaxed);
+            if (BbStats::enabled) {
+                BbStats::b_busy_ticks.fetch_add(ran, std::memory_order_relaxed);
+            }
             at += header->size;
             consumed_packets.fetch_add(1, std::memory_order_release);
             consumed.store(at, std::memory_order_release);
