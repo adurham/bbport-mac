@@ -26,6 +26,9 @@ that attempt and are kept.
 | 3440_mfx5 | MetalFX Ultra Quality (1.25x) | 2752x1152 | 37.85 | **39.06** | 50.60 | 25.6 | 0.00 | 2199 |
 | 3440_fsr3_5 | FSR 3.1 Ultra Quality (1.25x) | 2752x1152 | 27.13 | **27.37** | 27.69 | 36.5 | 11.75 | 4655 |
 | 3440_fsr3_1 | FSR 3.1 Quality (1.5x) | 2294x960 | 23.96 | **24.19** | 24.49 | 41.3 | 9.06 | 5266 |
+| 3440_fsr3_2 | FSR 3.1 Balanced (1.7x) | 2024x848 | 22.52 | **22.84** | 23.40 | 43.8 | 9.31 | 5616 |
+| 3440_fsr3_3 | FSR 3.1 Performance (2x) | 1720x720 | 21.13 | **21.35** | 21.56 | 46.8 | 7.73 | 6050 |
+| 3440_fsr3_4 | FSR 3.1 Ultra Performance (3x) | 1146x480 | 19.48 | **19.73** | 19.98 | 50.7 | 6.64 | 6563 |
 
 ¹ mfx4 crashed at ~100 s (below); its row is a ~100 s window, internally tight.
 
@@ -39,6 +42,7 @@ cleanup trio re-ran one voided and one degenerate run (below):
 | 2560_off1 | 24.61 | **25.07** | 25.76 | 39.9 | 12.38 |
 | 2560_off2 | 24.72 | **25.19** | 25.98 | 39.7 | 13.54 |
 | 2560_off3 | 24.64 | **24.96** | 25.29 | 40.1 | 13.31 |
+| 2560_off5 | 24.08 | **24.30** | 24.57 | 41.2 | 13.04 |
 | 2560_fsr3_1 | 22.09 | **22.37** | 22.69 | 44.7 | 8.86 |
 | 2560_fsr3_2 | 21.70 | **22.18** | 22.82 | 45.1 | 7.18 |
 | 2560_fsr3_3 | 20.39 | **20.77** | 21.19 | 48.1 | 6.50 |
@@ -49,6 +53,21 @@ cleanup trio re-ran one voided and one degenerate run (below):
 The same shape as 3440: MetalFX loses hard (34.8 / 37.0 vs 25.0 ms, present_wait 0), and the
 in-process FSR 3.1 curve buys 22.4 -> 22.2 -> 20.8 -> 19.4 ms (44.7 -> 51.6 fps) as the internal
 resolution steps from 1.5x to 3x — still short of 60 (16.7 ms) by ~2.7 ms at the 3x preset.
+
+### The upscaler's true cost (the discriminator run) — measured 2026-10-17
+
+`2560_tinyoff`: the scene patched natively to FSR 3x's exact raster with the upscaler OFF
+(`BB_RENDER_RES=854x480`; the run's own startup line reads `Patches: scene 854x480; UI
+1920x1080`), output left at 2560x1440: **p25 16.31 / p50 16.50 / p75 16.69 ms = 60.6 fps**,
+present_wait 7.54, n=7832. So a tiny native scene at 2560 output reaches ~60 fps; the
+`2560_fsr3_4` run (same scene scale, with the FSR chain) is 19.37 ms — a **~2.9 ms net
+difference**. Caveats, both directions: this run patches the GUEST's render size, so the game
+itself draws fewer things (draws/frame 680 vs 888 — resolution-dependent culling), while the
+FSR-path runs keep the guest at 1080p and scale host targets at runtime with copy-backs. The
+2.9 ms therefore brackets the chain + live-path overhead rather than isolating a pure chain
+cost; it still says the ~3 ms between the tiny-native configuration and FSR 3x is where the
+remaining time sits. `2560_off5` (same-hour unpatched off anchor): 24.30 ms, consistent with
+the morning offs.
 
 Attribution note (Fable review + source survey, same day — corrects this doc's first phrasing):
 at 3x the scene is ~1/9 of the pixels (raster ~853x480), so the residual is NOT scene fragment
@@ -76,10 +95,10 @@ the owner first flips to a new preset live.
   runs: the presenter wait is replaced by the copy waits). That toll exceeds the raster savings
   even at a 3x scene-scale reduction (1146x480 raster still nets slower than no upscaling).
   MetalFX is not the lever on this machine/driver as it stands.
-- **FSR 3.1 Quality is the working lever.** The in-process path (no exportable copies; RCAS
-  sharpening) at 1.5x scale: **24.19 ms vs 27.9 off = −13% frame time, 41.3 vs ~36 fps**, and
-  present_wait falls 16 → 9 ms (a real GPU saving). Ultra Quality (1.25x) is about neutral
-  (27.37) — FSR3's own cost eats the smaller raster saving at that scale. First time FSR 3.1
+- **FSR 3.1 is the working lever, and the whole curve is now measured.** 3440: off 27.2–28.8,
+  then 24.19 / 22.84 / 21.35 / 19.73 ms for presets 1–4 (41.3 -> 50.7 fps). 2560: off ~25.0, then
+  22.37 / 22.18 / 20.77 / 19.37 (44.7 -> 51.6 fps). The in-process path (no exportable copies;
+  RCAS sharpening) is a real GPU saving (present_wait falls 16 -> 9 at 3440). First time FSR 3.1
   ran on this Mac (KosmicKrisp); no crashes, no asserts.
 - **Crash found (mfx4 only):** `gpu critical (Debug): Assertion Failed! Unknown data_format=15
   and num_format=7 [gcn_to_vk.cpp:422]` (libbbgpu.dylib, `Vulkan::GcnToVk::SurfaceFormat`),
@@ -103,21 +122,16 @@ remain the gate before anything becomes a default.
 - The owner's visible run is the gate for everything here: quality of the FSR 3.1 presets in
   motion, and the 3440-vs-2560 mode choice. No default has been changed anywhere — `upscaler=off`
   stands until he decides.
-- Optional bench, not needed for the decision: FSR 3.1 presets 2-4 at 3440.
-- Fable-flagged next experiments:
-  1. Discriminator: render natively at 853x480 with the upscaler OFF vs FSR 3x at 2560 — the
-     difference isolates the upscaler's true cost (verify the old 720p=14.4 ms datum was the
-     same route/day before leaning on it).
-  2. Encoder merging — the source survey is done (`docs/ENCODER_MERGE_SURVEY.md`). Confirmed: the
-     `none` barrier diagnostic only dropped fences (traces: encoders/frame 324 none vs 298
-     legacy — no merging). Top candidates, ranked: (1) the ~28 pass breaks/frame each cost a FULL
-     attachment store+load (RenderingInfo flags=0, resume emulated via loadOp, the driver's
-     restart path forces LOAD) — the big one; (2) `Runtime::FlushBarriers` EndRendering for
-     memory-only flushes (~1.1/frame) — an in-pass barrier path exists; (3) MSAA unconditional
-     splits + the meta resolve extra pass; (4) PrepareTransfer/DownloadImage/SceneTargets
-     breaks when no bound attachment is touched; (5) guest compute-dispatch breaks. The FSR 3.1
-     chain is NOT a merge candidate (one encoder per frame). On a TBDR these splits are exactly
-     the bandwidth that reads as "fragment".
+- Encoder merging — the source survey is done (`docs/ENCODER_MERGE_SURVEY.md`). Confirmed: the
+  `none` barrier diagnostic only dropped fences (traces: encoders/frame 324 none vs 298
+  legacy — no merging). Top candidates, ranked: (1) the ~28 pass breaks/frame each cost a FULL
+  attachment store+load (RenderingInfo flags=0, resume emulated via loadOp, the driver's
+  restart path forces LOAD) — the big one; (2) `Runtime::FlushBarriers` EndRendering for
+  memory-only flushes (~1.1/frame) — an in-pass barrier path exists; (3) MSAA unconditional
+  splits + the meta resolve extra pass; (4) PrepareTransfer/DownloadImage/SceneTargets
+  breaks when no bound attachment is touched; (5) guest compute-dispatch breaks. The FSR 3.1
+  chain is NOT a merge candidate (one encoder per frame). On a TBDR these splits are exactly
+  the bandwidth that reads as "fragment". This is the next workstream (plan first).
 - MetalFX: "dead on this driver" is over-claimed — dead as INTEGRATED (exportable-buffer copy +
   synchronous host wait), not architecturally. A zero-copy handoff (VK_EXT_metal_objects +
   MTLSharedEvent) is the fix if ever revisited; MetalFX Spatial is the low-ghosting fallback if
@@ -136,5 +150,7 @@ remain the gate before anything becomes a default.
 Evidence: `out/matrix-3440.log` (all VERDICT lines, zero VOID/SKIP), `out/frames-3440_*.csv`,
 `out/metalfx_results.json`, parser `out/parse_matrix.py`, captures `out/cap-3440_*.png`; the 2560
 series: `out/matrix-2560.log`, `out/matrix-2560b.log`, `out/metalfx_results_2560.json`,
-`out/metalfx_results_2560b.json`, `out/parse_matrix_2560*.py`, `out/cap-2560_*.png`. Source
-survey: `docs/ENCODER_MERGE_SURVEY.md` (this repo).
+`out/metalfx_results_2560b.json`, `out/parse_matrix_2560*.py`, `out/cap-2560_*.png`; the
+discriminator: `out/frames-2560_tinyoff.csv`, `out/frames-2560_off5.csv`,
+`out/frames-3440_fsr3_{2,3,4}.csv`, `out/parse_disc.py`. Source survey:
+`docs/ENCODER_MERGE_SURVEY.md` (this repo).
