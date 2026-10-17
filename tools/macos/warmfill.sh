@@ -90,9 +90,6 @@ usage() {
 builtin_routes='
 yharnam|300|45|30|ly=0,rx=128:4 ly=0,rx=40:0.5 ly=0,rx=128:4 ly=0,rx=215:0.5 ly=255,rx=160:3|the short measured walk: forward, a look right, forward, a look left, back
 roam|450|45|30|ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25 ly=0,rx=128:8 rx=60:0.35 rx=128:0.25|the lawnmower: eight long runs at eight headings, so the walk covers ground in every direction from wherever the save is
-street|360|45|30|ly=0,rx=128:20 rx=60:1.2 rx=128:0.4 ly=0,rx=128:20 rx=60:1.2 rx=128:0.4|a long run one way, a half-turn, a long run back: the distance the short walk never covers
-stairs|240|45|30|ry=190:1.5 ly=0,rx=128:5 ry=128:1 ly=0,rx=128:5 ry=205:2 ly=0,rx=128:5 rx=60:0.35 rx=128:0.25 ly=0,rx=128:5|look down and run: stairs, slopes and whatever is below them are their own draws
-alleys|240|45|30|ly=0,rx=128:3 rx=60:0.5 rx=128:0.25 ly=0,rx=128:3 rx=200:0.5 rx=128:0.25 ly=255,rx=128:2 ly=0,rx=128:3 lx=0,rx=128:2 lx=255,rx=128:2|short bursts, 90-degree turns, back steps and strafes: side alleys, and the unwedging a long straight hold never does
 attack|300|45|30|r1:2 r1:1 r1:1 circle:1.5 ly=0,rx=128:2 r2:2 l1:2 r1:2|light attacks, a roll, a walk, a heavy, the transform: combat states a plain walk never reaches
 combat|360|45|30|ly=0,rx=128:4 r1:1 r1:1 r1:1 circle:1.2 ly=0,rx=128:4 r1:1 r2:1.2 l1:1 l1:1 r1:1 ly=0,rx=128:3 r1:1 r1:1 circle:1.2 l2:1 ly=0,rx=128:5 r1:1 r1:1 l1:1 r2:1.2|walk into the mob and fight it: combos, a heavy, the transform both ways, the gun and rolls, over a long run
 spin|240|45|30|rx=128:6 rx=88:0.5 rx=128:5 rx=168:0.5 rx=128:5 rx=40:6 rx=128:5 rx=215:6 rx=128:4 ry=40:5 ry=215:5|turn in place, then look down and up: headings and the sky are their own draws

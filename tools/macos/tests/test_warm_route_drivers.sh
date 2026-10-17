@@ -167,9 +167,10 @@ check "the route's own output says how many presses it took" \
 
 echo "== a route line from the pack, driven as written"
 # One of the pack's own pad lines (tools/macos/warmfill.sh), not a test's: the tokens a route is
-# made of are only proved to be drivable by warm_route.sh itself. 'stairs' opens with a look down.
-pack_pad=$(awk -F'|' '$1 == "stairs" {print $5}' "$root/tools/macos/warmfill.sh")
-check "warmfill.sh has a stairs route with a pad line" test -n "$pack_pad"
+# made of are only proved to be drivable by warm_route.sh itself. 'warp' opens with a run, then the
+# cross-and-d-pad menu presses — the tokens no route used before it.
+pack_pad=$(awk -F'|' '$1 == "warp" {print $5}' "$root/tools/macos/warmfill.sh")
+check "warmfill.sh has a warp route with a pad line" test -n "$pack_pad"
 rm -f "$work/pad.log"
 (
     last=
@@ -183,16 +184,16 @@ rm -f "$work/pad.log"
     done
 ) &
 watcher=$!
-rm -rf "$work/sandbox-stairs"
-BB_GAME_DIR=$work/game BB_WARM_USER=$work/sandbox-stairs TITLE_WAIT=1 LOAD_WAIT=1 \
-    ROUTE="$pack_pad" bash "$work/tools/macos/warm_route.sh" 35 >"$work/stairs.out" 2>&1 || true
+rm -rf "$work/sandbox-packroute"
+BB_GAME_DIR=$work/game BB_WARM_USER=$work/sandbox-packroute TITLE_WAIT=1 LOAD_WAIT=1 \
+    ROUTE="$pack_pad" bash "$work/tools/macos/warm_route.sh" 45 >"$work/packroute.out" 2>&1 || true
 kill "$watcher" 2>/dev/null || true
 wait "$watcher" 2>/dev/null || true
-awk '{sub(/^[0-9]+ /, ""); printf "  [%s]\n", $0}' "$work/pad.log" | head -6
-check "its first state is the look down (ry=190), as the line says" \
-    grep -q '^[0-9]* ry=190$' "$work/pad.log"
-check "then the run forward, as the line says" grep -q 'ly=0 rx=128$' "$work/pad.log"
-check "and the second look down (ry=205) is reached" grep -q 'ry=205' "$work/pad.log"
+awk '{sub(/^[0-9]+ /, ""); printf "  [%s]\n", $0}' "$work/pad.log" | head -8
+check "its first state is the run forward, as the line says" grep -q '^[0-9]* ly=0 rx=128$' "$work/pad.log"
+check "then the cross press the line asks for" grep -q '^[0-9]* cross$' "$work/pad.log"
+check "and the d-pad press after it" grep -q '^[0-9]* up$' "$work/pad.log"
+check "and the options press" grep -q '^[0-9]* options$' "$work/pad.log"
 check "the run still ended hidden and by itself" grep -q 'BB_WARM_ONLY=1' "$work/env.txt"
 
 printf '\n%d checks passed, %d failed\n' "$pass" "$fail"

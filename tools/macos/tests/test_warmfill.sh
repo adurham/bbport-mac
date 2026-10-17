@@ -83,11 +83,17 @@ echo "== 3b. the pack: --check-routes, and what the default selects"
 check "the pack's own lines check out (tokens, stick ranges, lengths, descriptions)" \
     bash -c "bash '$warmfill' --check-routes"
 listed=$(bash "$warmfill" --list-routes | grep -c '  (title ')
-check "the pack is more than the three it started with ($listed routes)" test "$listed" -ge 8
+check "the pack is more than the three it started with ($listed routes)" test "$listed" -ge 7
 check "the new walks are in it: roam" bash -c "bash '$warmfill' --list-routes | grep -q '^roam '"
 check "the long combat route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^combat '"
-check "the stairs route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^stairs '"
 check "the headings-and-sky route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^sweep '"
+check "the menu route is in it" bash -c "bash '$warmfill' --list-routes | grep -q '^warp '"
+# The routes that measured nothing the pack did not already have are not in it (docs/PIPELINE_WARMTH.md,
+# "The route pack"): their place is a line in out/warmfill_routes.conf if someone wants them back.
+check "a route dropped for measuring nothing is not in the pack (stairs)" \
+    bash -c "! bash '$warmfill' --list-routes | grep -q '^stairs '"
+check "nor the other two (street, alleys)" \
+    bash -c "! bash '$warmfill' --list-routes | grep -q '^street ' && ! bash '$warmfill' --list-routes | grep -q '^alleys '"
 check "every route says what it walks, and no route is shorter than it takes to walk" \
     bash -c "bash '$warmfill' --list-routes | grep -q 'pad:'"
 # The default is the whole pack: what a bare fill runs is what a fill is for. (--routes yharnam is
