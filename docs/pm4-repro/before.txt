@@ -1,0 +1,8 @@
+before attack-1 max_draws=902 bad_pm4=0 asserts=1 changed_submissions=0
+before combat-1 max_draws=894 bad_pm4=0 asserts=1 changed_submissions=0
+before interact-1 max_draws=812 bad_pm4=0 asserts=1 changed_submissions=0
+before street-1 max_draws=907 bad_pm4=0 asserts=1 changed_submissions=0
+before attack-2 max_draws=719 bad_pm4=0 asserts=1 changed_submissions=0
+before combat-2 max_draws=732 bad_pm4=0 asserts=1 changed_submissions=0
+before interact-2 max_draws=777 bad_pm4=0 asserts=1 changed_submissions=0
+before street-2 max_draws=931 bad_pm4=0 asserts=1 changed_submissions=0

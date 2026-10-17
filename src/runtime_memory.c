@@ -44,7 +44,7 @@ static uint64_t pool_size_bytes(void) {
 #define MAP_NO_OVERWRITE 0x80
 enum { KIND_RESERVED=1, KIND_DIRECT, KIND_FLEXIBLE };
 typedef struct { uint64_t start, size; int type, used; } Block;
-typedef struct { uintptr_t start, end; int kind, prot, type; uint64_t phys; } Vma;
+typedef struct { uintptr_t start, end; int kind, prot, type; uint64_t phys; int private_mem; } Vma;
 typedef struct {
     uintptr_t start, end; uint64_t offset; int32_t protection, memory_type;
     uint32_t flags; char name[32];
@@ -60,16 +60,38 @@ _Static_assert(sizeof(BatchEntry)==32,"PS4 batch map entry layout");
  * default rwlock prefers readers; a thread holding it exclusively skips relocking. */
 static pthread_rwlock_t lock=PTHREAD_RWLOCK_INITIALIZER;
 static __thread unsigned exclusive_depth;
+/* bbport (native GPU process, docs/macos-native-gpu.md): changes to the mapping table, for the
+ * GPU process's copy of guest memory. Queued under the lock and passed on in order once the
+ * outermost writer has left it (the hook sends a message that may wait for the GPU process,
+ * whose own calls into this file need the lock), before the operation returns to the guest. */
+typedef void (*MirrorHook)(int op, uintptr_t address, uint64_t size, uint64_t phys, int kind,
+                           int prot, int type, int shared);
+enum { MIRROR_MAP, MIRROR_UNMAP, MIRROR_PROTECT };
+typedef struct { int op; uintptr_t address; uint64_t size, phys; int kind, prot, type, shared; } MirrorEvent;
+static MirrorHook mirror_hook;
+static MirrorEvent *mirror_events; static size_t mirror_count, mirror_capacity;
+static __thread int mirror_queued; /* this thread queued events: it sends them before returning */
+static __thread unsigned read_depth; /* runtime_memory_lock_held */
+static pthread_mutex_t mirror_send=PTHREAD_MUTEX_INITIALIZER;
+static void flush_mirror(void);
 /* Odd while a writer holds the lock; readers' region caches are valid for one even value. */
 static uint64_t table_generation;
 static void write_lock(void) {
     if (!exclusive_depth++) { pthread_rwlock_wrlock(&lock); __atomic_add_fetch(&table_generation,1,__ATOMIC_ACQ_REL); }
 }
 static void write_unlock(void) {
-    if (!--exclusive_depth) { __atomic_add_fetch(&table_generation,1,__ATOMIC_RELEASE); pthread_rwlock_unlock(&lock); }
+    if (!--exclusive_depth) {
+        __atomic_add_fetch(&table_generation,1,__ATOMIC_RELEASE);
+        pthread_rwlock_unlock(&lock);
+        /* Another thread may be sending this thread's events right now: flush_mirror waits for
+         * it (mirror_send), so they are out before the guest goes on. */
+        if (mirror_queued) { mirror_queued=0; flush_mirror(); }
+    }
 }
-static void read_lock(void) { if (!exclusive_depth) pthread_rwlock_rdlock(&lock); }
-static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
+static void read_lock(void) { ++read_depth; if (!exclusive_depth) pthread_rwlock_rdlock(&lock); }
+static void read_unlock(void) { --read_depth; if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
+/* bbport (native GPU process): this thread holds the lock (it faulted inside the runtime). */
+int runtime_memory_lock_held(void) { return exclusive_depth || read_depth; }
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
 static int pool_fd=-1;
@@ -116,6 +138,7 @@ static void add_region(uint64_t phys, uint64_t size) {
     ++region_count;
 }
 #define FLEX_SPAN (UINT64_C(1024) * 1024 * 1024)
+static uint64_t host_span; /* bbport: pool bytes after flexible memory (runtime_memory_host_pool) */
 static uint64_t flex_bitmap[FLEX_SPAN/PAGE/64];
 /* GPU hooks (bbgpu): notified outside the lock, in order, after each operation. */
 typedef void (*GpuRange)(uintptr_t address, uint64_t size);
@@ -150,9 +173,9 @@ static int pool(void) {
 #else
     pool_fd=memfd_create("bb-guest-memory", MFD_CLOEXEC);
 #endif
-    if (pool_fd<0 || ftruncate(pool_fd,(off_t)(POOL_SIZE+FLEX_SPAN))) return -1;
+    if (pool_fd<0 || ftruncate(pool_fd,(off_t)(POOL_SIZE+FLEX_SPAN+host_span))) return -1;
 #endif
-    void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
+    void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN+host_span,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
     if (view==MAP_FAILED) return -1;
     backing_base=view;
     chunk_fds=malloc((POOL_SIZE/CHUNK+1)*sizeof(int));
@@ -255,6 +278,38 @@ static void zero_phys(uint64_t phys, uint64_t size) {
         else pool_discard(at,n);
         done+=n;
     }
+}
+/* Lock held. A failed allocation stops the process: the GPU process's view would be wrong. */
+static void queue_mirror(int op, uintptr_t address, uint64_t size, uint64_t phys, int kind, int prot,
+                         int type, int shared) {
+    if (!mirror_hook || !size) return;
+    if (mirror_count==mirror_capacity) {
+        size_t capacity=mirror_capacity ? mirror_capacity*2 : 64;
+        MirrorEvent *next=realloc(mirror_events,capacity*sizeof(*next));
+        if (!next) { fputs("STOP: GPU process memory mirror queue\n",stderr); exit(21); }
+        mirror_events=next; mirror_capacity=capacity;
+    }
+    mirror_events[mirror_count]=(MirrorEvent){op,address,size,phys,kind,prot,type,shared};
+    __atomic_store_n(&mirror_count,mirror_count+1,__ATOMIC_RELEASE);
+    mirror_queued=1;
+}
+/* Outside the lock, by the thread that queued (after another one's send of them, if any, has
+ * finished): a guest thread's next GPU submission cannot overtake its own mapping. */
+static void flush_mirror(void) {
+    pthread_mutex_lock(&mirror_send);
+    for (;;) {
+        pthread_rwlock_wrlock(&lock);
+        size_t n=mirror_count;
+        MirrorEvent *events=mirror_events;
+        if (!n) { pthread_rwlock_unlock(&lock); break; }
+        mirror_events=NULL; mirror_count=0; mirror_capacity=0;
+        pthread_rwlock_unlock(&lock);
+        for (size_t i=0;i<n;++i)
+            mirror_hook(events[i].op,events[i].address,events[i].size,events[i].phys,events[i].kind,
+                        events[i].prot,events[i].type,events[i].shared);
+        free(events);
+    }
+    pthread_mutex_unlock(&mirror_send);
 }
 static void queue_hook(int kind, uintptr_t address, uint64_t size) {
     GpuRange hook = kind==HOOK_MAP ? hook_map : kind==HOOK_UNMAP ? hook_unmap : hook_invalidate;
@@ -398,9 +453,11 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
     if (mapped==MAP_FAILED) return NO_MEMORY;
     drop_range(address,address+size);
     trap_forget(address,address+size); /* a new mapping starts without traps */
-    if (vma_insert(vma_index(address),(Vma){address,address+size,kind,prot,type,phys})) return NO_MEMORY;
+    if (vma_insert(vma_index(address),(Vma){address,address+size,kind,prot,type,phys,private_exec})) return NO_MEMORY;
     if (kind==KIND_FLEXIBLE) flexible_bytes+=size;
     if (kind!=KIND_RESERVED) queue_hook(HOOK_MAP,address,size);
+    if (kind!=KIND_RESERVED) queue_mirror(MIRROR_MAP,address,size,phys,kind,prot,type,!private_exec);
+    else queue_mirror(MIRROR_UNMAP,address,size,0,0,0,0,0);
     *inout=mapped;
     return 0;
 }
@@ -487,6 +544,7 @@ static int32_t unmap_locked(uintptr_t start, uint64_t size) {
     }
     drop_range(start,end);
     trap_forget(start,end);
+    queue_mirror(MIRROR_UNMAP,start,end-start,0,0,0,0,0);
     return 0;
 }
 static ABI int32_t direct_unmap(void *address, uint64_t size) {
@@ -596,6 +654,7 @@ static int32_t protect_locked(uintptr_t start, uint64_t size, int prot, int type
     int error; size_t i=carve(start,end,&error);
     if (error) return NO_MEMORY;
     for (; i<vma_count && vmas[i].start<end; ++i) { vmas[i].prot=prot; if (type>=0) vmas[i].type=type; }
+    queue_mirror(MIRROR_PROTECT,start,end-start,0,0,prot,type,0);
     queue_hook(HOOK_INVALIDATE,start,end-start);
     ++protects;
     return 0;
@@ -827,6 +886,43 @@ void runtime_memory_set_gpu_hooks(GpuRange map, GpuRange unmap, GpuRange invalid
     for (size_t i=0;i<vma_count;++i) if (vmas[i].kind!=KIND_RESERVED) queue_hook(HOOK_MAP,vmas[i].start,vmas[i].end-vmas[i].start);
     write_unlock();
     flush_hooks();
+}
+/* bbport (native GPU process): the pool gets `host_bytes` more after flexible memory for the GPU
+ * process split (its control block, shared image data); must be called before the pool exists
+ * (before the game allocates memory). The pool's descriptor, where the host span starts and the
+ * pool's size; -1 when the pool exists already without it. */
+int runtime_memory_host_pool(uint64_t host_bytes, int *fd, uint64_t *host_offset, uint64_t *total) {
+    write_lock();
+    if (pool_fd<0) host_span=align_up(host_bytes,PAGE);
+    const int ok=host_span && !pool();
+    if (ok) { *fd=pool_fd; *host_offset=POOL_SIZE+FLEX_SPAN; *total=POOL_SIZE+FLEX_SPAN+host_span; }
+    write_unlock();
+    return ok ? 0 : -1;
+}
+/* bbport (native GPU process): [start, end) of the user range is the GPU process's own memory
+ * (its allocator's): reserved here, so the guest's mappings go elsewhere. Before the game maps
+ * anything; -1 when something is mapped there already. */
+int runtime_memory_exclude(uintptr_t start, uintptr_t end) {
+    start&=~(uintptr_t)(PAGE-1);
+    end=align_up(end,PAGE);
+    if (start<USER_MIN) start=USER_MIN;
+    if (end>USER_MAX) end=USER_MAX;
+    if (start>=end) return 0;
+    write_lock();
+    const int ok=!overlaps(start,end,0) && !vma_insert(vma_index(start),(Vma){start,end,KIND_RESERVED,0,0,0,0});
+    write_unlock();
+    return ok ? 0 : -1;
+}
+/* bbport (native GPU process): every change to the mapping table from now on (and the mappings
+ * that exist, as maps) goes to `hook`, in order, outside the lock. */
+void runtime_memory_set_mirror_hook(MirrorHook hook) {
+    write_lock();
+    mirror_hook=hook;
+    for (size_t i=0;i<vma_count;++i)
+        if (vmas[i].kind!=KIND_RESERVED)
+            queue_mirror(MIRROR_MAP,vmas[i].start,vmas[i].end-vmas[i].start,vmas[i].phys,vmas[i].kind,
+                         vmas[i].prot,vmas[i].type,!vmas[i].private_mem);
+    write_unlock();
 }
 /* bbport: the CPU is about to write [address, address+size) without the guest's code doing it
  * (a file read into it): the GPU side is told first (Rasterizer::InvalidateMemory), for the parts

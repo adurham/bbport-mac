@@ -1,0 +1,2 @@
+delay-async attack-1 max_draws=943 bad_pm4=0 asserts=0 changed_submissions=0 created=1
+delay-async interact-1 max_draws=950 bad_pm4=0 asserts=0 changed_submissions=0 created=5
