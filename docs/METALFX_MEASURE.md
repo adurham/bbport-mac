@@ -29,6 +29,33 @@ that attempt and are kept.
 
 ¹ mfx4 crashed at ~100 s (below); its row is a ~100 s window, internally tight.
 
+### 2560x1440 (16:9, the owner's resolution) — measured 2026-10-17, all clean
+
+Same route and window (draws>=500, t>=60; every tag 883-889 draws). Seven clean tags after a
+cleanup trio re-ran one voided and one degenerate run (below):
+
+| tag | p25 | p50 | p75 | fps | present_wait p50 |
+|---|---|---|---|---|---|
+| 2560_off1 | 24.61 | **25.07** | 25.76 | 39.9 | 12.38 |
+| 2560_off2 | 24.72 | **25.19** | 25.98 | 39.7 | 13.54 |
+| 2560_off3 | 24.64 | **24.96** | 25.29 | 40.1 | 13.31 |
+| 2560_fsr3_1 | 22.09 | **22.37** | 22.69 | 44.7 | 8.86 |
+| 2560_fsr3_2 | 21.70 | **22.18** | 22.82 | 45.1 | 7.18 |
+| 2560_fsr3_3 | 20.39 | **20.77** | 21.19 | 48.1 | 6.50 |
+| 2560_fsr3_4 | 18.99 | **19.37** | 20.20 | 51.6 | 5.61 |
+| 2560_mfx1 | 34.11 | **34.81** | 35.49 | 28.7 | 0.00 |
+| 2560_mfx5 | 36.12 | **36.95** | 38.34 | 27.1 | 0.00 |
+
+The same shape as 3440: MetalFX loses hard (34.8 / 37.0 vs 25.0 ms, present_wait 0), and the
+in-process FSR 3.1 curve buys 22.4 -> 22.2 -> 20.8 -> 19.4 ms (44.7 -> 51.6 fps) as the internal
+resolution steps from 1.5x to 3x. Still short of 60; what is left is not the upscaler's to close.
+
+Run-quality note (operational): the FIRST run of a preset at a given output size compiles that
+preset's pipeline set (~28 pipelines) and can read degenerate — observed today as 2560 fsr3_4
+run 1 (p50 117 ms), the 3440 fsr3_1 run 1 (423 ms), 2560 fsr3_1 run 1 (took=0, voided) and 2560
+off2 run 1 (draws stuck at 24). Clean re-runs follow in every case. Expect a one-time hitch when
+the owner first flips to a new preset live.
+
 ## Verdicts
 
 - **MetalFX is a loss at every preset.** Against the off runs (27.2–28.8 ms, median 27.9):
@@ -58,11 +85,18 @@ stretched bands, shadows and fog intact. **Stills cannot rule out temporal artif
 on animated objects: FSR3 still lacks their motion vectors) — the owner's eyes on a visible run
 remain the gate before anything becomes a default.
 
-## Not done / open
+## Open / next
 
-- The 2560x1440 (16:9, the owner's other mode) group: off + MetalFX pair + FSR 3.1 Quality.
-- FSR 3.1 presets 2/3/4 at 3440 (the knee toward 60 fps; softer image — the owner's call).
-- No defaults changed anywhere: `upscaler=off` stands until the owner decides.
+- The owner's visible run is the gate for everything here: quality of the FSR 3.1 presets in
+  motion, and the 3440-vs-2560 mode choice. No default has been changed anywhere — `upscaler=off`
+  stands until he decides.
+- Optional bench, not needed for the decision: FSR 3.1 presets 2-4 at 3440.
+- Title-artifact discriminator (hidden, owner-free): `out/title_capture.sh` in this worktree boots
+  hidden to the title and triggers the port's own capture; a static band in that PNG means
+  render-side (rule 1 of the title-artifact doc). Untested as of writing — run on an idle docked
+  machine.
 
 Evidence: `out/matrix-3440.log` (all VERDICT lines, zero VOID/SKIP), `out/frames-3440_*.csv`,
-`out/metalfx_results.json`, parser `out/parse_matrix.py`, captures `out/cap-3440_*.png`.
+`out/metalfx_results.json`, parser `out/parse_matrix.py`, captures `out/cap-3440_*.png`; the 2560
+series: `out/matrix-2560.log`, `out/matrix-2560b.log`, `out/metalfx_results_2560.json`,
+`out/metalfx_results_2560b.json`, `out/parse_matrix_2560*.py`, `out/cap-2560_*.png`.
