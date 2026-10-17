@@ -132,3 +132,43 @@ nothing re-executes the vertex stage.
 4. PrepareTransfer / DownloadImage / SceneTargets::Transition breaks (~0.84/frame each) when neither image
    is the open pass's attachment. Risk: layout transition of a bound attachment.
 5. Guest compute dispatch breaks (rasterizer.cpp:656/713). Risk: dispatch writing a later draw's input.
+
+## Measured 2026-10-17: the probe result, and the refinement
+
+`BB_BREAK_STORE_PROBE=1` (branch `fix/encoder-merge`, commit 7368a49) — gated in
+`Scheduler::BeginRendering`, the single funnel every break site passes through: a pass that comes
+back after a break (same RenderState re-begun) uses `loadOp=eDontCare` + `storeOp=eDontCare`, and
+instances of a RenderState already seen broken also drop `storeOp`. Gate off = byte-identical.
+2+2 alternated hidden runs, 2560x1440 upscaler-off (the worktree's ini is 16:9/2560, not 3440 —
+both arms identical, so the delta stands; magnitudes are config-dependent):
+
+| arm | p50 (pair 1) | p50 (pair 2) |
+|---|---|---|
+| base | 23.57 ms | 23.40 ms |
+| probe (DONT_CARE) | 25.61 ms | 25.62 ms |
+| delta | **+2.04 ms** | **+2.22 ms** |
+
+The gate **did** remove real GPU work — GPU-thread time per draw 6.99 -> 6.50 µs, `kernel_ms`
+-2% — yet the frame got ~9% SLOWER, with the extra time appearing entirely in the
+present/tick waits (+2.75 ms) and `b_busy` (+2.27 ms) while CPU recording got faster. The frame is
+not GPU-memory-bound at this config (kernel ~2.6 ms of a ~23.6 ms frame): **the store/reload round
+trips are not the bottleneck, and candidate 1 — as measured — is closed.** (A DONT_CARE load can
+also hit a slow path; either way there is no recovery here.)
+
+**Refinement (Fable review, same day):** the probe still emitted two encoders, so it tested the
+store/load *bandwidth*, not the encoder boundary itself. The ~6.7 ms/frame of boundary idle is
+almost exactly ~340 encoders x ~20 µs — the per-encoder "kick" cost on Apple GPUs (each render
+encoder = vertex kick + fragment kick, each compute encoder = a compute kick). Because the driver
+is 1 encoder : 1 MTL4CommandBuffer, the traces cannot distinguish per-kick from per-command-buffer
+cost; the hardware prior says per-kick. Consequences: repackaging submission objects is likely a
+no-op (and `kk_queue_submit` already batches commits per VkCommandBuffer); the only lever on that
+6.7 ms is **fewer kicks** — i.e. eliminating breaks/passes outright (why do the ~28 breaks exist,
+can each be avoided — port-side, hazard-gated), not how they are packaged.
+
+Revised attack order: (1) the once-per-frame `DownloadImage` drain
+(`BB_DOWNLOAD_SYNC_PROBE`, measured next); (2) a Metal 4 micro-benchmark (300 small dependent
+encoders: one CB vs 300 CBs in one commit array vs 300 individual commits) to settle whether
+packaging matters at all before any driver surgery; (3) break-elimination analysis against the
+ranked list above, with its risk rules (never reorder a copy past a draw that reads its
+destination or writes its source; an attachment written then read must still be stored;
+suspend/resume only for pure command-buffer-boundary splits with an identical attachment set).
