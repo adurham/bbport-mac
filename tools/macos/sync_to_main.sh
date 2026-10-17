@@ -17,7 +17,7 @@ FILES=$(git diff --name-only "$RANGE"..HEAD | sort -u)
 [ -n "$FILES" ] || { echo "range $RANGE..HEAD touches nothing"; exit 0; }
 cd "$R"
 # main keeps its OWN renderer core: single-process architecture differs from the native split.
-RENDERER_CORE='^gpu/(render|platform|buffers|cp|vulkan|common|shader|memory)/|^gpu/bbgpu\.h$|^gpu/shim/bbgpu\.cpp$|^gpu/shim/remote/.*\.(cpp|h)$|^gpu/CMakeLists.txt$|^src/probe\.c$'
+RENDERER_CORE='^gpu/(bb_gpu|render|platform|buffers|cp|vulkan|common|shader|memory)/|^gpu/bbgpu\.h$|^gpu/shim/bbgpu\.cpp$|^gpu/shim/remote/.*\.(cpp|h)$|^gpu/CMakeLists.txt$|^src/probe\.c$'
 while IFS= read -r f; do
   case "$f" in
     gpu/shim/remote/bb_remote.h) echo "skip (main's stub): $f"; continue;;
