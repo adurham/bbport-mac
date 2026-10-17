@@ -50,12 +50,16 @@ The same shape as 3440: MetalFX loses hard (34.8 / 37.0 vs 25.0 ms, present_wait
 in-process FSR 3.1 curve buys 22.4 -> 22.2 -> 20.8 -> 19.4 ms (44.7 -> 51.6 fps) as the internal
 resolution steps from 1.5x to 3x — still short of 60 (16.7 ms) by ~2.7 ms at the 3x preset.
 
-Attribution note (Fable review, same day — corrects this doc's first phrasing): at 3x the scene
-is ~1/9 of the pixels (raster ~853x480), so the residual is NOT scene fragment work. It is the
-upscaler's own pass chain (~8-10 dispatches, each becoming its own compute encoder + the
-driver's ALL->ALL barrier), plus post/UI at output resolution, plus the ~11 ms
-resolution-independent floor. The scale-factor line is exhausted; the integration-cost line is
-not.
+Attribution note (Fable review + source survey, same day — corrects this doc's first phrasing):
+at 3x the scene is ~1/9 of the pixels (raster ~853x480), so the residual is NOT scene fragment
+work. Traces at 2560, off vs FSR 3x: fragment 14.29 -> 4.60 ms/frame, but vertex 2.79 -> 3.68 and
+compute 2.80 -> 4.30 (the FSR chain's own dispatch work; per the survey it is 8 dispatches in ONE
+command buffer sharing one encoder — ~+1 encoder/frame, NOT a per-encoder serialization cost),
+idle 5.71 -> 6.75 ms/frame, GPU busy only 65% at 19.28 ms/frame. What remains: the chain's real
+dispatch work, post/UI at output resolution, the ~340 command-buffer structure with ~6.7 ms of
+idle across submission boundaries, and the ~11 ms resolution-independent floor. The scale-factor
+line is exhausted; the structural lines (pass-break store/load round trips, command-buffer gaps)
+are the targets — see docs/ENCODER_MERGE_SURVEY.md.
 
 Run-quality note (operational): the FIRST run of a preset at a given output size compiles that
 preset's pipeline set (~28 pipelines) and can read degenerate — observed today as 2560 fsr3_4
@@ -88,8 +92,10 @@ the owner first flips to a new preset live.
 
 Two port captures per run (`out/cap-<tag>-{1,2}.png`). Three were reviewed (off1, fsr3_1, fsr3_5):
 same scene (graveyard, stairs, fog, candles, HUD), no missing geometry, no black areas, no
-stretched bands, shadows and fog intact. **Stills cannot rule out temporal artifacts** (ghosting
-on animated objects: FSR3 still lacks their motion vectors) — the owner's eyes on a visible run
+stretched bands, shadows and fog intact. Object motion vectors ARE implemented and on by default
+(`gpu/upscale/vk_object_motion.{h,cpp}`, position-history scheme; ini `object_motion=1`) — the
+categories that fall back to camera vectors are indirect draws, tess/GS, MSAA, non-G-buffer
+passes, transparency/particles/fog and UI (source survey). The owner's eyes on a visible run
 remain the gate before anything becomes a default.
 
 ## Open / next
@@ -98,32 +104,34 @@ remain the gate before anything becomes a default.
   motion, and the 3440-vs-2560 mode choice. No default has been changed anywhere — `upscaler=off`
   stands until he decides.
 - Optional bench, not needed for the decision: FSR 3.1 presets 2-4 at 3440.
-- Fable-flagged next experiments (docked/idle machine):
+- Fable-flagged next experiments:
   1. Discriminator: render natively at 853x480 with the upscaler OFF vs FSR 3x at 2560 — the
      difference isolates the upscaler's true cost (verify the old 720p=14.4 ms datum was the
      same route/day before leaning on it).
-  2. Encoder count per frame, and: did the `none` barrier diagnostic actually MERGE encoders or
-     only drop fences? If only fences, the serialization line is not fully closed. Quick check of
-     the stored kk-build counters (same day, no GPU): the per-10 s encoder totals of
-     none/legacy/vk sit within a few percent of each other — no merge-scale drop, consistent with
-     fences-only; fps-normalized confirmation (mtl_gaps on the stored traces) is the proper next
-     step. Candidate lever: encoder merging (one compute encoder for the FSR chain with a
-     memoryBarrier instead of per-dispatch encoders; render passes to unchanged attachments
-     merged). Note: on a TBDR, encoder splits force attachment store/load — bandwidth that reads
-     as "fragment" in traces.
+  2. Encoder merging — the source survey is done (`docs/ENCODER_MERGE_SURVEY.md`). Confirmed: the
+     `none` barrier diagnostic only dropped fences (traces: encoders/frame 324 none vs 298
+     legacy — no merging). Top candidates, ranked: (1) the ~28 pass breaks/frame each cost a FULL
+     attachment store+load (RenderingInfo flags=0, resume emulated via loadOp, the driver's
+     restart path forces LOAD) — the big one; (2) `Runtime::FlushBarriers` EndRendering for
+     memory-only flushes (~1.1/frame) — an in-pass barrier path exists; (3) MSAA unconditional
+     splits + the meta resolve extra pass; (4) PrepareTransfer/DownloadImage/SceneTargets
+     breaks when no bound attachment is touched; (5) guest compute-dispatch breaks. The FSR 3.1
+     chain is NOT a merge candidate (one encoder per frame). On a TBDR these splits are exactly
+     the bandwidth that reads as "fragment".
 - MetalFX: "dead on this driver" is over-claimed — dead as INTEGRATED (exportable-buffer copy +
   synchronous host wait), not architecturally. A zero-copy handoff (VK_EXT_metal_objects +
   MTLSharedEvent) is the fix if ever revisited; MetalFX Spatial is the low-ghosting fallback if
   the owner rejects temporal artifacts.
-- The owner's playtest brief must say: what he sees is a LOWER BOUND on quality — motion vectors
-  for animated objects are not wired yet (Bloodborne has motion blur, so a velocity buffer likely
-  already exists to harvest); a "no" on ghosting should not close the FSR line.
-- Title-artifact discriminator (hidden, owner-free): `out/title_capture.sh` in this worktree boots
-  hidden to the title and triggers the port's own capture; a static band in that PNG means
-  render-side (rule 1 of the title-artifact doc). Untested as of writing — run on an idle docked
-  machine.
+- The owner's playtest brief: judge the FSR presets in motion with the object-motion coverage
+  above in mind (fallback categories may ghost — particles, fog, transparents, UI); a "no" on
+  ghosting there should not close the FSR line.
+- Title-artifact discriminator (hidden, owner-free): `out/title_capture.sh` in the metalfx
+  worktree boots hidden to the title and repeatedly triggers the port's own capture; a static
+  band in that PNG means render-side (rule 1 of the title-artifact doc). First real run in flight
+  2026-10-17 (v2 script, after a launch-env fix).
 
 Evidence: `out/matrix-3440.log` (all VERDICT lines, zero VOID/SKIP), `out/frames-3440_*.csv`,
 `out/metalfx_results.json`, parser `out/parse_matrix.py`, captures `out/cap-3440_*.png`; the 2560
 series: `out/matrix-2560.log`, `out/matrix-2560b.log`, `out/metalfx_results_2560.json`,
-`out/metalfx_results_2560b.json`, `out/parse_matrix_2560*.py`, `out/cap-2560_*.png`.
+`out/metalfx_results_2560b.json`, `out/parse_matrix_2560*.py`, `out/cap-2560_*.png`. Source
+survey: `docs/ENCODER_MERGE_SURVEY.md` (this repo).
