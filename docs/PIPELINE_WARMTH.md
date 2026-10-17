@@ -189,15 +189,31 @@ BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warm_route.sh 300
 A recorded route (`BB_PAD_RECORD` / `BB_PAD_REPLAY`, F9) is better than a synthetic walk: the states
 that were actually on screen are the ones worth compiling.
 
+**The title's Continue is pressed until the run's own log shows the game is in.** One press at one
+fixed moment, held 0.4 s, is what this used to do and it stopped working: the run of 19:09 on this
+build has no pad-file line for the press at all — the log goes from the empty pad straight to the
+walk states — and the game sat at the title for five minutes, drawing 24 frames a second and
+compiling nothing. (That is also where the first fill's `yharnam added 0 blobs` came from: it was
+not an area already covered, it was a run that never got in.) Presses now repeat — 1.2 s each, every
+few seconds — and stop on evidence: the run's log says whether the game is still at the title
+(~24 draws/frame) or in an area (several hundred), so the loop presses while the title is up and
+stops as soon as it can see the area. Measured on the build of 19:09: **three presses on the short
+walk** (`warm route: the title's Continue took after 3 press(es)`), and the area's first frames
+about five seconds after the press that took. `TITLE_PRESS_MAX` (90 s) caps the waiting;
+`BB_WARMFILL_GAMEPLAY_DRAWS` moves the draws/frame floor. The presses are a closed loop on the log,
+not a longer fixed wait, because the thing that moved is not the length of the boot but whether any
+given press is seen at all.
+
 That is one area per invocation. `tools/macos/warmfill.sh` is the whole thing in one command, and is
 what "prebuild the warmth before the game runs" means in practice.
 
 ## The warm-fill pipeline (tools/macos/warmfill.sh)
 
 ```
-BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh            # the measured route
-BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh --routes all
+BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh            # the whole pack
+BB_GAME_DIR=~/Games/Bloodborne/CUSA03173 bash tools/macos/warmfill.sh --routes yharnam   # the quick one
 bash tools/macos/warmfill.sh --list-routes                                       # no game, no writes
+bash tools/macos/warmfill.sh --check-routes                                      # check the route lines
 ```
 
 Four steps, in this order:
@@ -211,15 +227,28 @@ Four steps, in this order:
 3. **Merge.** `tools/macos/warm_merge.sh` moves what the runs compiled into the store the game
    reads. It is the only step that writes to the real user dir, and only under
    `<real user dir>/cache/<store>/`.
-4. **Report.** Per route: wall clock, `new_blobs`, `dropped_blobs`, the run's own `Warm run:` line
-   (pipelines compiled this run against those preloaded) and its last `Frame stats` line. Then the
-   merge's counts, `out/warmfill-report.json` and the per-route logs under `out/warmfill/`.
+4. **Report.** Per route: wall clock, `new_blobs`, `dropped_blobs`, what the run's own log says the
+   run did (see below), the `Warm run:` line (pipelines compiled this run against those preloaded)
+   and its last `Frame stats` line. Then the merge's counts, `out/warmfill-report.json` and the
+   per-route logs under `out/warmfill/`.
+
+**A dead run is reported as a dead run, not as a zero.** A run that never got into the game, or that
+asserted part way, measured nothing: its blob count is about the run, not about the area, and a bare
+`0 blobs` would read as "already covered". So each run's own log is read back after the route —
+the highest `draws/frame` it reached, against a floor of 200 (the title screen draws ~24, an area
+several hundred), and whether the GPU process died — and the route is re-run once if it did
+(`--no-retry` turns that off; `BB_WARMFILL_GAMEPLAY_DRAWS` moves the floor). The verdict is printed
+either way, and in the report JSON as `reached_gameplay`, `max_draws_per_frame`, `gpu_crash` and
+`retried`. It is not a style point: the first real fill measured `yharnam` at zero blobs and it
+turned out the run had died of a GPU library assertion eight frames in, at the title's cross — a
+zero that said nothing about the area.
 
 It refuses to start when the game looks like it is running (a `bb-probe` or `bb-gpu` process — the
 merge would be writing into a store another process owns), when `BB_GAME_DIR` and the usual game
 locations hold no game data, when `out/bb-probe` is missing (it needs a build), when the sandbox
 would be the real user dir or sit inside it, or on an unknown route name. `--dry-run` reports the
 plan and the merge it would do and writes nothing. `--force` skips the running-game guard only.
+`--check-routes` checks the route lines themselves and exits non-zero on a bad one.
 
 ### The merge is additive, and checked
 
@@ -269,20 +298,109 @@ stay on disk as stale ones the loader skips and counts (`N of M cached pipelines
 stale entries are kept`). warmfill says which of the two happened, at the end of the log and in its
 report: `profile.bin identical` / `installed` / `adopted` / `differs-kept`.
 
-### Routes, and how to add one
+### When a run goes wrong: what the fills of 2026-10-16 hit
 
-The built-in table in `warmfill.sh`, printed by `--list-routes`:
+Three failures showed up on the real machine, all of them visible in the numbers afterwards:
 
-| route | run | what it drives |
+- **A press the game never saw** (fixed). Detailed above: a single 0.4 s press at a fixed 45 s was
+  lost entirely on this build, the run sat at the title and compiled nothing, and the fill reported
+  it as `yharnam added 0 blobs` — an area that looked covered and was never entered. The press loop
+  and the run-log verdict are what make that impossible to report quietly now.
+- **An intermittent GPU library assertion.** `Bad PM4 packet ... PM4 type 1 packet (0x70d1b005)`,
+  then `gpu critical (Debug): Unreachable code!` and `STOP: GPU library assertion failed`
+  (`cp_graphics.cpp:203`), taking the GPU process with it (`GPU process exited`). It hit **three of
+  this session's 13 route runs** (twice on `attack` in one fill, once on `interact`) and one of the
+  first fill's three runs (`yharnam`). Nothing in the routes' pads correlates with it; it looks
+  timing-or-state dependent, and it is not diagnosed here (the engine is outside this change's
+  scope). What the tooling does about it: the run's log is read back, the route is re-run once, and
+  if it dies again the report says the blob count is **a floor, not the route's coverage**.
+- **A store cleared and rebuilt mid-fill.** The `attack` route's first run asserted out of an
+  assertion after the sandbox store had been emptied — 7 files left where 1,480 had been — and its
+  re-run rebuilt the whole set (1,483 files, all but 3 of them byte-identical names to the real
+  store's). That is the `PipelineCache::WarmUp` behaviour the docs describe from the other side: one
+  damaged entry and the store is cleared rather than half-used. The merge's validation is what keeps
+  such bytes out of the real store, and the 2 `.meta` files that are name-equal and byte-different
+  between the sandbox and the real store (same size, 7,177 bytes, in every fill measured) are the
+  one standing disagreement: the merge keeps the real store's copy and counts them conflicts.
+
+### The route pack, and how to add one
+
+`--routes all` is the built-in table in `warmfill.sh`, in the order it is written (`--list-routes`
+prints it, `--check-routes` checks the lines themselves). Every route here was run against the
+sandboxed save and reached gameplay; what each added to the store is in the table:
+
+| route | run | what it drives | added to this store | the run reached |
+|---|---|---|---|---|
+| `yharnam` | 300 s | the short walk: forward, a look right, forward, a look left, back | 4 blobs | 944 draws/frame |
+| `roam` | 450 s | the lawnmower: eight long runs at eight headings, so the walk covers ground in every direction from wherever the save is | 0 blobs | 951 draws/frame |
+| `attack` | 300 s | light attacks, a roll, a walk, a heavy, the transform: combat states a plain walk never reaches | — (run died: see below) | 787 draws/frame |
+| `combat` | 360 s | walk into the mob and fight it: combos, a heavy, the transform both ways, the gun and rolls, over a long run | 0 blobs | 827 draws/frame |
+| `spin` | 240 s | turn in place, then look down and up: headings and the sky are their own draws | 0 blobs | 797 draws/frame |
+| `sweep` | 240 s | a full turn in eight steps, then the sky and the ground: every heading the area can be looked at from | 0 blobs | 890 draws/frame |
+| `interact` | 180 s | run and press cross at whatever is there: doors, gates, ladders, lamps, and the menus and dialogues they open are their own draws | 0 blobs | 935 draws/frame |
+| `warp` | 300 s | run on and try the menus: the menu a lamp or a gravestone opens is the one way a scripted pad reaches a second area | **11 blobs** (5 pipelines) | 961 draws/frame |
+
+Three more were authored and run and are **not** in the pack — `street` (360 s), `stairs` (240 s)
+and `alleys` (240 s), the long out-and-back, the stairs-and-look-down and the short-burst/strafing
+walk. They reached gameplay like the rest (876, 773 and 862 draws/frame) and added 0 blobs each to
+this store; their empty-store numbers are in the second table below, and they are what took them out.
+
+Measured 2026-10-16 evening, macOS 27.2 / M4 Max / KosmicKrisp, store `CUSA03173-arm64` at 1,480
+blobs (428 pipelines) from the owner's own play plus the earlier fills. **Ten of the eleven routes
+run added nothing, and that is a measurement about the store, not about the routes:** every one of
+them reached gameplay and drew (the draw count moved by five times across a run — 181 to 951 a frame
+on `roam`, so the walk is not standing still), and every one of them was *drawn with pad buttons that
+arrived* (the run's own log shows the states: `interact` 23 cross and 5 circle presses, `combat` 72
+`r1`, 23 `l1`, 16 `r2`), and yet the run's own line says `0 pipelines created this run, 431 preloaded
+from the cache` — everything those states need was already there. The store holds the pipeline set of
+the area this save sits in, because the owner has played it. Two routes still found something new:
+`yharnam` (4 blobs) and `warp` (11 blobs, 5 pipelines — the menu screens its cross-and-d-pad presses
+open, which the area's own draws do not cover).
+
+What the walks are worth is not visible on this store, and that is the point of the pack: after a
+version bump `PipelineCache::WarmUp` clears the store, and the walks are what rebuilds it without the
+owner replaying the area. Measured on an **empty** store (a clone of the user dir with `cache/`
+removed, 200 s per route, in this order, so the numbers compare):
+
+| route | added to an empty store | read |
 |---|---|---|
-| `yharnam` | 300 s | the measured walk of an area: forward, a look right, forward, a look left, back |
-| `attack` | 300 s | light attacks, a roll, a walk, a heavy, the transform: combat states a plain walk never reaches |
-| `spin` | 240 s | turn in place, then look down and up: headings and the sky are their own draws |
+| `roam` | **861 blobs** | the walk carries the set: 96% of the 901 blobs the six routes drew between them |
+| `street` | 11 | nothing the lawnmower does not already reach |
+| `stairs` | 0 | the same |
+| `alleys` | 3 | the same |
+| `combat` | 16 | the combat states are their own |
+| `sweep` | 10 | the headings and the sky are their own |
+
+`interact` and `spin` were **not** run against an empty store: the machine was in use by another
+session for the rest of the fill window. Their numbers are the store-as-it-stands ones above (0
+blobs each), and they are in the pack on their families rather than on their own measurement —
+`interact`'s presses demonstrably arrive (23 cross and 5 circle presses in its run's own log) and
+`warp`'s 11 blobs are the menu screens that family opens; `spin` turns and looks, which `sweep`
+measured at 10 blobs on an empty store.
+
+Both tables together are what the pack's composition came from:
+
+- `roam` is in for the empty-store case (861 blobs); `yharnam` and `warp` are in for the store as it
+  stands (4 and 11 blobs, and `warp`'s are the menu screens no walk draws); `combat` and `sweep` are
+  in because their families are their own however small (16 and 10 on an empty store).
+- **`street`, `stairs` and `alleys` are not in the pack**, by the same measurement: 0 blobs each on
+  the store as it stands, and 11, 0 and 3 on an empty one *after* `roam` — 14 blobs between them,
+  1.6% of what the first walk already drew, for 14 minutes of fill time. They are not gone: the same
+  line in an untracked `out/warmfill_routes.conf` brings one back.
+- The numbers are marginals **in the order run**, on one save: the first walk of a pack carries the
+  area's set, and which walk that is decides the split. Run `street` first and it would have taken
+  the hundreds while `roam` got the crumbs; the pack is ordered longest-and-widest walk first for
+  that reason.
 
 A route is one line: `<name>|<secs>|<title_wait>|<load_wait>|<pad>|<description>`. Add one without
 touching the script by putting the same shape of line in an untracked `out/warmfill_routes.conf`, or
 in the file `WARMFILL_ROUTES_FILE` names; a name that appears there replaces the built-in route of
-the same name. `--routes a,b`, or `--routes all`; `--secs N` overrides the length of each.
+the same name. `--routes a,b`, or `--routes all` (the whole pack; it is also what a bare
+`warmfill.sh` runs, and what the build hook starts); `--secs N` overrides the length of each. Then
+`bash tools/macos/warmfill.sh --check-routes` reads the lines back before a run is spent on them: a
+token the pad does not read (`rxx=128`), a stick past 0..255, an entry with no `:seconds`, a route
+shorter than `title_wait + load_wait + 15` (it would never walk), or a missing description, each
+named on its own line, and a non-zero exit.
 
 - `pad` is warm_route.sh's `<pad file contents>:<seconds>` list: button names (`cross`, `r1`, `l1`,
   `circle` ...) and `lx= ly= rx= ry=` stick values in 0..255 with 128 at rest (`ly=0` forward,
@@ -306,17 +424,18 @@ recorded states are the ones that were on screen, which are the ones worth compi
 
 ### Durations
 
-| step | measured / expected |
+| step | measured |
 |---|---|
 | snapshot the user dir (26 MB) | 0.13 s (cloned, measured) |
 | a merge of ~326 blobs into a 1129-blob store | 8.4 s (measured, worst case) |
-| one route run | `secs` + ~20 s of process start and shutdown: 300 s → about 5½ minutes |
-| all three built-in routes | about 14 minutes of GPU time |
+| a merge of 11 blobs into a 1,483-blob store | under a second (measured, the usual case) |
+| one route run | `secs` + about 30 s: the title's presses (~14 s for the three it took), process start and shutdown (measured: 300 s → 5½ min, 450 s → 8 min 4 s, 180 s → 3½ min) |
+| the pack (8 routes, 2,370 s of runs) | about 45 minutes of hidden GPU time; the eleven routes measured for this (the three dropped ones included) took 67m 4s of wall clock, `attack`'s crash and its re-run (5½ min) in that |
 
 The runs are the whole cost, and it is the same compile work the first visit to that area would have
 done while the owner was playing — moved off the play session and into a hidden one. Do not start a
 fill while playing, and do not start one while another build is running: the guard only knows about
-the game itself.
+the game itself. `--secs N` shortens every route in a fill; `--routes a,b` shortens the set.
 
 ### After a build: the hook
 
@@ -345,18 +464,36 @@ above); on an ordinary fill the header already matches and the flag does nothing
 
 - **Only what the route drew.** A pipeline is made at the first draw with its state key, and a route
   walks one patch of one area. Another area, another weapon, another moon phase, an insight level, a
-  cutscene, a boss's VFX: all draws that did not happen and pipelines that were not made. Coverage
-  is a set of walks, and it is inherently partial; the honest target is the places the owner keeps
-  returning to, walked once each.
+  cutscene, a boss's VFX: all draws that did not happen and pipelines that were not made. Coverage is
+  a set of walks, and it is inherently partial — the pack below is what the scripted walks from the
+  owner's save actually reached, measured as new blobs, not a claim about the game.
+- **A scripted walk reaches only what is reachable from the save's position on that route.** The pad
+  cannot read the map; it runs, turns, fights and looks, and where that lands depends on where the
+  save is and on what the character collides with. A long run that ends against a wall draws the
+  wall; it does not get through the door. So the pack is deep where the walk happened to go, and
+  nothing at all for a level the walk never entered (the warps a lamp menu opens are the one
+  exception a scripted pad has, and `warp` is the route that tries them).
+- **Everything the owner plays is added anyway.** Each session self-fills the store: the owner's own
+  play is the broadest route there is, and it is why `yharnam` measured zero blobs once — its patch
+  had already been walked by hand.
+- **The gaps are covered, briefly and unevenly, by the async compiler.** `BB_ASYNC_PIPELINES` (on by
+  default) compiles a new pipeline on worker threads and lets a per-frame pass go without it for a
+  frame or two; so a pipeline the store lacks is not a stall, it is a brief geometry skip — but only
+  for passes drawn every frame (see "Async pipeline compilation"). The one-off passes, which are the
+  expensive ones, still compile on the drawing thread with the game waiting. **A fill is a
+  pre-warm, not a fix:** it moves work off the play session; it does not remove the work.
+- **Persistence holds until the build changes.** The store is on disk under
+  `<user>/cache/<serial>-arm64/` and preloads at launch, so a fill outlives the session that made it.
+  What it does not survive is a version bump: `profile.bin`'s constants change, `PipelineCache::
+  WarmUp` clears the whole store, and the set is gone. The merge's `--adopt-profile` is what makes a
+  fill after such a bump count (the profile gate above). Delete the store, change the device profile,
+  or bump the constants and the fill has to be re-run — which is what the build hook is for.
 - **Layer 3 stays cold.** Neither the store nor KosmicKrisp's own shader cache covers Metal's own
   pipeline state creation, and that is where the tens of milliseconds per pipeline are on the
   x86-64 path.
 - **Not every hitch is a compile.** Runs 6 and 7 above walked an area with essentially no compiles
   (2.3–5.0 ms in the whole window) and still had 186 ms and 667 ms frames — asset streaming, texture
   upload. A fill does not touch that.
-- **A fill is not an install.** The blobs live in one user dir. Delete the store, change the device
-  profile, or bump the version constants and the set is gone again: the fill has to be re-run, which
-  is what the hook is for.
 - **The sandbox is a second copy of the store**, on the same volume. APFS clones share their blocks,
   so it is cheap, and a route that compiles a lot writes what it compiles twice — into the sandbox
   (by the run) and into the real store (by the merge).
@@ -365,30 +502,44 @@ above); on an ordinary fill the header already matches and the flag does nothing
 
 ```
 bash tools/macos/tests/test_warm_merge.sh          # the merge, 53 checks on synthetic pairs
-bash tools/macos/tests/test_warm_route_drivers.sh  # warm_route.sh, 19 checks against a stand-in for run.sh
-bash tools/macos/tests/test_warmfill.sh            # warmfill.sh without a run, 31 checks
-bash tools/macos/tests/test_warmfill_run.sh        # warmfill.sh with runs, 23 checks, against a stand-in
+bash tools/macos/tests/test_warm_route_drivers.sh  # warm_route.sh, 31 checks against a stand-in for run.sh
+bash tools/macos/tests/test_warmfill.sh            # warmfill.sh without a run, 53 checks
+bash tools/macos/tests/test_warmfill_run.sh        # warmfill.sh with runs, 38 checks, against a stand-in
 WARMFILL_TEST_REAL_USER=<a user dir> bash tools/macos/tests/test_warm_merge.sh   # 59 checks, a real store
 ```
 
 None of them launch the game or write to a user dir outside their own scratch tree: the first three
 work on synthetic pairs, the fourth on a scratch checkout whose `run.sh` is a stand-in that writes
-the blobs a compile pass would, and the fifth clones whatever user dir it is pointed at, twice,
-checking the merge against that store's own blobs (a clone of the owner's store was used for the
-numbers in "The merge is additive, and checked" above). The stand-in tests are what say the run
-loop, the merge and the report work end to end; they cannot say that the real game's draws produce
-the blobs they pretend to.
+the blobs a compile pass would **and the log a run writes** — that log is what says whether a press
+took and whether a route reached gameplay, so both stand-ins in `test_warm_route_drivers.sh` and
+`test_warmfill_run.sh` write it (the title's 24 draws a frame until the pad file says cross, then
+the area's), and the fifth clones whatever user dir it is pointed at, twice, checking the merge
+against that store's own blobs. The stand-in tests are what say the run loop, the press loop, the
+merge and the report work end to end; they cannot say that the real game's draws produce the blobs
+they pretend to.
 
 ## What is not verified
 
-- **No route has been run by this pipeline yet.** Everything above about the merge, the snapshot, the
-  hook, the refusals and the pad timing was measured or checked as stated; what was *not* run is a
-  fill against the real game — `warmfill.sh` end to end with a real route compiling real pipelines.
-  That needs the machine to itself for about ten minutes of GPU time, game data and a build, and it
-  is the one step left to the owner. `bash tools/macos/warmfill.sh --dry-run` is the cheap rehearsal:
-  it lists the routes, snapshots nothing and merges nothing.
+- **What fills have and have not shown.** Four fills have now been run against the real game
+  (2026-10-16): one on the pack's predecessor and three on this one, 17 route runs in all, with the
+  snapshot, the hidden runs, the press loop, the merge and the report all exercised end to end —
+  the numbers in "The route pack" above are from them. What they did *not* show is the warmth being
+  *used*: whether a fill removes the stutter on the first visit to a warmed area needs a
+  before-and-after play session on the same area with the store swapped underneath, and that has not
+  been done.
+- **The empty-store comparison is a comparison, not the pack.** It used one route per family for
+  200 s each, on a clone with `cache/` removed, so the numbers compare routes against each other;
+  they are not the pack's own coverage at its own lengths (which is what `--routes all` runs).
+- **The GPU assertion is not diagnosed.** Three of this session's 13 route runs and one of the
+  previous fill's 3 died in `cp_graphics.cpp` (`PM4 type 1 packet`, `Unreachable code!`) with the GPU
+  process; the tooling re-runs a route once and reports the count as a floor, but nothing here says
+  what triggers it. It is engine work, and outside what this change was allowed to touch.
+- **The store-cleared-and-rebuilt event is inferred, not instrumented.** It is read backwards from
+  the file counts (7 files at the end of a crashed run, 1,483 after its re-run) and from what
+  `PipelineCache::WarmUp` is documented to do with a damaged entry; a log line for it does not exist
+  in what was captured.
 - Whether a fill actually removes the stutter on the first visit to a warmed area has not been
-  measured either: it needs a before-and-after play session on the same area, with the store
+  measured: it needs a before-and-after play session on the same area, with the store
   swapped underneath.
 
 

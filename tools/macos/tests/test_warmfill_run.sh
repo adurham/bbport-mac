@@ -50,13 +50,26 @@ mkdir -p "$store"
 { printf 'sim-%s-meta-' "$n"; head -c 32 /dev/zero; } | head -c 32 >"$store/sim-$n.meta"
 printf '\x03\x02\x23\x07\x00\x06\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >"$store/sim-$n.spv"
 mkdir -p "$PWD/out"
-{
+# The log a real run writes, and the clock warm_route.sh reads to know whether the title's Continue
+# took: the title screen's 24 draws a frame until the pad file says cross, then the area's
+# (STUB_DRAWS). STUB_DRAWS=24 is a run that never gets in; STUB_ASSERT=1 one that dies on the way.
+: >"$PWD/out/last-run.log"
+deadline=$(( $(date +%s) + ${BB_WARM_SECONDS:-5} ))
+draws=24
+while :; do
+    if [[ $draws == 24 ]] && grep -q cross "$BB_PAD_FILE" 2>/dev/null; then draws=${STUB_DRAWS:-900}; fi
     printf 'Warm run: 12 pipelines created this run, 4 preloaded from the cache; compiles stopped - asking the game to quit\n'
-    printf 'Frame stats: 38.0 FPS, %s draws/frame, 12 shader/pipeline compiles, 3.4 ms\n' "$n"
-} >"$PWD/out/last-run.log"
-sleep "${BB_WARM_SECONDS:-5}"
+    [[ ${STUB_ASSERT:-0} == 1 ]] && printf 'Bad PM4 packet at 0x766f84ed5c: dword 0x70d1b005\nSTOP: GPU library assertion failed (see GPU log above)\n'
+    printf 'Frame stats: 38.0 FPS, %s draws/frame, 12 shader/pipeline compiles, 3.4 ms\n' "$draws"
+    (( $(date +%s) >= deadline )) && break
+    sleep 1
+done >"$PWD/out/last-run.log"
 STUB
 export STUB_ENV=$tree/stub-env.txt STUB_COUNT=$tree/stub-count.txt
+unset STUB_DRAWS
+# A stand-in that never leaves the title would otherwise make every fill wait out warm_route.sh's
+# press window (TITLE_PRESS_MAX, 90 s by default).
+export TITLE_PRESS_MAX=3
 # warmfill refuses to run without a build.
 printf '#!/bin/sh\nexit 0\n' >"$tree/out/bb-probe"
 chmod +x "$tree/out/bb-probe" "$tree/tools/macos/run.sh"
@@ -126,6 +139,53 @@ check "the first run's blobs were not copied twice" \
     test "$(find "$tree/user/cache" -name 'sim-1.*' | wc -l | tr -d ' ')" = 3
 check "no .warmfill-tmp was left in the real store" \
     test "$(find "$tree/user" -name '*.warmfill-tmp' | wc -l | tr -d ' ')" = 0
+
+echo "== a run that never got into the game is a dead run, not a zero"
+# The stand-in writes the draws/frame a run's own log would carry. 900 is an area (the stub's usual
+# number); 24 is the title screen. A run stuck at the title measured nothing, and reporting its
+# blob count as if it were the area's coverage is the lie this check exists to stop: warmfill says
+# so, and re-runs the route once.
+before_n=$(cat "$tree/stub-count.txt")
+st=0
+env BB_GAME_DIR=$tree/game STUB_DRAWS=24 bash "$tree/tools/macos/warmfill.sh" \
+    --force --routes fast --user-dir "$tree/user" --sandbox "$tree/out/warmfill_user" \
+    >"$tree/fill3.log" 2>&1 || st=$?
+ran=$(( $(cat "$tree/stub-count.txt") - before_n ))
+check "the fill still ran" test "$st" = 0
+check "the dead route was re-run once (the stand-in ran twice, it ran $ran)" test "$ran" = 2
+check "the log says the run never reached gameplay" grep -q 'NEVER REACHED GAMEPLAY' "$tree/fill3.log"
+check "and says why it is not a zero about the area" grep -q 'say nothing about the area' "$tree/fill3.log"
+check "a live run that adds nothing is told apart from it" \
+    grep -q 'reached gameplay' "$tree/fill.log"
+check "the report JSON carries the retry and the draws the run actually reached" \
+    python3 -c "import json,sys; d=json.load(open('$tree/out/warmfill-report.json')); r=d['routes'][0]; sys.exit(0 if r['retried']==1 and r['reached_gameplay']==0 and r['max_draws_per_frame']==24 and r['gpu_crash']==0 and d['retries']==1 else 1)"
+check "and the summary line counts the retry" grep -q 'retries:  1 route' "$tree/fill3.log"
+check "the two runs of the route are both in its wall clock" \
+    python3 -c "import json,sys; d=json.load(open('$tree/out/warmfill-report.json')); sys.exit(0 if d['routes'][0]['took_s'] >= 50 else 1)"
+
+echo "== --no-retry leaves a dead run reported, but does not run it twice"
+before_n=$(cat "$tree/stub-count.txt")
+env BB_GAME_DIR=$tree/game STUB_DRAWS=24 bash "$tree/tools/macos/warmfill.sh" \
+    --force --no-retry --routes fast --user-dir "$tree/user" --sandbox "$tree/out/warmfill_user" \
+    >"$tree/fill4.log" 2>&1 || true
+ran=$(( $(cat "$tree/stub-count.txt") - before_n ))
+check "no re-run: the stand-in ran once more, not twice ($ran)" test "$ran" = 1
+check "but a dead run is still reported as one" grep -q 'NEVER REACHED GAMEPLAY' "$tree/fill4.log"
+check "and no retry is counted" python3 -c "import json,sys; d=json.load(open('$tree/out/warmfill-report.json')); sys.exit(0 if d['retries']==0 and d['routes'][0]['retried']==0 else 1)"
+
+echo "== a run whose GPU process died is reported as a crash, not as coverage"
+export STUB_ASSERT=1
+before_n=$(cat "$tree/stub-count.txt")
+env BB_GAME_DIR=$tree/game bash "$tree/tools/macos/warmfill.sh" \
+    --force --routes fast --user-dir "$tree/user" --sandbox "$tree/out/warmfill_user" \
+    >"$tree/fill5.log" 2>&1 || true
+unset STUB_ASSERT
+ran=$(( $(cat "$tree/stub-count.txt") - before_n ))
+check "the crashing route was re-run once ($ran runs)" test "$ran" = 2
+check "the log names the assertion" grep -q 'GPU process died mid-run' "$tree/fill5.log"
+check "and says the blob count is a floor, not the coverage" grep -q 'floor, not the route' "$tree/fill5.log"
+check "the JSON marks the crash" \
+    python3 -c "import json,sys; d=json.load(open('$tree/out/warmfill-report.json')); r=d['routes'][0]; sys.exit(0 if r['gpu_crash']==1 and r['retried']==1 else 1)"
 
 printf '\n%d checks passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))
