@@ -113,14 +113,8 @@ public:
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = BbCpu::Ticks();
-        u32 spins_done = 0;
-        for (u32& spins = spins_done; consumed.load(std::memory_order_acquire) != head; ++spins) {
-            if (spins < 4096) {
-                BbCpu::Pause();
-            } else {
-                std::this_thread::yield();
-            }
-        }
+        const u32 spins_done =
+            WaitUntil(head, 0, [this] { return consumed.load(std::memory_order_seq_cst) == head; });
         const u64 waited = BbCpu::Ticks() - start;
         drain_cycles += waited;
         cycles_by_reason[slot] += waited;
@@ -144,14 +138,9 @@ public:
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = BbCpu::Ticks();
-        u32 spins_done = 0;
-        for (u32& spins = spins_done; !ReachedPacket(number); ++spins) {
-            if (spins < 4096) {
-                BbCpu::Pause();
-            } else {
-                std::this_thread::yield();
-            }
-        }
+        const u32 spins_done = WaitUntil(0, number, [this, number] {
+            return consumed_packets.load(std::memory_order_seq_cst) >= number;
+        });
         const u64 waited = BbCpu::Ticks() - start;
         drain_cycles += waited;
         cycles_by_reason[slot] += waited;
@@ -184,15 +173,73 @@ public:
     std::atomic<u64> busy_cycles{0};
 
 private:
-    /// The frame probe (BB_FRAME_LOG ga_drain_ms/ga_drains/ga_yields): a drain that waited.
-    static void NoteWait(u64 waited, u32 spins) {
+    /// The frame probe (BB_FRAME_LOG ga_drain_ms/ga_drains/ga_yields): a drain that waited, and
+    /// how often it went past its spin (a sleep, or with BB_PIPE_DRAIN_YIELD=1 a sched_yield each).
+    static void NoteWait(u64 waited, u32 slow) {
         if (!BbStats::enabled) {
             return;
         }
         BbStats::ga_drain_ticks.fetch_add(waited, std::memory_order_relaxed);
         BbStats::ga_drains.fetch_add(1, std::memory_order_relaxed);
-        if (spins > 4096) {
-            BbStats::ga_yields.fetch_add(spins - 4096, std::memory_order_relaxed);
+        BbStats::ga_yields.fetch_add(slow, std::memory_order_relaxed);
+    }
+
+    /// Stage A: spins briefly for `done`, then sleeps until stage B has run another packet
+    /// (DrainWake). Returns the passes past the spin (sleeps, or yields). Stage A waits here for
+    /// stage B at every guest submission's end (Rasterizer::OnSubmit), ~14 ms a frame in gameplay:
+    /// the sched_yield loop this replaces made ~74,000 system calls a frame there - all of the GPU
+    /// command thread's ~10 ms/frame of system time (the frame log's kernel_ms), a P-core held at
+    /// 100% doing nothing. BB_PIPE_DRAIN_YIELD=1 brings the yield loop back (A/B).
+    /// Stage B wakes this thread only once it reached `position` (a ring position) or ran packet
+    /// `packet` (0: not that kind of wait): one wake a wait, not one a packet - stage B is the
+    /// frame's critical path, a futex wake per packet would cost it ~1 ms a frame.
+    template <typename Done>
+    u32 WaitUntil(u64 position, u64 packet, Done done) {
+        static const bool yield_loop = [] {
+            const char* env = std::getenv("BB_PIPE_DRAIN_YIELD");
+            return env && env[0] == '1';
+        }();
+        for (u32 spins = 0; spins < 4096; ++spins) {
+            if (done()) {
+                return 0;
+            }
+            BbCpu::Pause();
+        }
+        u32 slow = 0;
+        while (!done()) {
+            ++slow;
+            if (yield_loop) {
+                std::this_thread::yield();
+                continue;
+            }
+            // seq_cst on both sides: stage B stores `consumed` and then reads `drain_waiting`;
+            // this thread stores `drain_waiting` and then reads `consumed` (done()). One of them
+            // sees the other's store: B wakes this thread, or this thread sees the packet ran.
+            const u32 seen = drain_wake.load(std::memory_order_seq_cst);
+            wake_position.store(position, std::memory_order_relaxed);
+            wake_packet.store(packet, std::memory_order_relaxed);
+            drain_waiting.store(true, std::memory_order_seq_cst);
+            if (!done()) {
+                drain_wake.wait(seen, std::memory_order_seq_cst);
+            }
+            drain_waiting.store(false, std::memory_order_seq_cst);
+        }
+        return slow;
+    }
+
+    /// Stage B: after `consumed` moved to `at` (and `consumed_packets` to `ran`), wakes stage A if
+    /// it sleeps in WaitUntil for this point. The targets are written before `drain_waiting`
+    /// (seq_cst), so a `true` read here sees them.
+    void DrainWake(u64 at, u64 ran) {
+        if (!drain_waiting.load(std::memory_order_seq_cst)) {
+            return;
+        }
+        const u64 position = wake_position.load(std::memory_order_relaxed);
+        const u64 packet = wake_packet.load(std::memory_order_relaxed);
+        if ((position != 0 && at >= position) || (packet != 0 && ran >= packet) ||
+            (position == 0 && packet == 0)) {
+            drain_wake.fetch_add(1, std::memory_order_seq_cst);
+            drain_wake.notify_one();
         }
     }
 
@@ -255,7 +302,8 @@ private:
             const auto* header = reinterpret_cast<const Header*>(ring.get() + at % Capacity);
             if (header->size == 0) {
                 at += Capacity - at % Capacity;
-                consumed.store(at, std::memory_order_release);
+                consumed.store(at, std::memory_order_seq_cst);
+                DrainWake(at, consumed_packets.load(std::memory_order_relaxed));
                 continue;
             }
             const u64 start = BbCpu::Ticks();
@@ -266,8 +314,9 @@ private:
                 BbStats::b_busy_ticks.fetch_add(ran, std::memory_order_relaxed);
             }
             at += header->size;
-            consumed_packets.fetch_add(1, std::memory_order_release);
-            consumed.store(at, std::memory_order_release);
+            const u64 packets_run = consumed_packets.fetch_add(1, std::memory_order_seq_cst) + 1;
+            consumed.store(at, std::memory_order_seq_cst);
+            DrainWake(at, packets_run);
         }
     }
 
@@ -280,6 +329,10 @@ private:
     u32 pending_size = 0;
     alignas(64) std::atomic<u64> published{0};
     alignas(64) std::atomic<u64> consumed{0};
+    /// Stage A asleep in WaitUntil, and the word it sleeps on (DrainWake).
+    alignas(64) std::atomic<bool> drain_waiting{false};
+    std::atomic<u32> drain_wake{0};
+    std::atomic<u64> wake_position{0}, wake_packet{0}; ///< what stage A waits for (DrainWake)
     std::atomic<u64> consumed_packets{0}; ///< packets stage B has run (NextPacket numbers)
     alignas(64) std::atomic<u32> wake{0};
     std::atomic<bool> sleeping{false};
