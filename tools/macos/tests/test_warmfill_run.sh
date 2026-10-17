@@ -50,15 +50,26 @@ mkdir -p "$store"
 { printf 'sim-%s-meta-' "$n"; head -c 32 /dev/zero; } | head -c 32 >"$store/sim-$n.meta"
 printf '\x03\x02\x23\x07\x00\x06\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >"$store/sim-$n.spv"
 mkdir -p "$PWD/out"
-{
+# The log a real run writes, and the clock warm_route.sh reads to know whether the title's Continue
+# took: the title screen's 24 draws a frame until the pad file says cross, then the area's
+# (STUB_DRAWS). STUB_DRAWS=24 is a run that never gets in; STUB_ASSERT=1 one that dies on the way.
+: >"$PWD/out/last-run.log"
+deadline=$(( $(date +%s) + ${BB_WARM_SECONDS:-5} ))
+draws=24
+while :; do
+    if [[ $draws == 24 ]] && grep -q cross "$BB_PAD_FILE" 2>/dev/null; then draws=${STUB_DRAWS:-900}; fi
     printf 'Warm run: 12 pipelines created this run, 4 preloaded from the cache; compiles stopped - asking the game to quit\n'
     [[ ${STUB_ASSERT:-0} == 1 ]] && printf 'Bad PM4 packet at 0x766f84ed5c: dword 0x70d1b005\nSTOP: GPU library assertion failed (see GPU log above)\n'
-    printf 'Frame stats: 38.0 FPS, %s draws/frame, 12 shader/pipeline compiles, 3.4 ms\n' "${STUB_DRAWS:-900}"
-} >"$PWD/out/last-run.log"
-sleep "${BB_WARM_SECONDS:-5}"
+    printf 'Frame stats: 38.0 FPS, %s draws/frame, 12 shader/pipeline compiles, 3.4 ms\n' "$draws"
+    (( $(date +%s) >= deadline )) && break
+    sleep 1
+done >"$PWD/out/last-run.log"
 STUB
 export STUB_ENV=$tree/stub-env.txt STUB_COUNT=$tree/stub-count.txt
 unset STUB_DRAWS
+# A stand-in that never leaves the title would otherwise make every fill wait out warm_route.sh's
+# press window (TITLE_PRESS_MAX, 90 s by default).
+export TITLE_PRESS_MAX=3
 # warmfill refuses to run without a build.
 printf '#!/bin/sh\nexit 0\n' >"$tree/out/bb-probe"
 chmod +x "$tree/out/bb-probe" "$tree/tools/macos/run.sh"

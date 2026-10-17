@@ -27,8 +27,11 @@
 # nothing appears on the owner's screen and the run ends at BB_WARM_SECONDS rather than by hand.
 #
 # Env: TITLE_WAIT (s from the start to the title, default 45), LOAD_WAIT (s after the cross, default
-# 75: the load), ROUTE (the walk loop, default below), plus everything the run itself reads
-# (BB_NATIVE_GPU, BB_FRAME_STATS, BB_WARM_SECONDS ...).
+# 30: measured — the run's own log puts the first frames of the area five seconds after the cross,
+# so the 75 this used to be spent 70 s of every run standing still in an already loaded area; 30 s
+# leaves 25 s of margin, and a press into a load is ignored rather than fatal), ROUTE (the walk loop,
+# default below), plus everything the run itself reads (BB_NATIVE_GPU, BB_FRAME_STATS,
+# BB_WARM_SECONDS ...).
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 secs=${1:?usage: tools/macos/warm_route.sh SECS [ENV=VALUE ...]}
@@ -60,7 +63,7 @@ log=$PWD/out/last-run.log
 pad_write() { printf '%s\n' "$1" >"$pad"; }   # the file holds the state, not a sequence
 
 title_wait=${TITLE_WAIT:-45}
-load_wait=${LOAD_WAIT:-75}
+load_wait=${LOAD_WAIT:-30}
 # The walk: forward, a turn, forward, a turn the other way. ly=0 is forward and ly=255 back (the
 # sticks run 0..255 with 128 at rest), rx is the look. An entry is "<pad file contents>:<seconds>",
 # the comma standing in for the space the pad file wants between tokens.
@@ -74,11 +77,46 @@ BB_NATIVE_GPU=${BB_NATIVE_GPU:-1} BB_FRAME_STATS=${BB_FRAME_STATS:-1} BB_WARM_QU
 game=$!
 
 sleep "$title_wait"
-pad_write cross; sleep 0.4; pad_write ""
+# The title's Continue: press it, and keep pressing until the run's own log shows the game is past
+# the title. One press at one fixed moment, held 0.4 s, is what this used to do and it is not
+# reliable on this build: the run of 2026-10-16 19:09 has no pad-file line for the press at all (the
+# log goes from the empty pad straight to the walk) and the game sat at the title for its whole
+# length, drawing 24 frames a second and compiling nothing — a whole route's GPU time for nothing.
+# The log is the clock that says whether a press took: the title draws ~24 a frame and an area
+# several hundred, so while the highest draws/frame is under BB_WARMFILL_GAMEPLAY_DRAWS (200) the
+# press is still the title's; once it is over, another press would be an interaction in the area and
+# the presses stop. (The game's output is block-buffered through run.sh's tee, so the log lags a
+# window or two: a press or two can still land after the transition, which is why the hold is short
+# and the presses stop as soon as there is anything to see. TITLE_PRESS_MAX caps the waiting.)
+gameplay_draws=${BB_WARMFILL_GAMEPLAY_DRAWS:-200}
+title_in() {
+    local max
+    max=$(grep -oE '[0-9]+ draws/frame' "$log" 2>/dev/null | awk '{print $1}' | sort -n | tail -1)
+    [[ -n $max ]] && ((max >= gameplay_draws))
+}
+game_start=$SECONDS
+presses=0
+press_deadline=$((SECONDS + ${TITLE_PRESS_MAX:-90}))
+until title_in; do
+    pad_write cross
+    sleep 1.2
+    pad_write ""
+    presses=$((presses + 1))
+    ((SECONDS < press_deadline)) || break
+    sleep 3
+done
+if title_in; then
+    echo "warm route: the title's Continue took after $presses press(es); the log shows the area"
+else
+    echo "warm route: the title's Continue did NOT take in ${TITLE_PRESS_MAX:-90}s ($presses press(es)); the log still shows the title — this run will walk nothing"
+fi
 
 (
     sleep "$load_wait"
-    deadline=$((SECONDS + secs - load_wait - title_wait - 15))
+    # The walk runs to the run's own end (BB_WARM_SECONDS, `secs`) less the 15 s warm_route.sh keeps
+    # for the run to quit in. Counted from the game's start, so the title presses above (which may
+    # have taken several tries) come out of the walk rather than overrunning the cap.
+    deadline=$((game_start + secs - 15))
     while ((SECONDS < deadline)); do
         for entry in $route; do
             ((SECONDS < deadline)) || break
