@@ -149,12 +149,13 @@ that noise floor (3440x1440, 8-bit, max channel diff):
 
 | pairs | n | mean abs diff | px > 32 | worst 64x64 tile |
 |---|---|---|---|---|
-| legacy-legacy | 12 | 7.88 (max 11.99) | 1.70% (max 8.09%) | 54.0 |
+| legacy-legacy | 20 | 9.24 (max 17.01) | 3.03% (max 17.12%) | 59.8 |
 | safe-safe | 12 | 11.44 (max 18.83) | 5.59% (max 23.03%) | 64.0 |
-| legacy-safe | 32 | 9.56 (max 15.08) | 3.88% (max 15.62%) | 63.3 |
+| legacy-safe | 40 | 9.83 (max 18.67) | 4.19% (max 19.36%) | 63.3 |
 
 Legacy-safe sits inside the range of same-mode pairs (the largest diff of all is safe3 against
-safe4, two runs of the same mode), so the diffs are capture timing, not the barriers. A visual check
+safe4, two runs of the same mode, and legacy3 against legacy5 reaches 17%), so the diffs are capture
+timing, not the barriers. Strict captures are not in the table; they were checked visually only. A visual check
 of legacy5, safe4, strict1 and strict2 side by side found no missing geometry, black areas, broken
 shadows, fog or post effects. As in KK_GPU_WALL.md, still frames cannot rule out a one-frame temporal
 hazard. Because safe brings no win, it stays off.
