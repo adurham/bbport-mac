@@ -48,7 +48,14 @@ cleanup trio re-ran one voided and one degenerate run (below):
 
 The same shape as 3440: MetalFX loses hard (34.8 / 37.0 vs 25.0 ms, present_wait 0), and the
 in-process FSR 3.1 curve buys 22.4 -> 22.2 -> 20.8 -> 19.4 ms (44.7 -> 51.6 fps) as the internal
-resolution steps from 1.5x to 3x. Still short of 60; what is left is not the upscaler's to close.
+resolution steps from 1.5x to 3x — still short of 60 (16.7 ms) by ~2.7 ms at the 3x preset.
+
+Attribution note (Fable review, same day — corrects this doc's first phrasing): at 3x the scene
+is ~1/9 of the pixels (raster ~853x480), so the residual is NOT scene fragment work. It is the
+upscaler's own pass chain (~8-10 dispatches, each becoming its own compute encoder + the
+driver's ALL->ALL barrier), plus post/UI at output resolution, plus the ~11 ms
+resolution-independent floor. The scale-factor line is exhausted; the integration-cost line is
+not.
 
 Run-quality note (operational): the FIRST run of a preset at a given output size compiles that
 preset's pipeline set (~28 pipelines) and can read degenerate — observed today as 2560 fsr3_4
@@ -73,9 +80,9 @@ the owner first flips to a new preset live.
 - **Crash found (mfx4 only):** `gpu critical (Debug): Assertion Failed! Unknown data_format=15
   and num_format=7 [gcn_to_vk.cpp:422]` (libbbgpu.dylib, `Vulkan::GcnToVk::SurfaceFormat`),
   GPU process exited (23) ~100 s into the run; the route had completed, so the matrix script
-  counted the run clean. Only mfx4 shows it (2 asserts; every other run: 0). Latent port bug on
-  a MetalFX-path surface format — not re-run (MetalFX loses regardless); worth a root-cause pass
-  only if the MetalFX copy path is ever reworked.
+  counted the run clean. Only mfx4 shows it (2 asserts; every other run: 0). Latent port bug on a
+  **shared format-translation path, not MetalFX-only** (Fable review) — likely a one-line table
+  entry; worth fixing when that path is next touched.
 
 ## Captures (visual pass)
 
@@ -91,6 +98,22 @@ remain the gate before anything becomes a default.
   motion, and the 3440-vs-2560 mode choice. No default has been changed anywhere — `upscaler=off`
   stands until he decides.
 - Optional bench, not needed for the decision: FSR 3.1 presets 2-4 at 3440.
+- Fable-flagged next experiments (docked/idle machine):
+  1. Discriminator: render natively at 853x480 with the upscaler OFF vs FSR 3x at 2560 — the
+     difference isolates the upscaler's true cost (verify the old 720p=14.4 ms datum was the
+     same route/day before leaning on it).
+  2. Encoder count per frame, and: did the `none` barrier diagnostic actually MERGE encoders or
+     only drop fences? If only fences, the serialization line is not fully closed. Candidate
+     lever: encoder merging (one compute encoder for the FSR chain with a memoryBarrier instead
+     of per-dispatch encoders; render passes to unchanged attachments merged). Note: on a TBDR,
+     encoder splits force attachment store/load — bandwidth that reads as "fragment" in traces.
+- MetalFX: "dead on this driver" is over-claimed — dead as INTEGRATED (exportable-buffer copy +
+  synchronous host wait), not architecturally. A zero-copy handoff (VK_EXT_metal_objects +
+  MTLSharedEvent) is the fix if ever revisited; MetalFX Spatial is the low-ghosting fallback if
+  the owner rejects temporal artifacts.
+- The owner's playtest brief must say: what he sees is a LOWER BOUND on quality — motion vectors
+  for animated objects are not wired yet (Bloodborne has motion blur, so a velocity buffer likely
+  already exists to harvest); a "no" on ghosting should not close the FSR line.
 - Title-artifact discriminator (hidden, owner-free): `out/title_capture.sh` in this worktree boots
   hidden to the title and triggers the port's own capture; a static band in that PNG means
   render-side (rule 1 of the title-artifact doc). Untested as of writing — run on an idle docked
