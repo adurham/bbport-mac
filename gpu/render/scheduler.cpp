@@ -173,8 +173,38 @@ void Scheduler::BeginRendering(const RenderState& state) {
     // A cut of the command stream (MaybeSplit) closed this render pass: it goes on in the next
     // command buffer, its attachments not cleared again.
     const bool resume = resume_rendering && !is_rendering && render_state == state;
-    if (!is_rendering && render_state == state && pass_end_caller) {
+    // This pass continues one with the same state that was closed mid-frame (a "break"): the
+    // driver stored the attachments of the pass that ended and loads them back here.
+    const bool continuing = !is_rendering && render_state == state;
+    if (continuing && pass_end_caller) {
         TracePassBreak(pass_end_caller);
+    }
+    // BB_BREAK_STORE_PROBE: TIMING PROBE ONLY - THE IMAGE IS EXPECTED TO BE CORRUPT.
+    // A mid-frame pass break is emulated as endRendering (storeOp=eStore, so the driver stores
+    // every attachment) followed by beginRendering with loadOp=eLoad (the driver loads them
+    // back): a full store+reload round trip per break (~28/frame in this port). With this env
+    // set we drop that round trip for the broken pass so only its timing cost disappears - the
+    // pass that comes back after a break ('continuing') skips both the reload (loadOp=DONT_CARE)
+    // and the store, and any later instance of a RenderState already seen broken skips its store
+    // as well (the interrupted pass cannot be identified at its own begin, so its store is only
+    // dropped once its state is known to break). Every break site funnels through here, so this
+    // gates all of them at once. Gate OFF is byte-identical to before (storeOp=eStore,
+    // loadOp=eClear/eLoad as written below).
+    static const bool break_store_probe = [] {
+        const char* env = std::getenv("BB_BREAK_STORE_PROBE");
+        return env && env[0] == '1';
+    }();
+    static std::vector<RenderState> probe_broken_states;
+    bool probe_drop_load = false;
+    bool probe_drop_store = false;
+    if (break_store_probe) {
+        const bool broken =
+            std::ranges::find(probe_broken_states, state) != probe_broken_states.end();
+        probe_drop_load = continuing;
+        probe_drop_store = continuing || broken;
+        if (continuing && !broken) {
+            probe_broken_states.push_back(state);
+        }
     }
     resume_rendering = false;
     EndRendering();
@@ -195,16 +225,21 @@ void Scheduler::BeginRendering(const RenderState& state) {
             cmdbuf.beginRendering(info);
         }
     } pass{};
-    const auto load = [resume](bool clear) {
+    const auto load = [resume, probe_drop_load](bool clear) {
+        if (probe_drop_load) {
+            return vk::AttachmentLoadOp::eDontCare; // BB_BREAK_STORE_PROBE: no reload of the break
+        }
         return clear && !resume ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
     };
+    const vk::AttachmentStoreOp store =
+        probe_drop_store ? vk::AttachmentStoreOp::eDontCare : vk::AttachmentStoreOp::eStore;
     for (u32 i = 0; i < state.num_color_attachments; ++i) {
         const auto& color = state.color_attachments[i];
         pass.colors[i] = {
             .imageView = color.image_view,
             .imageLayout = color.image_layout,
             .loadOp = load(color.is_clear),
-            .storeOp = vk::AttachmentStoreOp::eStore,
+            .storeOp = store,
             .clearValue = {.color = {.uint32 = color.clear_value}},
         };
     }
@@ -213,7 +248,7 @@ void Scheduler::BeginRendering(const RenderState& state) {
         .imageView = ds.image_view,
         .imageLayout = ds.image_layout,
         .loadOp = load(ds.depth_clear),
-        .storeOp = vk::AttachmentStoreOp::eStore,
+        .storeOp = store,
         .clearValue = {.depthStencil = {.depth = std::bit_cast<float>(ds.clear_value[0])}},
     };
     pass.stencil = pass.depth;
