@@ -1,0 +1,474 @@
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 119c031..ad0e081 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -249,6 +249,9 @@ kk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+ 
+    kk_reset_cmd_buffer(&cmd->vk, 0u);
+    vk_command_buffer_begin(&cmd->vk, pBeginInfo);
++   /* bbport (BB_KK_BARRIER=lite): Metal 4 adds no synchronisation between
++    * command buffers, and this one may consume anything submitted before it. */
++   kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_BEGIN);
+    cmd->one_time_submit =
+       pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+ 
+@@ -293,6 +296,41 @@ kk_encoder_state_update_debug(struct kk_cmd_buffer *cmd,
+       mtl_encoder_push_debug_group(es->encoder, label->pLabelName);
+ }
+ 
++/* bbport (BB_KK_BARRIER=lite): Vulkan destination stages whose consumers a
++ * render encoder's lite producer barrier still holds back (fragment-side and
++ * compute work), plus the no-wait pseudo stages. Anything else (vertex input,
++ * pre-rasterization shaders, indirect, transfer, ALL_*, unknown bits) may run in
++ * a later pass's vertex stage, so it sets the vertex dependency. */
++static bool
++kk_bb_dst_needs_vertex_wait(VkPipelineStageFlags2 dst)
++{
++   const VkPipelineStageFlags2 safe =
++      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
++      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
++      VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
++      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
++      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT |
++      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |
++      VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
++   return (dst & ~safe) != 0;
++}
++
++void
++kk_bb_vertex_dep(struct kk_cmd_buffer *cmd, unsigned why)
++{
++   if (kk_bb_barrier_mode() == KK_BB_BARRIER_VK) {
++      if (!cmd->bb_pending_before)
++         kk_bbstat_add((enum kk_bbstat)why, 1);
++      cmd->bb_pending_before = MTL_STAGE_ALL;
++      return;
++   }
++   if (kk_bb_barrier_mode() != KK_BB_BARRIER_LITE)
++      return;
++   if (!cmd->bb_vtx_dep)
++      kk_bbstat_add((enum kk_bbstat)why, 1);
++   cmd->bb_vtx_dep = true;
++}
++
+ void
+ cs_start_render(struct kk_cmd_buffer *cmd)
+ {
+@@ -323,6 +361,36 @@ cs_start_render(struct kk_cmd_buffer *cmd)
+    }
+    mtl_set_vertex_amplification_count(cmd->gfx.encoder, layer_ids, count);
+ 
++   /* bbport (BB_KK_BARRIER=lite): earlier render encoders ended without
++    * holding back later vertex stages. If something before this point may feed
++    * a vertex stage, wait for all prior queue work before this pass's vertex
++    * stage, and end this pass with the full barrier so that every later
++    * encoder is ordered after that work too (transitively, through this one). */
++   if (kk_bb_barrier_mode() == KK_BB_BARRIER_VK) {
++      /* A restart of the same Vulkan render pass (dynamic state, store/load
++       * round trip) depends on the previous encoder's attachment stores with
++       * no Vulkan barrier in between. */
++      uint32_t before = cmd->bb_pending_before;
++      if (!cmd->bb_new_pass)
++         before = MTL_STAGE_ALL;
++      if (before) {
++         mtl_barrier_after_queue_stages(cmd->gfx.encoder, MTL_STAGE_ALL,
++                                        (enum mtl_stages)before);
++         kk_bbstat_add(KK_BBSTAT_ENC_RENDER_WAITS, 1);
++         if (before == MTL_STAGE_ALL)
++            kk_bbstat_add(KK_BBSTAT_ENC_RENDER_WAITS_ALL, 1);
++      }
++      cmd->bb_pending_before = 0;
++      cmd->bb_new_pass = false;
++   }
++   if (kk_bb_barrier_mode() == KK_BB_BARRIER_LITE && cmd->bb_vtx_dep) {
++      mtl_barrier_after_queue_stages(cmd->gfx.encoder, MTL_STAGE_ALL,
++                                     MTL_STAGE_VERTEX | MTL_STAGE_OBJECTS |
++                                        MTL_STAGE_MESH);
++      cmd->gfx.bb_end_full = true;
++      cmd->bb_vtx_dep = false;
++   }
++
+    /* Argument table won't ever change */
+    mtl_render_set_argument_table(
+       cmd->gfx.encoder, cmd->argument_table,
+@@ -360,6 +428,14 @@ kk_start_compute_encoder(struct kk_cmd_buffer *cmd, bool pre_gfx)
+    /* Argument table won't ever change */
+    mtl_compute_set_argument_table(es->encoder, cmd->argument_table);
+ 
++   /* bbport (BB_KK_BARRIER=vk): render encoders no longer hold back later
++    * work, so compute/blit work (copies, KK's own patch/tess/query/write
++    * kernels, the post-gfx writes that must follow the pass) waits for all
++    * prior queue work here. */
++   if (kk_bb_barrier_mode() == KK_BB_BARRIER_VK)
++      mtl_barrier_after_queue_stages(es->encoder, MTL_STAGE_ALL,
++                                     MTL_STAGE_DISPATCH | MTL_STAGE_BLIT);
++
+    kk_encoder_state_update_debug(cmd, es);
+ }
+ 
+@@ -387,7 +463,32 @@ static void
+ kk_stop_encoder(struct kk_cmd_buffer *cmd, struct kk_encoder_state *es)
+ {
+    /* TODO_KOSMICKRISP This is probably overkill */
+-   mtl_barrier_after_stages(es->encoder, MTL_STAGE_ALL, MTL_STAGE_ALL);
++   /* bbport (BB_KK_BARRIER, see kk_device.h): with lite, a render encoder's
++    * producer barrier leaves later vertex/object/mesh stages free to start
++    * while this pass's fragment work runs; everything else still waits. The
++    * vertex dependencies are carried by bb_vtx_dep (cs_start_render).
++    * Compute encoders (incl. the pre-gfx patch/tess/unroll work that feeds a
++    * render pass) keep the full barrier. */
++   enum mtl_stages before = MTL_STAGE_ALL;
++   const enum kk_bb_barrier_mode bb_mode = kk_bb_barrier_mode();
++   if (es == &cmd->gfx) {
++      const bool lite = bb_mode != KK_BB_BARRIER_LEGACY && !es->bb_end_full &&
++                        util_dynarray_num_elements(&es->ts_resolves,
++                                                   struct kk_ts_resolve) == 0;
++      if (lite)
++         before &= ~(MTL_STAGE_VERTEX | MTL_STAGE_OBJECTS | MTL_STAGE_MESH);
++      kk_bbstat_add(lite ? KK_BBSTAT_ENC_RENDER_LITE : KK_BBSTAT_ENC_RENDER_FULL,
++                    1);
++   } else {
++      kk_bbstat_add(KK_BBSTAT_ENC_COMPUTE, 1);
++   }
++   es->bb_end_full = false;
++   const bool bb_skip =
++      es == &cmd->gfx &&
++      (bb_mode == KK_BB_BARRIER_NONE ||
++       (bb_mode == KK_BB_BARRIER_VK && before != MTL_STAGE_ALL));
++   if (!bb_skip)
++      mtl_barrier_after_stages(es->encoder, MTL_STAGE_ALL, before);
+    mtl_end_encoding(es->encoder);
+    mtl_release(es->encoder);
+    es->encoder = NULL;
+@@ -510,6 +611,62 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+ 
++   /* bbport (BB_KK_BARRIER=lite): does a vertex-side stage wait on this? */
++   bool bb_vtx = false;
++   const enum kk_bb_barrier_mode bb_mode = kk_bb_barrier_mode();
++   if (bb_mode == KK_BB_BARRIER_LITE || bb_mode == KK_BB_BARRIER_VK) {
++      VkPipelineStageFlags2 dst = 0;
++      for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++)
++         dst |= pDependencyInfo->pMemoryBarriers[i].dstStageMask;
++      for (uint32_t i = 0; i < pDependencyInfo->bufferMemoryBarrierCount; i++)
++         dst |= pDependencyInfo->pBufferMemoryBarriers[i].dstStageMask;
++      for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++)
++         dst |= pDependencyInfo->pImageMemoryBarriers[i].dstStageMask;
++      bb_vtx = kk_bb_dst_needs_vertex_wait(dst);
++      if (kk_bbstats_enabled() && bb_vtx) {
++         /* Which part of the barrier asks for the vertex-side wait. */
++         VkPipelineStageFlags2 m = 0, b = 0, im = 0;
++         for (uint32_t i = 0; i < pDependencyInfo->memoryBarrierCount; i++)
++            m |= pDependencyInfo->pMemoryBarriers[i].dstStageMask;
++         for (uint32_t i = 0; i < pDependencyInfo->bufferMemoryBarrierCount; i++)
++            b |= pDependencyInfo->pBufferMemoryBarriers[i].dstStageMask;
++         for (uint32_t i = 0; i < pDependencyInfo->imageMemoryBarrierCount; i++)
++            im |= pDependencyInfo->pImageMemoryBarriers[i].dstStageMask;
++         if (kk_bb_dst_needs_vertex_wait(m | b))
++            kk_bbstat_add(KK_BBSTAT_VTX_FROM_MEMORY, 1);
++         if (kk_bb_dst_needs_vertex_wait(im))
++            kk_bbstat_add(KK_BBSTAT_VTX_FROM_IMAGE, 1);
++      }
++      if (bb_mode == KK_BB_BARRIER_VK) {
++         /* Vulkan's second scope includes logically later stages: a vertex
++          * side destination holds the whole pass, a fragment side one only the
++          * fragment work. */
++         const uint32_t before =
++            bb_vtx ? MTL_STAGE_ALL
++                   : (MTL_STAGE_FRAGMENT | MTL_STAGE_TILE | MTL_STAGE_DISPATCH |
++                      MTL_STAGE_BLIT);
++         if (dst && cmd->gfx.encoder) {
++            /* Inside a pass: later draws of this encoder may consume what
++             * earlier encoders produced (a split restarts with a full wait
++             * anyway, cs_start_render). */
++            mtl_barrier_after_queue_stages(cmd->gfx.encoder, MTL_STAGE_ALL,
++                                           (enum mtl_stages)before);
++            kk_bbstat_add(KK_BBSTAT_DEP_SPLIT, 1);
++         } else if (dst) {
++            if (!cmd->bb_pending_before)
++               kk_bbstat_add(KK_BBSTAT_DEP_BARRIER, 1);
++            cmd->bb_pending_before |= before;
++            /* An open compute encoder: its later dispatches may consume what
++             * earlier render encoders produced. */
++            if (cmd->pre_gfx->encoder)
++               mtl_barrier_after_queue_stages(cmd->pre_gfx->encoder,
++                                              MTL_STAGE_ALL,
++                                              MTL_STAGE_DISPATCH | MTL_STAGE_BLIT);
++         }
++         bb_vtx = false; /* the lite bookkeeping below stays off */
++      }
++   }
++
+    /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
+     * barrier. To take advantage of this we need to remove the chaining of
+     * encoders. */
+@@ -521,11 +678,25 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+       if (cmd->state.gfx.render.samples > 1 ||
+           kk_barrier_requires_encoder_split(cmd, pDependencyInfo)) {
+          kk_apply_attachment_store_ops(cmd, true);
++         if (bb_vtx)
++            kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_BARRIER);
+          cs_end(cmd);
+          cs_start_render(cmd);
++         return;
+       } else
+          mtl_barrier_after_encoder_stages(cmd->gfx.encoder, MTL_STAGE_VERTEX,
+                                           MTL_STAGE_FRAGMENT);
++      if (bb_vtx) {
++         /* In-pass barrier without a split: later draws of this pass may
++          * consume, in their vertex stage, what earlier encoders produced
++          * (their producer barriers released our vertex stage). Wait here for
++          * all prior queue work, and end this pass full. */
++         mtl_barrier_after_queue_stages(cmd->gfx.encoder, MTL_STAGE_ALL,
++                                        MTL_STAGE_VERTEX | MTL_STAGE_OBJECTS |
++                                           MTL_STAGE_MESH);
++         cmd->gfx.bb_end_full = true;
++         kk_bbstat_add(KK_BBSTAT_DEP_SPLIT, 1);
++      }
+    } else if (cmd->pre_gfx->encoder) {
+       /* We chain encoders, so an intra-encoder barrier is enough here:
+        * no need to tear down and recreate the encoder.
+@@ -534,6 +705,9 @@ kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+                                        MTL_STAGE_DISPATCH | MTL_STAGE_BLIT,
+                                        MTL_STAGE_DISPATCH | MTL_STAGE_BLIT);
+    }
++   /* Between passes: the next render encoder's vertex stage waits. */
++   if (bb_vtx && !cmd->gfx.encoder)
++      kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_BARRIER);
+ }
+ 
+ static void
+@@ -1100,6 +1274,8 @@ kk_CmdWriteMarkerToMemoryAMD(VkCommandBuffer commandBuffer,
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd_buffer, commandBuffer);
+    struct libkk_imm_write write;
+ 
++   kk_bb_vertex_dep(cmd_buffer, KK_BBSTAT_DEP_OTHER);
++
+    /* If we are not in a render, we can just insert a cheap barrier */
+    if (!cmd_buffer->gfx.encoder) {
+       mtl_barrier_after_encoder_stages(cs_get_compute(cmd_buffer, true),
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index ec7d3c9..b5f8bdd 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -224,6 +224,9 @@ struct kk_encoder_state {
+    uint64_t bb_allocated_B;
+    /* Pending timestamp resolves (struct kk_ts_resolve), flushed at cs_end. */
+    struct util_dynarray ts_resolves;
++   /* bbport (BB_KK_BARRIER=lite): this encoder must end with the full ALL->ALL
++    * producer barrier (it carries a vertex-stage dependency forward). */
++   bool bb_end_full;
+ };
+ 
+ struct kk_cmd_buffer {
+@@ -265,6 +268,15 @@ struct kk_cmd_buffer {
+    /* Metal command buffers are single-shot: a resubmission must re-record
+     * by replaying the enqueued commands (see rerecord_cmd_buffer). */
+    bool submitted;
++   /* bbport (BB_KK_BARRIER=lite): a later vertex-stage consumer depends on work
++    * encoded so far; the next render encoder waits for all prior queue work
++    * before its vertex stage and ends with the full producer barrier. */
++   bool bb_vtx_dep;
++   /* bbport (BB_KK_BARRIER=vk): Metal stages of the next render encoder that
++    * must wait for all prior queue work (0: none), and whether the next
++    * cs_start_render opens a new Vulkan render pass (else it restarts one). */
++   uint32_t bb_pending_before;
++   bool bb_new_pass;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(kk_cmd_buffer, vk.base, VkCommandBuffer,
+@@ -303,6 +315,9 @@ void cs_start_render(struct kk_cmd_buffer *cmd);
+ mtl_render_encoder *cs_get_render(struct kk_cmd_buffer *cmd);
+ mtl_compute_encoder *cs_get_compute(struct kk_cmd_buffer *cmd, bool pre_gfx);
+ void cs_end(struct kk_cmd_buffer *cmd);
++/* bbport (BB_KK_BARRIER=lite, kk_device.h): a later vertex stage may depend on
++ * what is encoded so far. `why` is an enum kk_bbstat counter. */
++void kk_bb_vertex_dep(struct kk_cmd_buffer *cmd, unsigned why);
+ void kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd,
+                                         uint64_t addr);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 63c10b9..d6b060a 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -253,6 +253,8 @@ kk_CmdBeginRendering(VkCommandBuffer commandBuffer,
+                      const VkRenderingInfo *pRenderingInfo)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   /* bbport (BB_KK_BARRIER=vk): the next cs_start_render opens a new pass. */
++   cmd->bb_new_pass = true;
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+    struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_meta.c b/src/kosmickrisp/vulkan/kk_cmd_meta.c
+index f7312eb..b307f6f 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_meta.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_meta.c
+@@ -97,6 +97,10 @@ kk_meta_begin(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
+ {
+    struct kk_descriptor_state *desc = kk_get_descriptors_state(cmd, bind_point);
+ 
++   /* bbport (BB_KK_BARRIER=lite): meta passes (blit/resolve/clear/fill) read
++    * and write behind the application's back; order them fully. */
++   kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_OTHER);
++
+    if (bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+       save->dynamic = cmd->vk.dynamic_graphics_state;
+       save->_dynamic_vi = cmd->state.gfx._dynamic_vi;
+@@ -148,6 +152,7 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
+ {
+    struct kk_descriptor_state *desc = kk_get_descriptors_state(cmd, bind_point);
+    desc->root_dirty = true;
++   kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_OTHER);
+ 
+    if (kk_device_physical(kk_cmd_buffer_device(cmd))
+           ->settings.gpu_capture_enabled) {
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 614a16c..446cf53 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -30,6 +30,7 @@
+ #include "vk_pipeline_cache.h"
+ 
+ #include <stdio.h>
++#include <string.h>
+ #include <time.h>
+ 
+ #include "util/os_time.h"
+@@ -63,6 +64,29 @@ kk_bb_pool_fix(void)
+    return kk_bb_env_flag(&enabled, "BB_KK_POOL_FIX");
+ }
+ 
++enum kk_bb_barrier_mode
++kk_bb_barrier_mode(void)
++{
++   static int mode = -1;
++   int m = p_atomic_read(&mode);
++   if (m < 0) {
++      const char *v = debug_get_option("BB_KK_BARRIER", "legacy");
++      m = !strcmp(v, "lite")    ? KK_BB_BARRIER_LITE
++          : !strcmp(v, "nodep") ? KK_BB_BARRIER_NODEP
++          : !strcmp(v, "none")  ? KK_BB_BARRIER_NONE
++          : !strcmp(v, "vk")    ? KK_BB_BARRIER_VK
++                                : KK_BB_BARRIER_LEGACY;
++      p_atomic_set(&mode, m);
++      fprintf(stderr, "KosmicKrisp: end-of-encoder barriers: %s (BB_KK_BARRIER)\n",
++              m == KK_BB_BARRIER_LITE    ? "lite"
++              : m == KK_BB_BARRIER_NODEP ? "nodep (diagnostic, unsafe)"
++              : m == KK_BB_BARRIER_NONE  ? "none for render encoders (diagnostic, unsafe)"
++              : m == KK_BB_BARRIER_VK    ? "vk (render encoders follow the Vulkan barriers)"
++                                         : "legacy ALL->ALL");
++   }
++   return (enum kk_bb_barrier_mode)m;
++}
++
+ void
+ kk_bbstats_maybe_print(void)
+ {
+@@ -104,6 +128,15 @@ kk_bbstats_maybe_print(void)
+            s[KK_BBSTAT_TIMELINES], s[KK_BBSTAT_COMMITS], s[KK_BBSTAT_RERECORDS],
+            s[KK_BBSTAT_CMD_POOLS], s[KK_BBSTAT_CMD_POOLS_JUNK_COUNT],
+            kk_bb_pool_fix() ? " (reset to 0: BB_KK_POOL_FIX)" : "");
++   fprintf(stderr,
++           "KosmicKrisp: encoders ended: render lite %lld, render full %lld, compute %lld; "
++           "vertex waits from: command buffer start %lld, barriers %lld, other commands %lld, "
++           "in-pass splits %lld; render encoders that waited (vk) %lld, of them before the vertex stage %lld; vertex-side barriers from memory/buffer %lld, from images %lld\n",
++           s[KK_BBSTAT_ENC_RENDER_LITE], s[KK_BBSTAT_ENC_RENDER_FULL],
++           s[KK_BBSTAT_ENC_COMPUTE], s[KK_BBSTAT_DEP_BEGIN], s[KK_BBSTAT_DEP_BARRIER],
++           s[KK_BBSTAT_DEP_OTHER], s[KK_BBSTAT_DEP_SPLIT], s[KK_BBSTAT_ENC_RENDER_WAITS],
++           s[KK_BBSTAT_ENC_RENDER_WAITS_ALL], s[KK_BBSTAT_VTX_FROM_MEMORY],
++           s[KK_BBSTAT_VTX_FROM_IMAGE]);
+ }
+ 
+ struct kk_mtl_compiler {
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index 9fd8980..2d0e78c 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -160,6 +160,17 @@ enum kk_bbstat {
+    KK_BBSTAT_RERECORDS,
+    KK_BBSTAT_CMD_POOLS,
+    KK_BBSTAT_CMD_POOLS_JUNK_COUNT,
++   KK_BBSTAT_ENC_RENDER_LITE,
++   KK_BBSTAT_ENC_RENDER_FULL,
++   KK_BBSTAT_ENC_COMPUTE,
++   KK_BBSTAT_DEP_BEGIN,
++   KK_BBSTAT_DEP_BARRIER,
++   KK_BBSTAT_DEP_OTHER,
++   KK_BBSTAT_DEP_SPLIT,
++   KK_BBSTAT_ENC_RENDER_WAITS,
++   KK_BBSTAT_ENC_RENDER_WAITS_ALL,
++   KK_BBSTAT_VTX_FROM_MEMORY,
++   KK_BBSTAT_VTX_FROM_IMAGE,
+    KK_BBSTAT_COUNT,
+ };
+ extern int64_t kk_bbstats[KK_BBSTAT_COUNT];
+@@ -169,5 +180,33 @@ bool kk_bbstats_enabled(void);
+ /* bbport (issue #6): BB_KK_POOL_FIX=1 starts each command pool's count of spare upload blocks
+  * at zero (upstream leaves it uninitialised). */
+ bool kk_bb_pool_fix(void);
++/* bbport (BB_KK_BARRIER): end-of-encoder barrier policy.
++ *   legacy (default)  every encoder ends with barrierAfterStages(ALL, ALL)
++ *   lite              render encoders end with barrierAfterStages(ALL, ALL & ~vertex):
++ *                     later encoders' vertex front end may overlap this pass's
++ *                     fragment work; a Vulkan barrier (or command) that a vertex
++ *                     stage may depend on makes the next render encoder wait for
++ *                     all prior work before its vertex stage and end full.
++ *   nodep             (diagnostic only, UNSAFE) lite without the vertex waits: the
++ *                     upper bound of what the overlap can give. */
++enum kk_bb_barrier_mode {
++   KK_BB_BARRIER_LEGACY = 0,
++   KK_BB_BARRIER_LITE = 1,
++   KK_BB_BARRIER_NODEP = 2,
++   /* (diagnostic only, UNSAFE) render encoders end with no barrier at all:
++    * the ceiling of the whole end-of-render-encoder barrier lever. */
++   KK_BB_BARRIER_NONE = 3,
++   /* vk: render encoders end with no producer barrier; the application's
++    * own Vulkan barriers (vkCmdPipelineBarrier2) become Metal consumer
++    * barriers (barrierAfterQueueStages(ALL, dst)) at the next encoder. KK's
++    * own hidden dependencies stay ordered: compute/blit encoders start with a
++    * consumer barrier on all prior work and end full; render-pass restarts,
++    * meta ops, queries, events, markers and every command buffer start make
++    * the next render encoder wait on all prior work. Two render passes with
++    * no Vulkan barrier between them may overlap on the GPU, as Vulkan allows:
++    * a dependency the port forgot to declare becomes a visible race. */
++   KK_BB_BARRIER_VK = 4,
++};
++enum kk_bb_barrier_mode kk_bb_barrier_mode(void);
+ 
+ #endif // KK_DEVICE_H
+diff --git a/src/kosmickrisp/vulkan/kk_event.c b/src/kosmickrisp/vulkan/kk_event.c
+index 3e6db31..d310d8a 100644
+--- a/src/kosmickrisp/vulkan/kk_event.c
++++ b/src/kosmickrisp/vulkan/kk_event.c
+@@ -113,4 +113,8 @@ kk_CmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t eventCount,
+                   const VkDependencyInfo *pDependencyInfos)
+ {
+    /* We do nothing, event should already be set by the time we are here. */
++   /* bbport (BB_KK_BARRIER=lite): the ordering came from the end-of-encoder
++    * barrier; keep it for vertex consumers too. */
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_OTHER);
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_query_pool.c b/src/kosmickrisp/vulkan/kk_query_pool.c
+index 1bda052..6342562 100644
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -276,6 +276,7 @@ kk_CmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+ 
+    assert(cmd->gfx.encoder == NULL);
++   kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_OTHER);
+ 
+    /* A prior timestamp write may have a resolve still pending. Land it before
+     * the reset zeroes the pool BO, otherwise the deferred resolve would clobber
+@@ -558,6 +559,8 @@ kk_CmdCopyQueryPoolResultsToMemoryKHR(
+    VK_FROM_HANDLE(kk_query_pool, pool, queryPool);
+    struct kk_device *dev = kk_cmd_buffer_device(cmd);
+ 
++   kk_bb_vertex_dep(cmd, KK_BBSTAT_DEP_OTHER);
++
+    /* Timestamp results are resolved into the pool BO on a deferred command
+     * buffer; make sure any pending resolve lands before this copy reads it.
+     * This also gives VK_QUERY_RESULT_WAIT_BIT its meaning for timestamps. */
