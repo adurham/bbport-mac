@@ -11,7 +11,7 @@
 
 namespace BbRemote {
 
-inline constexpr std::uint32_t ProtocolVersion = 8; // 8: SharedState's frame phases
+inline constexpr std::uint32_t ProtocolVersion = 9; // 9: SubmitGfx waits for the copy; checksums
 
 enum Msg : std::uint32_t {
     // ---- game process -> GPU process ----
@@ -27,7 +27,8 @@ enum Msg : std::uint32_t {
     MsgCpuWrite = 10,   ///< RangeArgs: libc copies over watched pages
     MsgSettingsChanged = 11, ///< the game's System menu changed bbport.ini (BbSettings::ReloadLive)
 
-    MsgSubmitGfx = 20,  ///< SubmitGfxArgs, then the inline command words (host data)
+    MsgSubmitGfx = 20,  ///< call: SubmitGfxArgs, then the inline command words (host data);
+                        ///< answered once bb-gpu has its copy (BB_COPY_GPU_BUFFERS)
     MsgSubmitAsc = 21,  ///< SubmitAscArgs
     MsgSubmitDone = 22, ///< ValueArgs: the frame (0: none)
     MsgIsGpuIdle = 23,  ///< call -> ResultReply
@@ -157,6 +158,9 @@ struct SubmitGfxArgs {
     std::uint64_t dcb, ccb;             ///< guest addresses (0 when inline or empty)
     std::uint32_t dcb_dwords, ccb_dwords;
     std::uint32_t inline_dcb, inline_ccb; ///< 1: the words follow this struct (dcb first)
+    /// BB_SUBMIT_CHECK=1: XXH3 of the guest words when the game submitted them, and when
+    /// (CLOCK_MONOTONIC ns; 0: not checked).
+    std::uint64_t dcb_hash, ccb_hash, submit_ns;
 };
 struct SubmitAscArgs {
     std::uint64_t address;
@@ -255,7 +259,7 @@ static_assert(sizeof(HelloArgs) == 80 && sizeof(HelloReply) == 16 + 16 * MaxTake
               sizeof(ProtectArgs) == 24 && sizeof(ResultReply) == 8 && sizeof(ValueArgs) == 8);
 static_assert(sizeof(FaultArgs) == 24 && sizeof(FaultReply) == 8 + 24 * MaxFaultProtects &&
               sizeof(FaultReply) <= 4096);
-static_assert(sizeof(InitArgs) == 16 + 128 + 32 + 1024 && sizeof(SubmitGfxArgs) == 32 &&
+static_assert(sizeof(InitArgs) == 16 + 128 + 32 + 1024 && sizeof(SubmitGfxArgs) == 56 &&
               sizeof(SubmitAscArgs) == 16 && sizeof(ComputeQueueArgs) == 24);
 static_assert(sizeof(VoArgs) == 8 && sizeof(VoRegisterArgs) == 16 + 40 + 128 &&
               sizeof(VoAttributeArgs) == 48 && sizeof(VoFlipArgs) == 24 &&

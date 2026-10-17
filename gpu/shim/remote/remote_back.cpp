@@ -57,6 +57,7 @@
 #include "render/presenter.h"
 #include "render/rasterizer.h"
 #include "sdl_window.h"
+#include <xxhash.h>
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern Frontend::WindowSDL* g_window; // bbgpu.cpp: the window, in this process (native mode)
@@ -476,6 +477,35 @@ std::span<const u32> InlineCommands(const u32* words, u32 count) {
     return {it->data(), it->size()};
 }
 
+/// BB_SUBMIT_CHECK=1: whether the game's command words changed between its submission and this
+/// process taking them (a torn submission). Counted; the first 16 and every 100th reported.
+void CheckSubmitted(const SubmitGfxArgs& args, std::span<const u32> dcb, std::span<const u32> ccb) {
+    static std::atomic<u64> checked{0}, changed{0};
+    const u64 n = checked.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool dcb_changed = !args.inline_dcb && !dcb.empty() &&
+                             XXH3_64bits(dcb.data(), dcb.size_bytes()) != args.dcb_hash;
+    const bool ccb_changed = !args.inline_ccb && !ccb.empty() &&
+                             XXH3_64bits(ccb.data(), ccb.size_bytes()) != args.ccb_hash;
+    if (n % 20000 == 0) {
+        std::printf("Submit check: %llu of %llu graphics submissions changed before bb-gpu took "
+                    "them\n",
+                    (unsigned long long)changed.load(), (unsigned long long)n);
+    }
+    if (!dcb_changed && !ccb_changed) {
+        return;
+    }
+    const u64 c = changed.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (c <= 16 || c % 100 == 0) {
+        std::printf("Submit check: submission %llu's%s%s (%u+%u dwords at %#llx) changed %llu us "
+                    "after the game submitted it, before bb-gpu took it (%llu of %llu)\n",
+                    (unsigned long long)n, dcb_changed ? " dcb" : "", ccb_changed ? " ccb" : "",
+                    args.dcb_dwords, args.ccb_dwords, (unsigned long long)args.dcb,
+                    (unsigned long long)((MonotonicNs() - args.submit_ns) / 1000),
+                    (unsigned long long)c, (unsigned long long)n);
+        std::fflush(stdout);
+    }
+}
+
 void SubmitGfx(const Message& message) {
     SubmitGfxArgs args{};
     if (message.size < sizeof(args)) {
@@ -502,7 +532,19 @@ void SubmitGfx(const Message& message) {
     };
     const auto dcb = span(args.dcb, args.dcb_dwords, args.inline_dcb);
     const auto ccb = span(args.ccb, args.ccb_dwords, args.inline_ccb);
-    liverpool->SubmitGfx(dcb, ccb);
+    // BB_SUBMIT_DELAY_US=n (diagnostics): each submission taken n us late - the window in which a
+    // game reusing its command buffer tears a submission that does not wait (BB_SUBMIT_ASYNC=1).
+    static const long delay_us = [] {
+        const char* env = std::getenv("BB_SUBMIT_DELAY_US");
+        return env ? std::strtol(env, nullptr, 10) : 0L;
+    }();
+    if (delay_us > 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(delay_us));
+    }
+    if (args.submit_ns != 0) {
+        CheckSubmitted(args, dcb, ccb);
+    }
+    liverpool->SubmitGfx(dcb, ccb); // copies the words (BB_COPY_GPU_BUFFERS) before the reply
 }
 
 void Handle(const Message& message, auto&& reply) {
@@ -554,9 +596,12 @@ void Handle(const Message& message, auto&& reply) {
         WriteFault(message, reply);
         break;
 
-    case MsgSubmitGfx:
+    case MsgSubmitGfx: {
         SubmitGfx(message);
+        const ResultReply out{0, 0};
+        reply(&out, sizeof(out)); // a call when the game waits for the copy (SubmitWaitsForCopy)
         break;
+    }
     case MsgSubmitAsc: {
         const auto args = Payload<SubmitAscArgs>(message);
         // Queues are numbered from 1 (DingDong); only mapped ones.
