@@ -24,8 +24,13 @@ points at a scaling seam). The captures still decide:
   (`BB_BUGREPORT_TRIGGER`) at the title. Static band present in that capture → render-side (rule 1);
   the whole visible-condition matrix is then unnecessary for attribution. Absent → present/scanout
   side, and the visible conditions 1-5 (each needs the owner's go-ahead) are what remain.
-  Script ready (untested): `<metalfx worktree>/out/title_capture.sh` — boots hidden, never presses
-  Continue, triggers the capture once the title is up; run it on an idle docked machine.
+  Script: `<metalfx worktree>/out/title_capture.sh` (v3 filmstrip). **Result 2026-10-17:** ran
+  hidden; 14 captures from the Japan Studio splash through the title menu; the twelve
+  title-screen frames (hidden window's drawable, 1512x982) are CLEAN in the bottom-right —
+  identical across ~90 s, no band. The port's drawn frame is therefore ruled out at this
+  geometry; the artifact's remaining home is the visible fullscreen presentation (the
+  opaque/Metal4 drawable path or the DCP-scaled 2560x1440 mode — the rules 3/5 family), pending
+  the visible conditions on the owner's setup. The result section is at the end of this page.
 - Successive real screen captures ~100 ms apart should show a static band in the SAME place
   (a tear would not).
 
@@ -155,3 +160,21 @@ mode switch and capture (`Display mode (...): ... scanout: ...`).
 Recommendation independent of the artifact: on this panel the fullscreen mode for a 21:9 output
 should be the native 3440x1440 mode (render lower and let the upscaler/presenter scale if needed);
 the 2560x1440 mode costs sharpness and is a second, scaled scanout path.
+
+## The hidden-title capture result (2026-10-17)
+
+`out/title_capture.sh` (metalfx worktree, v3) ran the game hidden, never pressed Continue, and
+took a filmstrip of the port's own pre-present captures — 14 frames: two of the Japan Studio
+splash, twelve of the title menu, across about 90 seconds. The bottom-right corner of every
+title frame is clean and identical frame to frame: **the band is not in the frames the port
+draws**. Geometry caveat: the hidden window's drawable reads 1512x982 (the window's default
+size), not the fullscreen shape, so this rules out a content bug that is independent of the
+presentation geometry — it does not exercise the visible fullscreen path itself.
+
+Interpretation: for the owner's visible fullscreen case the artifact most likely lives on the
+presentation side — the opaque=1 Metal 4 drawable path and/or the scaled 2560x1440 scanout (the
+rules 3/5 family above), not a rendering-content bug (rule 1). The visible conditions matrix
+remains the way to finish the attribution; this result removes the cheapest explanation first.
+
+Frames kept at `out/titlecap-v3-*.png` in the metalfx worktree; the mechanism (retriggered
+`BB_BUGREPORT_TRIGGER` in a hidden warm run) is reusable for any future title-screen look.

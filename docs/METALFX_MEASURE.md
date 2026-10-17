@@ -125,10 +125,13 @@ remain the gate before anything becomes a default.
 - The owner's playtest brief: judge the FSR presets in motion with the object-motion coverage
   above in mind (fallback categories may ghost — particles, fog, transparents, UI); a "no" on
   ghosting there should not close the FSR line.
-- Title-artifact discriminator (hidden, owner-free): `out/title_capture.sh` in the metalfx
-  worktree boots hidden to the title and repeatedly triggers the port's own capture; a static
-  band in that PNG means render-side (rule 1 of the title-artifact doc). First real run in flight
-  2026-10-17 (v2 script, after a launch-env fix).
+- Title-artifact discriminator (hidden, owner-free): **RAN 2026-10-17** (`out/title_capture.sh` v3
+  in the metalfx worktree — 14-frame filmstrip; two splash, twelve title-screen at the hidden
+  window's 1512x982 drawable). Every title frame is CLEAN in the bottom-right, identical across
+  ~90 s: no band in the frames the port draws. The artifact is therefore presentation-side as far
+  as this discriminator reaches (opaque/Metal4 drawable or the scaled scanout mode — rules 3/5 of
+  the title-artifact doc), not a rendering-content bug; the visible fullscreen geometry itself
+  remains untested. Frames: `out/titlecap-v3-*.png`.
 
 Evidence: `out/matrix-3440.log` (all VERDICT lines, zero VOID/SKIP), `out/frames-3440_*.csv`,
 `out/metalfx_results.json`, parser `out/parse_matrix.py`, captures `out/cap-3440_*.png`; the 2560
