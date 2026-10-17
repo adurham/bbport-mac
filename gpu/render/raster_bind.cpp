@@ -233,6 +233,7 @@ void NoteResStats(const Pipeline* pipeline) {
 
 bool Rasterizer::BindResources(const Pipeline* pipeline) {
     BB_SECTION(BindResources);
+    BbStats::CatTimer category{BbStats::CatBind};
     NoteResStats(pipeline);
     {
         // bbport BB_HLE_STATS=1 (diagnostics): how often the compute shader substitutions fire.
@@ -403,6 +404,7 @@ void Rasterizer::BindVertexBuffers(const GraphicsPipeline* pipeline, const Prepa
 
 void Rasterizer::EmitVertexBuffers() {
     BB_SECTION(EmitVertexBuffers);
+    BbStats::CatTimer category{BbStats::CatBind};
     // bbport: only the used entries go into the recording chunk (the static vectors hold 32 of
     // each: ~3 KiB copied per draw).
     auto& v = vertex_binds;
@@ -441,6 +443,7 @@ void Rasterizer::EmitVertexBuffers() {
 void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                                       const PreparedDraw* prepared) {
     BB_SECTION(ResolveVertexBuffers);
+    BbStats::CatTimer category{BbStats::CatBind};
     const auto& regs = Regs();
     auto& v = vertex_binds;
     v.num_buffers = 0;
@@ -592,6 +595,7 @@ void Rasterizer::EmitIndexBuffer() {
 
 void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     BB_SECTION(ResolveIndexBuffer);
+    BbStats::CatTimer category{BbStats::CatBind};
     const auto& regs = Regs();
     const bool index16 = regs.index_buffer_type.index_type == Gcn::IndexType::Index16;
     const u32 index_size = index16 ? sizeof(u16) : sizeof(u32);

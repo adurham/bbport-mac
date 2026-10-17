@@ -73,3 +73,36 @@ echo "loader warnings: $(grep -c 'warning:' out/loader-build.log || true) (out/l
 clang "${ARCH[@]}" -std=c11 -O2 -Wall -Wextra tools/gpu_capabilities.c "${pkg_libs[@]}" "${pkg_cflags[@]}" \
     -o out/bb-gpu-capabilities
 echo "Built: $(lipo -archs out/bb-probe) out/bb-probe, $(lipo -archs "$gpu_lib") $gpu_lib"
+# The native GPU process (docs/macos-native-gpu.md, run with BB_NATIVE_GPU=1), once its arm64
+# libraries exist (BB_ARCH=arm64 bash tools/macos/setup_deps.sh). A failure there does not stop
+# this build: the game still runs as before.
+if [[ -z ${BB_SKIP_GPU:-} && -f deps-arm64/env.sh ]]; then
+    echo "=== Native GPU process (arm64)"
+    bash tools/macos/build_gpu_native.sh ||
+        echo "warning: native GPU process not built (out/gpu-arm64-errors.txt)" >&2
+fi
+# The engine's game identity for macOS (Game Mode): re-wrap after every build so the copy
+# inside out/gpu-arm64/bb-gpu.app never goes stale (tools/macos/make_engine_app.sh).
+if [[ -x out/gpu-arm64/bb-gpu ]]; then
+    bash tools/macos/make_engine_app.sh
+fi
+
+# === the pipeline warm-fill (docs/PIPELINE_WARMTH.md) — OFF unless asked for.
+# A version bump throws the gameplay pipeline set away at the next start (profile.bin's constants
+# no longer match, PipelineCache::WarmUp clears the store), and a pipeline is only made by a draw,
+# so the set has to be re-earned. BB_WARMFILL_AFTER_BUILD=1 starts one hidden warm-fill in the
+# background when the build is done: it snapshots the user dir, walks a route in the copy with
+# tools/macos/warm_route.sh and merges the blobs it compiled into the real store. It needs the game
+# data (BB_GAME_DIR, or the usual places) and several minutes of GPU time, and it skips itself
+# without touching anything if the game is running. Routes: BB_WARMFILL_ROUTES (default all — the
+# whole verified pack: a build wipes the store, and restoring one short walk of it is not restoring
+# it; ~45 min of hidden GPU time for the pack, so BB_WARMFILL_ROUTES=yharnam is the quick fill);
+# tools/macos/warmfill.sh --list-routes shows them and it is also fine to run by hand.
+if [[ ${BB_WARMFILL_AFTER_BUILD:-0} == 1 ]]; then
+    echo "=== Pipeline warm-fill (BB_WARMFILL_AFTER_BUILD=1): starting it in the background"
+    mkdir -p out
+    nohup bash tools/macos/warmfill.sh --routes "${BB_WARMFILL_ROUTES:-all}" \
+        >>out/warmfill.log 2>&1 </dev/null &
+    echo "    log: out/warmfill.log, report: out/warmfill-report.json"
+    echo "    (it skips itself, and says so in the log, if the game is running)"
+fi

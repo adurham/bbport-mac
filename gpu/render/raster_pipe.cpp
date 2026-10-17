@@ -203,6 +203,9 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             return false;
         }
         BB_SECTION(ARingCopy);
+        if (BbStats::enabled) {
+            BbStats::bind_copy_bytes.fetch_add(size, std::memory_order_relaxed);
+        }
         if (BbSections::Enabled()) {
             BbSections::ring_copies.fetch_add(1, std::memory_order_relaxed);
             BbSections::ring_bytes.fetch_add(size, std::memory_order_relaxed);
@@ -549,13 +552,13 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         self.buffer_cache.NewPacket();
         const auto& task = *reinterpret_cast<const TaskPacket*>(data);
         if (BbSections::Enabled()) {
-            const u64 t0 = __rdtsc();
+            const u64 t0 = BbCpu::Ticks();
             task.task(self, data + sizeof(TaskPacket));
             void* fn = reinterpret_cast<void*>(task.task);
             for (std::size_t k = 0; k < TaskKinds; ++k) {
                 if (task_kinds[k] == fn || !task_kinds[k]) {
                     task_kinds[k] = fn;
-                    task_cycles[k] += __rdtsc() - t0;
+                    task_cycles[k] += BbCpu::Ticks() - t0;
                     ++task_counts[k];
                     break;
                 }
@@ -615,7 +618,8 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
             if (!srt.walker_func || snapshot.flat_size == 0 || snapshot.user_data_size == 0) {
                 continue;
             }
-            std::vector<u32> flat(snapshot.flat_size);
+            // (Room for all the walker writes, should the snapshot hold fewer.)
+            std::vector<u32> flat(std::max<u32>(snapshot.flat_size, srt.flattened_bufsize_dw));
             std::memcpy(flat.data(), snapshot.user_data,
                         std::min(snapshot.user_data_size, snapshot.flat_size) * sizeof(u32));
             // Pointers in the tables may be stale by now: a fault only skips the check.
@@ -625,7 +629,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
                 continue;
             }
             runtime_fault_recover = &recover;
-            srt.walker_func(snapshot.user_data, flat.data());
+            Shader::RunSrtWalker(srt, snapshot.user_data, flat.data());
             runtime_fault_recover = nullptr;
             if (std::memcmp(flat.data(), snapshot.flat, snapshot.flat_size * sizeof(u32)) != 0) {
                 u32 first = 0, count = 0;
@@ -701,13 +705,13 @@ void Rasterizer::PrintPipeStats() {
     }
     static auto window = std::chrono::steady_clock::now();
     static u64 last_packets = 0, last_drains = 0, last_drain_cycles = 0, last_busy = 0;
-    static u64 last_tsc = __rdtsc();
+    static u64 last_tsc = BbCpu::Ticks();
     const auto now = std::chrono::steady_clock::now();
     const double seconds = std::chrono::duration<double>(now - window).count();
     if (seconds < 5.0) {
         return;
     }
-    const u64 tsc = __rdtsc();
+    const u64 tsc = BbCpu::Ticks();
     const double cycles = double(tsc - last_tsc);
     const u64 busy = draw_pipe->busy_cycles.load(std::memory_order_relaxed);
     std::printf("Draw pipe: %.0f draws/s pipelined, %.0f drains/s that waited, stage A waited "
