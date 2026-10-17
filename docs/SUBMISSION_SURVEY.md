@@ -276,3 +276,24 @@ queue commits per frame, matching the driver's "Metal commits" ~17-18/frame.
 - No build, run, capture or source edit was done for this survey beyond this file; all per-frame
   numbers are from `out/mtl-2560_fsr3_4-gpu.xml`, `out/mtl-2560_off1-gpu.xml`,
   `out/run-2560_fsr3_4.log` and the driver's `BB_KK_STATS` print (`kk_device.c:91-140`).
+
+## Measured 2026-10-17: the drain probe — null at this config
+
+`BB_DOWNLOAD_SYNC_PROBE=1` (branch `fix/encoder-merge`, commit ab6d408): `ProcessDownloadImages`
+passes `sync = !gate` so the per-frame readback takes the existing deferred branch
+(`DeferPriorityOperation`); the GC-eviction download stays sync (it frees the image after). Gate
+off = byte-identical. Gate liveness proven directly (`ps eww` on the live bb-gpu showed the env).
+2+2 alternated hidden runs, 2560x1440 off:
+
+| arm | p50 (pair 1) | p50 (pair 2) |
+|---|---|---|
+| base | 23.250 ms | 23.260 ms |
+| probe | 23.290 ms | 23.240 ms |
+| delta | +0.04 ms | -0.02 ms |
+
+Mechanism, and why the null is clean: at this config the frame is **present-bound** — present_wait
+~13.0 of 23.25 ms, unchanged between arms — so `scheduler.Finish()`'s Wait was already returning
+immediately; the drain hides behind the vblank wait. No guest misbehavior in any arm (no crash,
+assert or draw anomaly over 190 s). Conclusion: attack #2 is worth nothing at present-bound
+configs; it can only cost wall clock when the GPU is the critical path, so re-measure at a
+GPU-bound configuration before ever implementing the staging-slot work (#122).
