@@ -1,0 +1,4 @@
+before-cold attack-1 max_draws=897 bad_pm4=0 asserts=0 changed_submissions=0 created=218
+before-cold combat-1 max_draws=886 bad_pm4=0 asserts=0 changed_submissions=0 created=221
+before-cold interact-1 max_draws=888 bad_pm4=0 asserts=0 changed_submissions=0 created=217
+before-cold street-1 max_draws=906 bad_pm4=0 asserts=0 changed_submissions=0 created=244

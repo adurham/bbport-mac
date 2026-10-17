@@ -1,0 +1,12 @@
+after attack-1 max_draws=900 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after combat-1 max_draws=892 bad_pm4=0 asserts=0 changed_submissions=0 created=2
+after interact-1 max_draws=841 bad_pm4=0 asserts=0 changed_submissions=0 created=7
+after street-1 max_draws=928 bad_pm4=0 asserts=0 changed_submissions=0 created=12
+after attack-2 max_draws=721 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after combat-2 max_draws=743 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after interact-2 max_draws=777 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after street-2 max_draws=900 bad_pm4=0 asserts=0 changed_submissions=0 created=6
+after attack-3 max_draws=720 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after combat-3 max_draws=731 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after interact-3 max_draws=776 bad_pm4=0 asserts=0 changed_submissions=0 created=0
+after street-3 max_draws=903 bad_pm4=0 asserts=0 changed_submissions=0 created=0
