@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "buffers/buffer.h"
 #include "common/types.h"
@@ -51,6 +52,25 @@ public:
 
     void CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
                     std::span<const vk::BufferCopy> copies);
+
+    /// BB_COPY_MERGE=1 (default off): copies that arrive while a render pass is open wait for
+    /// that pass's end instead of ending it (docs/ENCODER_ATTRIBUTION.md, cutlist item 1).
+    static bool CopyMergeEnabled();
+    /// BB_COPY_MERGE: whether copies are waiting for the open render pass to end.
+    [[nodiscard]] bool HasDeferredCopies() const {
+        return !deferred_copies.empty();
+    }
+    /// BB_COPY_MERGE: whether a copy waiting for the pass's end reads or writes
+    /// [offset, offset + size) of `buffer` (a draw about to be recorded must stay after it).
+    [[nodiscard]] bool DeferredCopyOverlaps(const VideoCore::Buffer* buffer, u64 offset,
+                                            u64 size) const;
+    /// BB_COPY_MERGE: a draw the waiting copies could not pass ended the pass (the break they
+    /// would have caused on their own): counted in the `Copy merge` line.
+    void NoteDeferredCopyBreak();
+    /// BB_COPY_MERGE: records the copies waiting for the pass's end, in guest order, as the
+    /// transfer encoder a break would have recorded. The scheduler calls it once the render pass
+    /// that held them is closed (Scheduler::SetPassEndCallback), so they run right after it.
+    void FlushDeferredCopies();
     void FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32 value);
     /// Copies from the game's memory itself (a guest memory chunk's buffer, written by the CPU)
     /// into `dst`: uploads without a CPU copy (BB_GUEST_IN_PLACE).
@@ -139,9 +159,31 @@ public:
     }
 
 private:
+    /// BB_COPY_MERGE: a copy that waits for the render pass it arrived in to end. One buffer
+    /// pair (regions in guest order) and the bytes it touches, as the bounding range per side
+    /// (the same range its barrier check uses).
+    struct DeferredCopy {
+        const VideoCore::Buffer* src;
+        const VideoCore::Buffer* dst;
+        vk::Buffer src_handle;
+        vk::Buffer dst_handle;
+        std::vector<vk::BufferCopy> regions;
+        u64 src_first;
+        u64 src_last; ///< inclusive
+        u64 dst_first;
+        u64 dst_last; ///< inclusive
+    };
     /// Records the copies between two images in transfer layouts (after their transitions).
     void CopyImageRegions(VideoCore::Image* src, VideoCore::Image* dst,
                           std::span<const vk::ImageCopy> regions);
+    /// BB_COPY_MERGE: Runtime::CopyBuffer without the merge (the gate off, and every copy that
+    /// cannot wait: no pass open, a barrier, a paged access or an overlap with a waiting copy).
+    void CopyBufferRecord(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
+                          std::span<const vk::BufferCopy> copies);
+    /// BB_COPY_MERGE: records one copy after the pass's end and tracks its accesses.
+    void CopyBufferTrack(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
+                         std::span<const vk::BufferCopy> copies, bool bounded, u64 src_min,
+                         u64 src_max, u64 dst_min, u64 dst_max);
     /// Through a buffer, for depth <-> color copies without maintenance8.
     void CopyImageThroughBuffer(VideoCore::Image* src, VideoCore::Image* dst,
                                 const VideoCore::Buffer* buffer, u64 offset);
@@ -171,6 +213,19 @@ private:
     vk::PipelineStageFlags2 carried_visible{};
     bool pending_global_read = false; ///< AccessGlobal since the last barrier
     bool carried_global_read = false; ///< ... before a narrowed barrier
+    // BB_COPY_MERGE (default off). A copy that arrives inside a render pass cannot be recorded
+    // without ending the pass (Vulkan forbids a copy inside one), so the port ends it and starts
+    // it again after: two render encoders per copy. Instead, the copy waits here and is recorded
+    // when the pass ends anyway - but a copy recorded then runs after every draw of the pass, so
+    // it may only wait when nothing recorded after it touches its bytes (the comment on
+    // CopyBuffer states the rule). `deferred_copies` holds them in guest order; consecutive
+    // copies of one buffer pair share a DeferredCopy (one vkCmdCopyBuffer).
+    const bool copy_merge = CopyMergeEnabled();
+    std::vector<DeferredCopy> deferred_copies;
+    /// Safety net: accesses recorded after a copy was deferred that the pre-draw check did not
+    /// catch (a path that touches buffers without going through Rasterizer::bound_buffers).
+    /// Any of them means the copy was reordered past that access: counted and reported.
+    u64 deferred_late_hits = 0;
 };
 
 } // namespace Vulkan

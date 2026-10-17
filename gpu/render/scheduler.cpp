@@ -284,6 +284,9 @@ void Scheduler::EndRendering() {
     is_rendering = false;
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
     CarryResume(false);
+    // BB_COPY_MERGE: the pass is closed; the copies that waited for its end go out here, before
+    // whatever the caller records next.
+    AfterPassEnd();
 }
 
 void Scheduler::TracePassBreak(void* caller) {
@@ -511,6 +514,7 @@ void Scheduler::MaybeSplit() {
         Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
         is_rendering = false;
         resume_rendering = true;
+        AfterPassEnd(); // BB_COPY_MERGE: the copies waiting for this pass go out before the cut
     } else {
         CarrySuspend(false);
     }
@@ -666,6 +670,7 @@ void Scheduler::EnterDirectMode() {
             Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
             is_rendering = false;
             resume_rendering = true;
+            AfterPassEnd(); // BB_COPY_MERGE: the copies waiting for this pass go out before the cut
         } else {
             CarrySuspend(false);
         }
@@ -706,6 +711,7 @@ void Scheduler::LeaveDirectSegment() {
         current_cmdbuf.endRendering();
         is_rendering = false;
         resume_rendering = true;
+        AfterPassEnd(); // BB_COPY_MERGE: the copies waiting for this pass go out before the cut
     } else {
         CarrySuspend(false);
     }

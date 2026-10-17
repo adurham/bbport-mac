@@ -395,6 +395,14 @@ void Rasterizer::ScaleToTarget(const GraphicsPipeline* pipeline) {
 
 void Rasterizer::BeginDraw(const GraphicsPipeline* pipeline, const RenderState& state,
                            bool is_indexed, bool jitter_eligible) {
+    // BB_COPY_MERGE: a copy that waits for this pass's end runs after every draw of the pass, so
+    // a draw that reads or writes bytes it touches cannot be recorded after it. The pass ends
+    // here instead (the break the copy would have caused on its own), and the copy goes out
+    // before this draw.
+    if (runtime.HasDeferredCopies() && DeferredCopyHazard()) {
+        runtime.NoteDeferredCopyBreak();
+        scheduler.EndRendering();
+    }
     {
         BB_SECTION(PipelineBind);
         BbStats::CatTimer category{BbStats::CatBind};
@@ -513,6 +521,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
     const auto [buffer, base] =
         buffer_cache.ObtainBuffer(indirect.args, stride * max_count, false);
+    // BB_COPY_MERGE: the GPU reads the arguments (and, with a count buffer, the count) itself, so
+    // they are not in `bound_buffers`: a copy waiting for the pass's end could pass them. End the
+    // pass here (indirect draws are rare; a break is where they were before the merge anyway).
+    if (runtime.HasDeferredCopies()) {
+        scheduler.EndRendering();
+    }
     needs_barrier |=
         runtime.IsBufferAccessed(buffer, base, stride * max_count, false, IndirectConsumer());
     // The arguments checked on the GPU first (vk_indirect_guard.h): a dispatch, outside the

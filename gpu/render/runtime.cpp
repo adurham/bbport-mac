@@ -90,6 +90,30 @@ void MarkCopied(VideoCore::Image* dst, VideoCore::ImageFlagBits modified) {
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
 }
 
+/// BB_COPY_MERGE: copies that waited for a pass's end, per 10 s window (printed when the gate is
+/// on only). `late` counts accesses a waiting copy touched that the pre-draw check did not end
+/// the pass for: any of those is a copy reordered past that access (the gate then is unproven).
+struct CopyMergeStats {
+    u64 copies = 0, batches = 0, largest = 0, late = 0, breaks = 0;
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+};
+CopyMergeStats merge_stats;
+void ReportCopyMerge() {
+    auto& s = merge_stats;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s.last < std::chrono::seconds(10)) {
+        return;
+    }
+    s.last = now;
+    std::printf("Copy merge (10 s): %llu copies in %llu pass-end batches (%llu in the largest), "
+                "%llu of the batches at a hazard break, %llu late conflicts\n",
+                static_cast<unsigned long long>(s.copies),
+                static_cast<unsigned long long>(s.batches),
+                static_cast<unsigned long long>(s.largest),
+                static_cast<unsigned long long>(s.breaks),
+                static_cast<unsigned long long>(s.late));
+    s.copies = s.batches = s.largest = s.late = s.breaks = 0;
+}
 } // namespace
 
 Runtime::Runtime(const Instance& instance_, Scheduler& scheduler_)
@@ -131,6 +155,16 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* buffer, u64 offset, u64 
 
 void Runtime::AccessBuffer(const VideoCore::Buffer* buffer, u64 offset, u64 size,
                            vk::PipelineStageFlags2 stage, vk::AccessFlags2 access) {
+    if (!deferred_copies.empty() && DeferredCopyOverlaps(buffer, offset, size)) {
+        // BB_COPY_MERGE: a command that was recorded after a waiting copy reads or writes bytes
+        // it touches. The pre-draw check (Rasterizer::BeginDraw) ends the pass for every such
+        // draw, so this is a path that reaches buffers without going through the rasterizer's
+        // bindings: the copy has been reordered past it (counted, and reported by
+        // `Copy merge`). End the pass here so later accesses cannot pass the copies too.
+        ++deferred_late_hits;
+        merge_stats.late = deferred_late_hits;
+        scheduler.EndRendering();
+    }
     const u64 id = reinterpret_cast<u64>(buffer);
     u64 first = offset;
     u64 last = offset + size - 1;
@@ -151,6 +185,14 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* buffer, u64 offset, u64 size
 }
 
 void Runtime::AccessGlobal(vk::PipelineStageFlags2 stage, vk::AccessFlags2 access) {
+    if (!deferred_copies.empty()) {
+        // BB_COPY_MERGE: a paged access may touch any buffer of the game's memory, so it may
+        // touch a waiting copy's bytes. The pre-draw check ends the pass for paged bindings;
+        // this catches the ones that reach here anyway.
+        ++deferred_late_hits;
+        merge_stats.late = deferred_late_hits;
+        scheduler.EndRendering();
+    }
     pending_stages |= stage;
     pending_global_read = true;
     if (access & AccessBit::eShaderWrite) {
@@ -452,8 +494,185 @@ Runtime::TransferMark::~TransferMark() {
     }
 }
 
+bool Runtime::CopyMergeEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_COPY_MERGE");
+        return env && env[0] == '1';
+    }();
+    return enabled;
+}
+
+void Runtime::NoteDeferredCopyBreak() {
+    ++merge_stats.breaks;
+}
+
+bool Runtime::DeferredCopyOverlaps(const VideoCore::Buffer* buffer, u64 offset, u64 size) const {
+    if (deferred_copies.empty() || size == 0) {
+        return false;
+    }
+    const u64 last = offset + size - 1;
+    for (const auto& copy : deferred_copies) {
+        if ((copy.src == buffer && copy.src_first <= last && offset <= copy.src_last) ||
+            (copy.dst == buffer && copy.dst_first <= last && offset <= copy.dst_last)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Runtime::FlushDeferredCopies() {
+    if (deferred_copies.empty()) {
+        return;
+    }
+    // Away first: the accesses recorded below must not be checked against their own copy.
+    std::vector<DeferredCopy> batch;
+    batch.swap(deferred_copies);
+    for (const auto& copy : batch) {
+        const std::span<const vk::BufferCopy> regions{copy.regions.data(), copy.regions.size()};
+        scheduler.Record([src = copy.src_handle, dst = copy.dst_handle,
+                          regions = scheduler.RecordData(regions)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src, dst, u32(regions.size()), regions.data());
+        });
+        AccessBuffer(copy.src, copy.src_first, copy.src_last - copy.src_first + 1, Stage::eCopy,
+                     AccessBit::eTransferRead);
+        AccessBuffer(copy.dst, copy.dst_first, copy.dst_last - copy.dst_first + 1, Stage::eCopy,
+                     AccessBit::eTransferWrite);
+    }
+    ++merge_stats.batches;
+    merge_stats.copies += batch.size();
+    merge_stats.largest = std::max<u64>(merge_stats.largest, batch.size());
+    ReportCopyMerge();
+}
+
 void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
                          std::span<const vk::BufferCopy> copies) {
+    if (!copy_merge) {
+        CopyBufferRecord(src, dst, copies);
+        return;
+    }
+    // BB_COPY_MERGE=1. A copy cannot be recorded inside a render pass (Vulkan forbids it), so the
+    // port ends the pass, records it and starts the pass again: two render encoders per copy, 81%
+    // of this frame's pass breaks (docs/ENCODER_ATTRIBUTION.md, cutlist item 1). With the gate,
+    // the copy waits and is recorded when the pass ends anyway - no extra render encoder.
+    //
+    // A copy recorded then runs after *every* draw of the pass, so it may only wait when nothing
+    // recorded after it touches its bytes. With `accesses` (what the port's commands read and
+    // write since the last barrier) and a draw's own binding ranges, the rule is:
+    //   - any access, read or write, to the destination: a later reader would see the bytes from
+    //     before the copy, a later writer would be overwritten by it;
+    //   - any write to the source: the copy would read bytes written after it in stream order;
+    //   - any read of the source: that reader would miss the bytes the copy writes;
+    //   - a paged access (BB_LAYER_MEMORY, `AccessGlobal`): a shader reaching memory through the
+    //     page table may touch any buffer of the game's memory, so the range is unknown.
+    // Accesses of commands already recorded are found by the same `IsBufferAccessed` the barrier
+    // check uses (a hit means the copy does not wait at all, below); accesses of draws recorded
+    // *after* it are caught before those draws are recorded (Rasterizer::BeginDraw ->
+    // DeferredCopyOverlaps ends the pass there, which is exactly the break the copy would have
+    // caused). Anything else that touches a waiting range is counted in `deferred_late_hits`.
+    const bool bounded = copies.size() > 4;
+    u64 src_min = ~0ULL, src_max = 0, dst_min = ~0ULL, dst_max = 0;
+    for (const auto& copy : copies) {
+        src_min = std::min<u64>(src_min, copy.srcOffset);
+        src_max = std::max<u64>(src_max, copy.srcOffset + copy.size);
+        dst_min = std::min<u64>(dst_min, copy.dstOffset);
+        dst_max = std::max<u64>(dst_max, copy.dstOffset + copy.size);
+    }
+    // Overlapping a copy already waiting keeps their stream order: that one goes out first.
+    const bool after_waiting = !copies.empty() &&
+                               (DeferredCopyOverlaps(src, src_min, src_max - src_min) ||
+                                DeferredCopyOverlaps(dst, dst_min, dst_max - dst_min));
+    if (!copies.empty() && scheduler.IsRendering() && !after_waiting) {
+        // The barrier this copy needs anyway (whatever was written before it is read here).
+        bool needs_flush = false;
+        if (bounded) {
+            needs_flush = IsBufferAccessed(src, src_min, src_max - src_min, false,
+                                           TransferConsumer()) ||
+                          IsBufferAccessed(dst, dst_min, dst_max - dst_min, true,
+                                           TransferConsumer());
+        } else {
+            for (const auto& copy : copies) {
+                needs_flush = needs_flush ||
+                              IsBufferAccessed(src, copy.srcOffset, copy.size, false,
+                                               TransferConsumer()) ||
+                              IsBufferAccessed(dst, copy.dstOffset, copy.size, true,
+                                               TransferConsumer());
+            }
+        }
+        if (!needs_flush) {
+            // Consecutive copies of one buffer pair share the batch: one vkCmdCopyBuffer. The
+            // hazard check above ruled out overlapping regions (Vulkan forbids them in one call).
+            if (!deferred_copies.empty() && deferred_copies.back().src == src &&
+                deferred_copies.back().dst == dst) {
+                auto& group = deferred_copies.back();
+                group.regions.insert(group.regions.end(), copies.begin(), copies.end());
+                group.src_first = std::min(group.src_first, src_min);
+                group.src_last = std::max(group.src_last, src_max - 1);
+                group.dst_first = std::min(group.dst_first, dst_min);
+                group.dst_last = std::max(group.dst_last, dst_max - 1);
+            } else {
+                deferred_copies.push_back({.src = src,
+                                           .dst = dst,
+                                           .src_handle = src->Handle(),
+                                           .dst_handle = dst->Handle(),
+                                           .regions = {copies.begin(), copies.end()},
+                                           .src_first = src_min,
+                                           .src_last = src_max - 1,
+                                           .dst_first = dst_min,
+                                           .dst_last = dst_max - 1});
+            }
+            return;
+        }
+        // A barrier is needed: it cannot be recorded inside the pass either, so end it here and
+        // record this copy the old way, after the copies that were waiting (guest order).
+        scheduler.EndRendering();
+        FlushBarriersFor();
+        CopyBufferTrack(src, dst, copies, bounded, src_min, src_max, dst_min, dst_max);
+        return;
+    }
+    // The old way: ending the pass records whatever waited, before this copy (order kept).
+    scheduler.EndRendering();
+    bool needs_flush = bounded ? (IsBufferAccessed(src, src_min, src_max - src_min, false,
+                                                   TransferConsumer()) ||
+                                  IsBufferAccessed(dst, dst_min, dst_max - dst_min, true,
+                                                   TransferConsumer()))
+                               : false;
+    if (!bounded) {
+        for (const auto& copy : copies) {
+            needs_flush = needs_flush ||
+                          IsBufferAccessed(src, copy.srcOffset, copy.size, false,
+                                           TransferConsumer()) ||
+                          IsBufferAccessed(dst, copy.dstOffset, copy.size, true,
+                                           TransferConsumer());
+        }
+    }
+    if (needs_flush) {
+        FlushBarriersFor();
+    }
+    CopyBufferTrack(src, dst, copies, bounded, src_min, src_max, dst_min, dst_max);
+}
+
+void Runtime::CopyBufferTrack(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
+                              std::span<const vk::BufferCopy> copies, bool bounded, u64 src_min,
+                              u64 src_max, u64 dst_min, u64 dst_max) {
+    scheduler.Record([src = src->Handle(), dst = dst->Handle(),
+                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
+        cmdbuf.copyBuffer(src, dst, u32(regions.size()), regions.data());
+    });
+    if (bounded) {
+        AccessBuffer(src, src_min, src_max - src_min, Stage::eCopy, AccessBit::eTransferRead);
+        AccessBuffer(dst, dst_min, dst_max - dst_min, Stage::eCopy, AccessBit::eTransferWrite);
+        return;
+    }
+    for (const auto& copy : copies) {
+        AccessBuffer(src, copy.srcOffset, copy.size, Stage::eCopy, AccessBit::eTransferRead);
+        AccessBuffer(dst, copy.dstOffset, copy.size, Stage::eCopy, AccessBit::eTransferWrite);
+    }
+}
+
+/// The copy path without BB_COPY_MERGE (and the fallback of every path that cannot wait for the
+/// pass's end): end the pass, wait for the barrier the tracker asks for, record. Unchanged.
+void Runtime::CopyBufferRecord(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
+                               std::span<const vk::BufferCopy> copies) {
     scheduler.EndRendering();
     // Many regions (HLE copy shaders) are tracked as one bounding range per buffer:
     // conservative for barriers, and two lookups instead of two per region.

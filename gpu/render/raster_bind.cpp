@@ -605,6 +605,11 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         std::tie(range.buffer, range.offset) = buffer_cache.ObtainBuffer(range.begin, size, false);
         needs_barrier |= runtime.IsBufferAccessed(range.buffer, range.offset, size, false,
                                                   VertexInputConsumer());
+        // BB_COPY_MERGE: the tracker does not record vertex reads (the check above only waits
+        // for a barrier), but a copy waiting for the pass's end must not pass them.
+        if (runtime.HasDeferredCopies()) {
+            untracked_reads.push_back({range.buffer, range.offset, u32(size), false});
+        }
     }
 
     // Each stream at its offset in its range's buffer (null for streams without memory).
@@ -657,6 +662,27 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     index_bind = {buffer->Handle(), offset, index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32};
 }
 
+/// BB_COPY_MERGE: the ranges this draw will touch are `bound_buffers` - what ResetBindings
+/// records in the access tracker after the draw - plus the reads the tracker never records
+/// (`untracked_reads`: vertex streams, GDS). A paged binding (BB_LAYER_MEMORY) may touch any
+/// buffer of the game's memory, so it is a hazard for every waiting copy.
+bool Rasterizer::DeferredCopyHazard() const {
+    for (const auto& bound : bound_buffers) {
+        if (!bound.buffer) {
+            return true;
+        }
+        if (runtime.DeferredCopyOverlaps(bound.buffer, bound.offset, bound.size)) {
+            return true;
+        }
+    }
+    for (const auto& read : untracked_reads) {
+        if (runtime.DeferredCopyOverlaps(read.buffer, read.offset, read.size)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Rasterizer::ResetBindings(bool is_compute) {
     for (auto& image_id : bound_images) {
         texture_cache.GetImage(image_id).binding = {};
@@ -676,6 +702,7 @@ void Rasterizer::ResetBindings(bool is_compute) {
     }
     bound_images.clear();
     bound_buffers.clear();
+    untracked_reads.clear();
     needs_barrier = false;
 }
 
@@ -767,6 +794,10 @@ void Rasterizer::BindSpecialBuffer(const Shader::BufferResource& desc, const Sha
         buffer_infos.emplace_back(gds->Handle(), 0, gds->SizeBytes());
         needs_barrier |= runtime.IsBufferAccessed(gds, 0, gds->SizeBytes(), false,
                                                   ConsumerStages(stage, false));
+        // BB_COPY_MERGE: as for the vertex streams, the tracker does not hold this read.
+        if (runtime.HasDeferredCopies()) {
+            untracked_reads.push_back({gds, 0, u32(gds->SizeBytes()), false});
+        }
         break;
     }
     case Shader::BufferType::Flatbuf: {
