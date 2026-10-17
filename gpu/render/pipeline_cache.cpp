@@ -741,6 +741,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                                                            const PreparedDraw* prepared,
                                                            bool indirect) {
     BB_SECTION(APipeline);
+    BbStats::CatTimer category{BbStats::CatPipeline};
     used_prepared = nullptr;
     NoteDrawTarget(liverpool->regs);
     if (prepared) {
@@ -900,6 +901,7 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
+    BbStats::CatTimer category{BbStats::CatPipeline};
     if (!RefreshComputeKey()) {
         return nullptr;
     }
