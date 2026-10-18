@@ -151,14 +151,14 @@ Worktree `fix/encoder-merge`:
 
 ## Next step (ranked, honest)
 
-1. **Reconcile the two GPU numbers before touching the pipeline again.** With zero decoder
-   starvation (pipeline, 100 ahead, presenter unbounded) the frame is 18.77 ms and the guest waits
-   15.8 ms/frame for the GPU to retire the previous frame — i.e. the GPU appears to own ~18.6 ms of
-   the frame, not the 12.53 ms of `ENCODER_CENSUS.md` B4/B5. Either that trace figure was taken on
-   a frame whose CPU-bound phase hid GPU work, or the GPU's work grows when the CPU records
-   continuously (bandwidth/contention). One Metal System Trace (`TRACE=1`) of
-   `BB_SUBMIT_PIPELINE=1 BB_SUBMIT_AHEAD=100 BB_FRAMES_AHEAD=0` parsed with the stage-B tooling
-   settles it, and it is cheap.
+1. **Reconcile the two GPU numbers before touching the pipeline again.** With zero CPU-late
+   (pipeline, 100 ahead, presenter unbounded: the command thread itself idles 8.9 ms/frame) the
+   frame is 18.77 ms and the guest waits 15.8 ms/frame for the GPU to retire the previous frame —
+   i.e. the GPU appears to own ~18.6 ms of the frame, not the 12.53 ms of `ENCODER_CENSUS.md`
+   B4/B5. Either that trace figure was taken on a frame whose CPU-bound phase hid GPU work, or the
+   GPU's work grows when the CPU records continuously (bandwidth/contention). One Metal System
+   Trace (`TRACE=1`) of `BB_SUBMIT_PIPELINE=1 BB_SUBMIT_AHEAD=100 BB_FRAMES_AHEAD=0` parsed with
+   the stage-B tooling settles it, and it is cheap.
 2. **If the GPU really needs 18.6 ms**, the loop's remaining levers are all GPU-side and already
    ranked: encoder count (B4 says no), the upscaler's dispatches + post pass (stage D measured
    -0.6 ms), draw/vertex work (3.68 ms vertex of the 12.53). The pipeline line is closed by this

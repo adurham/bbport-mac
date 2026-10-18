@@ -41,7 +41,8 @@ Artifacts: `UPSCALER_CONFIG_BENCH.md` (A), `ENCODER_CENSUS.md` (B, incl. B4 verd
 **The next lever, in rank order (this is where the next session starts):**
 
 1. **Reconcile the GPU number: 12.53 ms busy (B5, a stored trace) vs ~18.6 ms implied by stage E1**
-   (pipeline, 100 ahead, presenter unbounded: frame 18.77 ms, decoder idle 0.6 ms, guest waits 15.8
+   (pipeline, 100 ahead, presenter unbounded: frame 18.77 ms, command thread idle 8.9 ms/frame,
+   guest waits 15.8
    ms/frame for the GPU retire). One Metal System Trace of
    `BB_SUBMIT_PIPELINE=1 BB_SUBMIT_AHEAD=100 BB_FRAMES_AHEAD=0` parsed with the stage-B tooling says
    which is true, and it decides everything below.
