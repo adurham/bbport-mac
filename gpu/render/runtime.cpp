@@ -114,6 +114,28 @@ void ReportCopyMerge() {
                 static_cast<unsigned long long>(s.late));
     s.copies = s.batches = s.largest = s.late = s.breaks = 0;
 }
+
+/// BB_INPASS_BARRIERS: memory-only barriers recorded inside the open render pass, per 10 s window
+/// (printed while the gate is on). `ended` counts the ones that still ended the pass (an image
+/// transition, no pass open, or a destination other than ALL_COMMANDS).
+struct InPassBarrierStats {
+    u64 kept = 0, ended = 0, images = 0, idle = 0;
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+};
+InPassBarrierStats inpass_stats;
+void ReportInPassBarriers() {
+    auto& s = inpass_stats;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s.last < std::chrono::seconds(10)) {
+        return;
+    }
+    s.last = now;
+    std::printf("In-pass barriers (10 s): %llu memory barriers kept inside the open pass, %llu "
+                "ended it (%llu carried an image transition, %llu with no pass open)\n",
+                static_cast<unsigned long long>(s.kept), static_cast<unsigned long long>(s.ended),
+                static_cast<unsigned long long>(s.images), static_cast<unsigned long long>(s.idle));
+    s.kept = s.ended = s.images = s.idle = 0;
+}
 } // namespace
 
 Runtime::Runtime(const Instance& instance_, Scheduler& scheduler_)
@@ -310,7 +332,24 @@ void Runtime::FlushNarrowed(vk::PipelineStageFlags2 consumers) {
     const vk::PipelineStageFlags2 dst = full ? vk::PipelineStageFlags2(Stage::eAllCommands)
                                       : strict ? consumers
                                                : consumers | image_dst;
-    scheduler.EndRendering();
+    // BB_INPASS_BARRIERS: the pass can stay open across a memory barrier (BarrierStaysInPass).
+    const bool mem_only = image_barriers.empty();
+    if (BarrierStaysInPass(memory && mem_only, dst)) {
+        ++inpass_stats.kept;
+    } else {
+        if (in_pass_barriers) {
+            ++inpass_stats.ended;
+            if (!mem_only) {
+                ++inpass_stats.images;
+            } else if (!scheduler.IsRendering()) {
+                ++inpass_stats.idle;
+            }
+        }
+        scheduler.EndRendering();
+    }
+    if (in_pass_barriers) {
+        ReportInPassBarriers();
+    }
     NoteBarrier(memory, dst, {image_barriers.data(), image_barriers.size()});
     scheduler.Record([barrier = vk::MemoryBarrier2{
                           .srcStageMask = src,
@@ -366,7 +405,31 @@ void Runtime::FlushBarriers() {
     if (!memory && image_barriers.empty()) {
         return;
     }
-    scheduler.EndRendering();
+    // BB_INPASS_BARRIERS (default off): a memory barrier is legal inside an open render pass, and
+    // KosmicKrisp records it there (kk_CmdPipelineBarrier2 with cmd->gfx.encoder set) instead of
+    // splitting the encoder, so ending the pass here is not required: the barrier orders what this
+    // encoder records next, and every encoder ends ALL->ALL (BB_KK_BARRIER=legacy, kk_stop_encoder),
+    // so everything before the pass is already visible to it. The invariant this relies on is
+    // exactly that one: an in-pass barrier only orders within this encoder, so any work it must
+    // order that ran in an earlier encoder is covered by that encoder's ALL->ALL end. Image
+    // transitions, no open pass and a narrowed destination still end the pass (BarrierStaysInPass).
+    const bool mem_only = image_barriers.empty();
+    if (BarrierStaysInPass(memory && mem_only, Stage::eAllCommands)) {
+        ++inpass_stats.kept;
+    } else {
+        if (in_pass_barriers) {
+            ++inpass_stats.ended;
+            if (!mem_only) {
+                ++inpass_stats.images;
+            } else if (!scheduler.IsRendering()) {
+                ++inpass_stats.idle;
+            }
+        }
+        scheduler.EndRendering();
+    }
+    if (in_pass_barriers) {
+        ReportInPassBarriers();
+    }
     scheduler.Record([barrier = vk::MemoryBarrier2{
                           .srcStageMask = pending_stages,
                           .srcAccessMask = pending_writes,
@@ -492,6 +555,25 @@ Runtime::TransferMark::~TransferMark() {
     if (profiler && resume) {
         profiler->Resume(resume);
     }
+}
+
+bool Runtime::InPassBarriersEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_INPASS_BARRIERS");
+        return env && env[0] == '1';
+    }();
+    return enabled;
+}
+
+bool Runtime::BarrierStaysInPass(bool memory_only, vk::PipelineStageFlags2 dst) const {
+    // A barrier with an image transition is not in-pass material: the layout change has to happen
+    // between encoders. A narrowed destination (BB_BARRIER_MASKS=safe|strict) names stages the
+    // driver's split rule looks at on its own, so the gate is limited to the ALL_COMMANDS barrier
+    // of the default mask mode.
+    if (!in_pass_barriers || !memory_only || !bool(dst & Stage::eAllCommands)) {
+        return false;
+    }
+    return scheduler.IsRendering();
 }
 
 bool Runtime::CopyMergeEnabled() {
