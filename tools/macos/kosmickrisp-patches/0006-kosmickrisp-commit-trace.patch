@@ -1,0 +1,533 @@
+kosmickrisp: BB_COMMIT_TRACE, the per-commit wait-site counter (docs/FRAME_HANDOFF_WAIT.md)
+
+Which of kk_queue_submit's two GPU waits (:274 mtl_wait_for_event, :294
+mtl_command_queue_wait_for_drawable) is in the per-frame handoff bubble was the open question
+BUBBLE_STALL_ANALYSIS.md left. This adds the counter that answers it and nothing else:
+
+- BB_COMMIT_TRACE=1 (default off): every Metal commit records the wait enqueued ahead of it and
+  the GPU's own start/end stamps from the MTL4 commit feedback, so dry_ms is the time the GPU
+  had that commit queued and did not run it, measured on the GPU's clock. One summary line per
+  2 s with, per wait site, the dry total, the busy total, the peak and the counts over 0.5/1.0 ms.
+  BB_COMMIT_TRACE_FULL=1 logs every commit instead of the 0.3-12 ms ones.
+- The WSI adds the presenter side: the layer's maximumDrawableCount/displaySync at configure,
+  each drawable acquire that blocked, and the draws-in-flight count.
+- BB_DRAWABLES=<n> (default off): the layer's drawable pool instead of the swapchain's image
+  count, never below it. Measured to be a no-op (draws in flight peak at 1 of 3); it ships as
+  the default-off experiment the counter justified testing, not as a fix.
+
+No wait, commit or ordering changes: with the gate off the binary does exactly what it did.
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -18,7 +18,265 @@
+ 
+ #include "vk_cmd_queue.h"
+ #include "vk_common_entrypoints.h"
++
++/* bbport (BB_COMMIT_TRACE, docs/FRAME_HANDOFF_WAIT.md) ------------------------------
++ * One counter, off unless BB_COMMIT_TRACE=1: which of the queue's two GPU waits
++ * (:274 event, :294 drawable) was enqueued ahead of each Metal commit, and how long the
++ * GPU sat idle before it started that commit. The GPU's own stamps come from the MTL4
++ * commit feedback (GPUStartTime/GPUEndTime), so dry_ms is measured on the GPU's clock,
++ * not on ours: dry = this commit's gpu_start - the last gpu_end the queue reported.
++ * No behaviour change: the waits, the commits and their order are untouched. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <mach/mach_time.h>
++
++#include "util/u_debug.h"
++
++#define KK_TRACE_NONE 0
++#define KK_TRACE_EVENT 1
++#define KK_TRACE_DRAWABLE 2
++#define KK_TRACE_DRY_DETAIL_NS 300000ll /* print a commit that started >= 0.3 ms late */
++
++static const char *const kk_trace_tag_name[3] = {"none", "event", "drawable"};
++
++/* What the WSI hands over about the wait it just enqueued (NULL when nothing was traced). */
++struct kk_trace_wait {
++   uint8_t tag;
++   int64_t ns;      /* host time the wait went into the queue */
++   uint64_t value;  /* event waits: the timeline value waited for */
++};
++
++struct kk_trace_commit {
++   mtl_feedback_handler_callback callback;
++   void *user_data;
++   uint64_t seq;
++   uint64_t wait_value;
++   int64_t commit_ns;
++   int64_t wait_ns;
++   uint32_t n_cb;
++   uint32_t inflight;
++   uint8_t tag;
++   uint8_t rerecord;
++};
++
++static struct {
++   bool enabled;
++   bool full; /* BB_COMMIT_TRACE_FULL=1: every commit on its own line */
++   mtx_t lock;
++   double last_end; /* latest gpu_end reported by any commit, seconds */
++   uint64_t seq;
++   int64_t t0_ns;
++   int64_t window_start_ns; /* start of the window being summarised */
++   uint32_t win_commits;
++   uint32_t win_tag[3];
++   uint32_t win_over[3];   /* dry >= 0.5 ms */
++   uint32_t win_over10[3]; /* dry >= 1.0 ms: the frame-handoff band */
++   int64_t win_dry_sum[3];
++   int64_t win_busy_sum[3];
++   int64_t win_dry_max[3];
++   uint32_t win_inflight_max;
++   uint32_t printed;
++} kk_trace;
++
++#define KK_TRACE_WINDOW_NS 2000000000ll /* one summary every 2 s */
++
++static once_flag kk_trace_once = ONCE_FLAG_INIT;
++/* Drawables the WSI handed out and the queue has not signalled back yet. */
++static int kk_trace_inflight;
++
++static void kk_trace_window_locked(int64_t now, bool force);
++
++
++static int64_t
++kk_trace_now_ns(void)
++{
++   static mach_timebase_info_data_t tb;
++   if (tb.denom == 0)
++      mach_timebase_info(&tb);
++   const uint64_t t = mach_absolute_time();
++   return (int64_t)((t / tb.denom) * tb.numer + ((t % tb.denom) * tb.numer) / tb.denom);
++}
++
++static void
++kk_trace_init(void)
++{
++   mtx_init(&kk_trace.lock, mtx_plain);
++   kk_trace.enabled = debug_get_bool_option("BB_COMMIT_TRACE", false);
++   kk_trace.full = debug_get_bool_option("BB_COMMIT_TRACE_FULL", false);
++   kk_trace.t0_ns = kk_trace_now_ns();
++   kk_trace.window_start_ns = kk_trace.t0_ns;
++   if (kk_trace.enabled)
++      fprintf(stderr, "BBCT start t0_ms=%.3f full=%d\n", (double)kk_trace.t0_ns / 1e6,
++              kk_trace.full);
++}
++
++/* The last window would otherwise never be printed (kk_queue_finish). */
++void
++kk_commit_trace_flush(void)
++{
++   if (!kk_commit_trace_enabled())
++      return;
++   mtx_lock(&kk_trace.lock);
++   kk_trace_window_locked(kk_trace_now_ns(), true);
++   mtx_unlock(&kk_trace.lock);
++}
++
++bool
++kk_commit_trace_enabled(void)
++{
++   call_once(&kk_trace_once, kk_trace_init);
++   return kk_trace.enabled;
++}
++
++bool
++kk_commit_trace_full(void)
++{
++   call_once(&kk_trace_once, kk_trace_init);
++   return kk_trace.full;
++}
++
++uint32_t
++kk_commit_trace_inflight(void)
++{
++   return (uint32_t)p_atomic_read(&kk_trace_inflight);
++}
++
++/* Called by the WSI (wsi_common_metal_layer.m) when nextDrawable returns. */
++void
++kk_commit_trace_drawable_acquired(void)
++{
++   if (!kk_commit_trace_enabled())
++      return;
++   p_atomic_add(&kk_trace_inflight, 1);
++}
++
++/* Called when the queue signals a drawable back to the compositor. */
++void
++kk_commit_trace_drawable_signalled(void)
++{
++   if (!kk_commit_trace_enabled())
++      return;
++   p_atomic_add(&kk_trace_inflight, -1);
++}
++
++static void
++kk_trace_window_locked(int64_t now, bool force)
++{
++   const int64_t span = now - kk_trace.window_start_ns;
++   if (!force && span < KK_TRACE_WINDOW_NS)
++      return;
++   if (kk_trace.win_commits == 0) {
++      kk_trace.window_start_ns = now;
++      return;
++   }
++
++   const double us = 1.0 / 1e3; /* ns -> us */
++   fprintf(stderr,
++           "BBCT window=%.0fms commits=%u busy_ms=%.1f dry_ms=%.1f over500=%u over1000=%u "
++           "none=%u/dry%.1fms/busy%.1fms/peak%.0fus/o500=%u/o1000=%u "
++           "event=%u/dry%.1fms/busy%.1fms/peak%.0fus/o500=%u/o1000=%u "
++           "drawable=%u/dry%.1fms/busy%.1fms/peak%.0fus/o500=%u/o1000=%u inflight_max=%u\n",
++           (double)span / 1e6, kk_trace.win_commits,
++           (double)(kk_trace.win_busy_sum[0] + kk_trace.win_busy_sum[1] +
++                    kk_trace.win_busy_sum[2]) / 1e6,
++           (double)(kk_trace.win_dry_sum[0] + kk_trace.win_dry_sum[1] +
++                    kk_trace.win_dry_sum[2]) / 1e6,
++           kk_trace.win_over[0] + kk_trace.win_over[1] + kk_trace.win_over[2],
++           kk_trace.win_over10[0] + kk_trace.win_over10[1] + kk_trace.win_over10[2],
++           kk_trace.win_tag[0], (double)kk_trace.win_dry_sum[0] / 1e6,
++           (double)kk_trace.win_busy_sum[0] / 1e6, (double)kk_trace.win_dry_max[0] * us,
++           kk_trace.win_over[0], kk_trace.win_over10[0],
++           kk_trace.win_tag[1], (double)kk_trace.win_dry_sum[1] / 1e6,
++           (double)kk_trace.win_busy_sum[1] / 1e6, (double)kk_trace.win_dry_max[1] * us,
++           kk_trace.win_over[1], kk_trace.win_over10[1],
++           kk_trace.win_tag[2], (double)kk_trace.win_dry_sum[2] / 1e6,
++           (double)kk_trace.win_busy_sum[2] / 1e6, (double)kk_trace.win_dry_max[2] * us,
++           kk_trace.win_over[2], kk_trace.win_over10[2],
++           kk_trace.win_inflight_max);
++
++   kk_trace.window_start_ns = now;
++   kk_trace.win_commits = 0;
++   kk_trace.win_inflight_max = 0;
++   for (unsigned i = 0; i < 3; i++) {
++      kk_trace.win_tag[i] = 0;
++      kk_trace.win_over[i] = 0;
++      kk_trace.win_over10[i] = 0;
++      kk_trace.win_dry_sum[i] = 0;
++      kk_trace.win_busy_sum[i] = 0;
++      kk_trace.win_dry_max[i] = 0;
++   }
++}
++
++static void
++kk_trace_record(struct kk_trace_commit *t, double gpu_start, double gpu_end)
++{
++   const bool have = gpu_start > 0.0 && gpu_end > 0.0;
++   const int64_t now = kk_trace_now_ns();
++   int64_t dry_ns = 0;
++   bool print;
++
++   mtx_lock(&kk_trace.lock);
++
++   if (have && kk_trace.last_end > 0.0)
++      dry_ns = (int64_t)((gpu_start - kk_trace.last_end) * 1e9);
++   if (have && gpu_end > kk_trace.last_end)
++      kk_trace.last_end = gpu_end;
++
++   const uint8_t tag = t->tag > 2 ? 0 : t->tag;
++   kk_trace.win_tag[tag]++;
++   if (dry_ns > 0)
++      kk_trace.win_dry_sum[tag] += dry_ns;
++   if (have && gpu_end > gpu_start)
++      kk_trace.win_busy_sum[tag] += (int64_t)((gpu_end - gpu_start) * 1e9);
++   if (dry_ns > kk_trace.win_dry_max[tag])
++      kk_trace.win_dry_max[tag] = dry_ns;
++   if (dry_ns >= 500000)
++      kk_trace.win_over[tag]++;
++   if (dry_ns >= 1000000)
++      kk_trace.win_over10[tag]++;
++   if (t->inflight > kk_trace.win_inflight_max)
++      kk_trace.win_inflight_max = t->inflight;
++   kk_trace.win_commits++;
++
++   /* A detail line for the interesting middle band: not a load hitch (>= 12 ms is the queue
++    * being empty while the game loads), not the sub-0.3 ms drain. */
++   print = have && (kk_trace.full ||
++                    (dry_ns >= KK_TRACE_DRY_DETAIL_NS && dry_ns <= 12000000)) &&
++           kk_trace.printed < 30000;
++   if (print) {
++      kk_trace.printed++;
++      fprintf(stderr,
++              "BBCT commit seq=%llu tag=%s n=%u inflight=%u rerecord=%u commit_ms=%.3f "
++              "wait_ms=%.3f gpu_start_ms=%.3f gpu_end_ms=%.3f dry_ms=%+.3f lag_us=%.0f "
++              "ev_value=%llu\n",
++              (unsigned long long)t->seq, kk_trace_tag_name[tag], t->n_cb, t->inflight,
++              t->rerecord, (double)(t->commit_ns - kk_trace.t0_ns) / 1e6,
++              t->wait_ns ? (double)(t->wait_ns - kk_trace.t0_ns) / 1e6 : -1.0,
++              (gpu_start * 1e9 - (double)kk_trace.t0_ns) / 1e6,
++              (gpu_end * 1e9 - (double)kk_trace.t0_ns) / 1e6, (double)dry_ns / 1e6,
++              t->wait_ns ? (gpu_start * 1e9 - (double)t->wait_ns) / 1e3 : -1.0,
++              (unsigned long long)t->wait_value);
++   }
++
++   kk_trace_window_locked(now, false);
+ 
++   mtx_unlock(&kk_trace.lock);
++}
++
++static void
++kk_trace_feedback(struct mtl_feedback_data *data)
++{
++   struct kk_trace_commit *t = (struct kk_trace_commit *)data->user_data;
++
++   /* The real handler still gets its own user_data (device or commit record). */
++   struct mtl_feedback_data plain = *data;
++   plain.user_data = t->user_data;
++   t->callback(&plain);
++
++   kk_trace_record(t, data->gpu_start, data->gpu_end);
++   free(t);
++}
++
+ struct kk_commit_data {
+    struct kk_queue *queue;
+    struct kk_cmd_buffer *cmd;
+@@ -93,13 +351,38 @@
+ 
+ static void
+ kk_queue_commit(struct kk_queue *queue, struct kk_cmd_buffer *cmd,
+-                mtl_feedback_handler_callback callback, void *user_data)
++                mtl_feedback_handler_callback callback, void *user_data,
++                const struct kk_trace_wait *wait, bool rerecord)
+ {
+    assert(kk_cmd_buffer_has_work(cmd));
+ 
+    kk_bbstat_add(KK_BBSTAT_COMMITS, 1);
+    mtl_commit_options *options = mtl_new_commit_options();
+-   mtl_commit_options_add_feedback_handler(options, callback, user_data);
++
++   if (kk_commit_trace_enabled()) {
++      mtx_lock(&kk_trace.lock);
++      struct kk_trace_commit *t = calloc(1, sizeof(*t));
++      const uint64_t seq = kk_trace.seq++;
++      mtx_unlock(&kk_trace.lock);
++      if (t != NULL) {
++         t->callback = callback;
++         t->user_data = user_data;
++         t->seq = seq;
++         t->commit_ns = kk_trace_now_ns();
++         t->tag = wait ? wait->tag : KK_TRACE_NONE;
++         t->wait_ns = wait ? wait->ns : 0;
++         t->wait_value = wait ? wait->value : 0;
++         t->n_cb = (uint32_t)util_dynarray_num_elements(&cmd->submit_cmd_bufs,
++                                                       mtl_command_buffer *);
++         t->inflight = kk_commit_trace_inflight();
++         t->rerecord = rerecord ? 1 : 0;
++         mtl_commit_options_add_feedback_handler(options, kk_trace_feedback, t);
++      } else {
++         mtl_commit_options_add_feedback_handler(options, callback, user_data);
++      }
++   } else {
++      mtl_commit_options_add_feedback_handler(options, callback, user_data);
++   }
+ 
+    mtl_command_queue_commit(
+       queue->mtl_handle, util_dynarray_begin(&cmd->submit_cmd_bufs),
+@@ -110,7 +393,8 @@
+ 
+ static VkResult
+ rerecord_and_commit_cmd_buffer(struct kk_queue *queue,
+-                               struct kk_cmd_buffer *cmd)
++                               struct kk_cmd_buffer *cmd,
++                               const struct kk_trace_wait *wait)
+ {
+    struct kk_device *dev = kk_queue_device(queue);
+    struct vk_command_buffer *vk_cmd = NULL;
+@@ -166,7 +450,7 @@
+ 
+    queue->commits_in_flight++;
+    kk_bbstat_add(KK_BBSTAT_RERECORDS, 1);
+-   kk_queue_commit(queue, rerecord, rerecord_commit_callback, commit);
++   kk_queue_commit(queue, rerecord, rerecord_commit_callback, commit, wait, true);
+ 
+    mtx_unlock(&queue->mutex);
+    return VK_SUCCESS;
+@@ -266,11 +550,21 @@
+    if (vk_queue_is_lost(&queue->vk))
+       return VK_ERROR_DEVICE_LOST;
+ 
++   /* bbport (BB_COMMIT_TRACE): the wait this submit enqueued ahead of its commits. */
++   struct kk_trace_wait trace_wait = {.tag = KK_TRACE_NONE};
++   const bool trace = kk_commit_trace_enabled();
++   (void)trace;
++
+    for (struct vk_sync_wait *wait = submit->waits,
+                             *end = submit->waits + submit->wait_count;
+         wait != end; ++wait) {
+       struct kk_sync_timeline *sync =
+          container_of(wait->sync, struct kk_sync_timeline, base);
++      if (kk_commit_trace_enabled()) {
++         trace_wait.tag = KK_TRACE_EVENT;
++         trace_wait.value = wait->wait_value;
++         trace_wait.ns = kk_trace_now_ns();
++      }
+       mtl_wait_for_event(queue->mtl_handle, sync->mtl_handle, wait->wait_value);
+    }
+ 
+@@ -290,7 +584,15 @@
+       struct kk_cmd_buffer *cmd_buffer =
+          container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
+ 
++      /* bbport (BB_COMMIT_TRACE): what stalls this command buffer, if anything. */
++      struct kk_trace_wait cb_wait = trace_wait;
++
+       if (cmd_buffer->drawable) {
++         if (trace) {
++            cb_wait.tag = KK_TRACE_DRAWABLE;
++            cb_wait.value = 0;
++            cb_wait.ns = kk_trace_now_ns();
++         }
+          mtl_command_queue_wait_for_drawable(queue->mtl_handle,
+                                              cmd_buffer->drawable);
+       }
+@@ -298,11 +600,13 @@
+       /* Metal's command buffers are one time use, re-record multiple
+        * submissions. */
+       if (cmd_buffer->submitted) {
+-         VkResult result = rerecord_and_commit_cmd_buffer(queue, cmd_buffer);
++         VkResult result =
++            rerecord_and_commit_cmd_buffer(queue, cmd_buffer, trace ? &cb_wait : NULL);
+          if (result != VK_SUCCESS)
+             return result;
+       } else if (kk_cmd_buffer_has_work(cmd_buffer)) {
+-         kk_queue_commit(queue, cmd_buffer, commit_callback, dev);
++         kk_queue_commit(queue, cmd_buffer, commit_callback, dev,
++                         trace ? &cb_wait : NULL, false);
+       }
+ 
+       cmd_buffer->submitted = true;
+@@ -310,6 +614,7 @@
+       if (cmd_buffer->drawable) {
+          mtl_command_queue_signal_drawable(queue->mtl_handle,
+                                            cmd_buffer->drawable);
++         kk_commit_trace_drawable_signalled();
+          mtl_release(cmd_buffer->drawable);
+          cmd_buffer->drawable = NULL;
+       }
+@@ -394,6 +699,7 @@
+ {
+    /* There may be in-flight command buffers, wait for them to finish. */
+    kk_queue_wait_for_commits(queue);
++   kk_commit_trace_flush(); /* bbport (BB_COMMIT_TRACE): the last window */
+ 
+    mtl_command_queue_remove_residency_set(queue->mtl_handle,
+                                           dev->residency_set.handle);
+--- a/src/kosmickrisp/vulkan/kk_queue.h
++++ b/src/kosmickrisp/vulkan/kk_queue.h
+@@ -45,4 +45,14 @@
+ 
+ void kk_queue_finish(struct kk_device *dev, struct kk_queue *queue);
+ 
++/* bbport (BB_COMMIT_TRACE, docs/FRAME_HANDOFF_WAIT.md): the per-commit wait-site counter. The WSI
++ * lives in a device-agnostic translation unit, so it calls these by their own prototypes
++ * (wsi_common_metal_layer.m) rather than including this header. */
++bool kk_commit_trace_enabled(void);
++bool kk_commit_trace_full(void);
++uint32_t kk_commit_trace_inflight(void);
++void kk_commit_trace_drawable_acquired(void);
++void kk_commit_trace_drawable_signalled(void);
++void kk_commit_trace_flush(void);
++
+ #endif
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -9,6 +9,45 @@
+ #import <QuartzCore/CAMetalLayer.h>
+ #import <Metal/Metal.h>
+ 
++#include <stdio.h>
++#include <stdlib.h>
++#include <mach/mach_time.h>
++
++/* bbport (BB_COMMIT_TRACE, docs/FRAME_HANDOFF_WAIT.md): the presenter side of the frame-handoff
++ * counter. The counter itself lives in the driver (kk_queue.c, which also owns the commit lines
++ * and the draws-in-flight total); this file only says when a drawable was acquired and how long
++ * the acquire blocked. The WSI is device-agnostic and cannot include the driver's headers, so the
++ * two entry points are declared here. */
++extern bool kk_commit_trace_enabled(void);
++extern void kk_commit_trace_drawable_acquired(void);
++extern uint32_t kk_commit_trace_inflight(void);
++
++static int64_t
++wsi_trace_now_ns(void)
++{
++   static mach_timebase_info_data_t tb;
++   if (tb.denom == 0)
++      mach_timebase_info(&tb);
++   const uint64_t t = mach_absolute_time();
++   return (int64_t)((t / tb.denom) * tb.numer + ((t % tb.denom) * tb.numer) / tb.denom);
++}
++
++/* BB_DRAWABLES=<n>: the layer's drawable pool size, in place of the swapchain's image count (a
++ * present experiment, default off — the pool is what a GPU present can run out of when the
++ * compositor still holds a drawable). Never below the swapchain's image count: the Vulkan WSI
++ * acquires one drawable per image and would otherwise time out. */
++static uint32_t
++wsi_drawable_count(uint32_t image_count)
++{
++   const char *env = getenv("BB_DRAWABLES");
++   if (env == NULL || env[0] == '\0')
++      return image_count;
++   const long n = strtol(env, NULL, 10);
++   if (n < (long)image_count)
++      return image_count;
++   return (uint32_t)n;
++}
++
+ void
+ wsi_metal_layer_size(const CAMetalLayer *metal_layer,
+    uint32_t *width, uint32_t *height)
+@@ -165,7 +204,9 @@
+       metal_layer.allowsNextDrawableTimeout = YES;
+       metal_layer.framebufferOnly = framebuffer_only;
+ 
+-      metal_layer.maximumDrawableCount = image_count;
++      /* bbport (BB_COMMIT_TRACE): the values a present stall is made of, once per swapchain. */
++      const uint32_t drawables = wsi_drawable_count(image_count);
++      metal_layer.maximumDrawableCount = drawables;
+       metal_layer.drawableSize = (CGSize){.width = width, .height = height};
+       metal_layer.opaque = enable_opaque;
+       metal_layer.displaySyncEnabled = !enable_immediate;
+@@ -175,6 +216,16 @@
+       metal_layer.wantsExtendedDynamicRangeContent = wants_edr;
+       /* Needs release: https://github.com/KhronosGroup/MoltenVK/issues/940 */
+       CGColorSpaceRelease(cg_color_space);
++
++      if (kk_commit_trace_enabled()) {
++         fprintf(stderr,
++                 "BBCT layer maxDrawables=%lu (image_count=%u%s) displaySync=%d framebufferOnly=%d "
++                 "opaque=%d drawable %.0fx%.0f\n",
++                 (unsigned long)metal_layer.maximumDrawableCount, image_count,
++                 drawables != image_count ? ", BB_DRAWABLES" : "",
++                 (int)metal_layer.displaySyncEnabled, (int)metal_layer.framebufferOnly,
++                 (int)metal_layer.opaque, (double)width, (double)height);
++      }
+    }
+ 
+    return VK_SUCCESS;
+@@ -269,7 +320,23 @@
+ wsi_metal_layer_acquire_drawable(const CAMetalLayer *metal_layer)
+ {
+    @autoreleasepool {
++      const bool trace = kk_commit_trace_enabled();
++      int64_t t0 = 0;
++      if (trace)
++         t0 = wsi_trace_now_ns();
+       id<CAMetalDrawable> drawable = [metal_layer nextDrawable];
++      if (trace) {
++         const int64_t block_us = (wsi_trace_now_ns() - t0) / 1000;
++         if (drawable != nil)
++            kk_commit_trace_drawable_acquired();
++         /* The pool is what a present stalls on: report every acquire that waited, and what was
++          * still out when this one came back. */
++         if (drawable == nil || block_us >= 200) {
++            fprintf(stderr, "BBCT acquire t_ms=%.3f got=%d block_us=%lld inflight=%u\n",
++                    (double)t0 / 1e6, drawable != nil, (long long)block_us,
++                    kk_commit_trace_inflight());
++         }
++      }
+       return (CAMetalDrawable *)[drawable retain];
+    }
+ }
