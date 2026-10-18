@@ -67,6 +67,10 @@ public:
     /// BB_COPY_MERGE: a draw the waiting copies could not pass ended the pass (the break they
     /// would have caused on their own): counted in the `Copy merge` line.
     void NoteDeferredCopyBreak();
+    /// BB_INPASS_BARRIERS=1 (default off): a memory-only barrier that arrives while a render
+    /// pass is open stays inside the pass instead of ending it and starting it again
+    /// (docs/INPASS_BARRIER_RESULT.md; ENCODER_ATTRIBUTION.md, cutlist item 3).
+    static bool InPassBarriersEnabled();
     /// BB_COPY_MERGE: records the copies waiting for the pass's end, in guest order, as the
     /// transfer encoder a break would have recorded. The scheduler calls it once the render pass
     /// that held them is closed (Scheduler::SetPassEndCallback), so they run right after it.
@@ -180,6 +184,9 @@ private:
     /// cannot wait: no pass open, a barrier, a paged access or an overlap with a waiting copy).
     void CopyBufferRecord(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
                           std::span<const vk::BufferCopy> copies);
+    /// BB_INPASS_BARRIERS: whether a barrier carrying no image transitions, waiting in `dst`,
+    /// may be recorded inside the open render pass instead of ending it.
+    [[nodiscard]] bool BarrierStaysInPass(bool memory_only, vk::PipelineStageFlags2 dst) const;
     /// BB_COPY_MERGE: records one copy after the pass's end and tracks its accesses.
     void CopyBufferTrack(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
                          std::span<const vk::BufferCopy> copies, bool bounded, u64 src_min,
@@ -226,6 +233,14 @@ private:
     /// catch (a path that touches buffers without going through Rasterizer::bound_buffers).
     /// Any of them means the copy was reordered past that access: counted and reported.
     u64 deferred_late_hits = 0;
+    // BB_INPASS_BARRIERS (default off): a memory barrier is legal inside an open render pass and
+    // the driver records it without ending the encoder (KosmicKrisp kk_cmd_buffer.c,
+    // kk_CmdPipelineBarrier2 with cmd->gfx.encoder set), so a memory-only barrier need not end the
+    // pass. The barrier then orders only what this encoder records next; every encoder ends
+    // ALL->ALL (kk_stop_encoder, BB_KK_BARRIER=legacy), so work before the pass is already
+    // visible to it and the invariant holds. Image transitions still end the pass: a layout
+    // change is not something an in-pass barrier can do. See docs/INPASS_BARRIER_RESULT.md.
+    const bool in_pass_barriers = InPassBarriersEnabled();
 };
 
 } // namespace Vulkan
