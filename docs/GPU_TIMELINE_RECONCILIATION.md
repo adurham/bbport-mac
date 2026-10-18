@@ -65,7 +65,10 @@ xcrun xctrace export --input out/e2/<tag>.trace \
 recording..." and then hangs at 0% CPU with the capture file still growing (3.0 GB in 180 s, no
 `toc.xml`, unexportable). SIGINT after a short fixed duration completes and finalizes every time
 (4/4 attempts), and the export then takes ~10 s for a ~1 s window (26-49 MB XML). Do not use
-`--time-limit` on this host; do keep a hard `timeout` around the record call.
+`--time-limit` on this host; do keep a hard `timeout` around the record call. Second gotcha:
+xctrace's SIGINT also cuts warm_route.sh's quit path short, so the game can outlive the harness --
+after a traced run, `pgrep -fl 'bb-probe|bb-gpu'` and kill only the pids whose command line names
+this worktree (a stray pair sat spinning at ~100% CPU and held the load average at 11 until killed).
 
 Analysis: `tools/macos/mtl_gaps.py` (unchanged, for comparability with B4/B5) plus
 `out/e2/e2_frame.py`, which normalizes to the **wall clock** instead of the trace's frame numbers --
