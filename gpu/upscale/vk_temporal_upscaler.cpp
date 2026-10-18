@@ -259,6 +259,9 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
                  (features & vk::FormatFeatureFlagBits::eBlitDst);
     // bbport: Stage D, the bespoke 2-pass temporal upscaler (docs/PERF_LOOP.md). Default off; the
     // variable is read once here and nowhere else. Needs the startup-patched (scaled) session.
+    // Measured 2026-10-17 at 854x480->2560x1440: 18.780 -> 18.165 ms (-0.615 ms, +1.8 fps) vs FSR 3.1
+    // preset 4, but less stable frame-to-frame than FSR (own repeat-pair diff mean 12.9 vs 8.1), so
+    // the line is CLOSED and this stays default off: docs/STAGE_D_CUSTOM_UPSCALER.md.
     if (const char* custom = std::getenv("BB_UPSCALE_CUSTOM")) {
         custom_enabled = custom[0] == '1';
     }
