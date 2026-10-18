@@ -135,3 +135,43 @@ quality (text/HUD sharpness, ghosting on particles/fog/transparents) and cost.
 
 Bottom-line numbers only (p50, fps, encoders, deltas, correctness), TLDR-sized. Every stage ends
 with a commit + push and a doc update. Never re-walk a closed lever: check this file first.
+
+## Final state — 2026-10-18 (all stages closed; the loop is done)
+
+Stage E (FRAME_PIPELINE_TIMELINE.md): the guest is held by the console pacing lock so recording
+never overlaps the GPU — but six unpipelining variants (up to a full frame of run-ahead, presenter
+gate removed) all landed at 18.77-19.06 ms. Serialization is real and worthless to remove.
+
+Stage F (GPU_TIMELINE_RECONCILIATION.md): the GPU really executes **12.5-12.7 ms** busy, not 18.6;
+**5.86-6.01 ms of idle sits at command-buffer boundaries** (302 CB/frame at ~19.4 us; between
+encoders inside a buffer: 0.2 us). Commit cadence is closed as a mechanism (the Metal 4
+micro-benchmark's up-front-commit control shows the same per-boundary drain).
+
+Stage G (BUBBLE_STALL_ANALYSIS.md + FRAME_HANDOFF_WAIT.md): the once-per-frame 1.36 ms bubble is
+**not a queue wait** — both driver waits are enqueued a full frame early and resolved before the
+GPU arrives (0 of 2,803 rows late), and the drawable pool peaks at 1 of 3 (never exhausted). It
+decomposes into **two once-per-frame MTL4 submission boundaries (0.70 + 0.18 ms)** plus ~0.5 ms
+inside a commit. No fix was shipped; `BB_DRAWABLES` and `BB_COMMIT_TRACE(_FULL)` remain as tooling.
+
+### The arithmetic, final
+
+Frame (2560, FSR3.1 p4, 854x480 internal) = **12.5 ms GPU work + 5.9 ms Metal submission
+boundaries = 18.4 ms (54 fps)**. 60 fps needs 16.67 ms: a **1.7-2.1 ms deficit**. Priced levers:
+encoder merges 0.6, custom upscaler 0.615, relaxed hazard rule 0.35 — ~1.5 ms combined and partly
+overlapping, and none of them touch the 5.9 ms boundary cost. **60 fps at 2560 is not reachable by
+the priced micro-levers.** The portable numbers today: 2560 ~53-55 fps, 3440 ~50-52 fps.
+
+### What remains, priced honestly
+
+1. **GPU work (needs ~1.8 ms):** fragment 5.41 ms (2.99 in 13.8 medium full-res passes), vertex
+   3.64 (2.39 in 9.6 heavy draws), compute 3.52 (the FSR chain alone is 1.50-1.63) — a cheaper
+   upscaler that keeps quality is the most concentrated item.
+2. **Frame generation** (FSR 3.1 FG is compiled in, unwired) — perceived 60+, not true 60; latency
+   and artifacts are the trade.
+3. **Accept the numbers** above; use the presets (p4 is fastest at both resolutions).
+4. The deep renderer rework (Fable: not now; the Metal-native core inherits Metal's per-encoder cost
+   anyway).
+
+Tooling left behind (all default off): BB_COPY_MERGE, BB_INPASS_BARRIERS, BB_BREAK_STORE_PROBE,
+BB_DOWNLOAD_SYNC_PROBE, BB_UPSCALE_CUSTOM, BB_FRAME_TIMELINE, BB_SUBMIT_PIPELINE, BB_COMMIT_TRACE,
+BB_DRAWABLES; plus tools/macos/mtl_gaps.py, mtl_bubble.py, commit_trace.py.
