@@ -348,6 +348,38 @@ Frame* Presenter::PrepareFrame(const BbVideoOut::BufferAttributeGroup& attribute
     if (upscaled && upscaler.GetFrameGeneration() &&
         upscaler.GetFrameGeneration()->TakeOutput(cpu_address, interp) &&
         interp.width == display.width && interp.height == display.height) {
+        // BB_FG_DUMP_TRIGGER=<file> (or BB_SEQUENCE_DUMP_AT=<frame>) — frame generation checks:
+        // the interpolation's own output, as the frame generator wrote it and before the encode
+        // into the presented image. The sequence dump only sees the image after this pass, so this
+        // is the half of the pair that says whether a colour error came from FI's transfer
+        // function or from the encode.
+        static const char* fg_dump_trigger = std::getenv("BB_FG_DUMP_TRIGGER");
+        static long fg_dump_at = [] {
+            const char* at = std::getenv("BB_SEQUENCE_DUMP_AT");
+            return at && *at ? std::strtol(at, nullptr, 10) : -1;
+        }();
+        static bool fg_dump_armed = false;
+        static int fg_dump_left = 0, fg_dump_index = 0;
+        if (!fg_dump_armed && fg_dump_at >= 0 &&
+            long(BbStats::frame_number.load(std::memory_order_relaxed)) >= fg_dump_at) {
+            fg_dump_armed = true;
+            fg_dump_left = 16;
+            fg_dump_index = 0;
+        }
+        if (!fg_dump_armed && fg_dump_trigger && std::remove(fg_dump_trigger) == 0) {
+            fg_dump_armed = true;
+            fg_dump_left = 16;
+            fg_dump_index = 0;
+        }
+        if (fg_dump_left > 0) {
+            --fg_dump_left;
+            const int index = fg_dump_index++;
+            draw_scheduler.Record([this, image = interp.image, w = interp.width, h = interp.height,
+                                   index](vk::CommandBuffer cmdbuf) {
+                DumpPresented(instance, draw_scheduler, cmdbuf, image, w, h,
+                              swapchain.GetSurfaceFormat().format, index, "fi");
+            });
+        }
         EncodeInterpolated(frame, interp.image, interp.format, interp.width, interp.height,
                            view_info.format, encode);
     }
@@ -678,8 +710,21 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
     // interpolated ones ("interp") and the game's ("real") in the order they are presented.
     {
         static const char* trigger = std::getenv("BB_SEQUENCE_DUMP_TRIGGER");
+        // BB_SEQUENCE_DUMP_AT=<frame>: the same dump armed by frame number (the FI dump's gate is
+        // one frame behind: PrepareFrame numbers the frame before the present thread sees it).
+        static const long at = [] {
+            const char* a = std::getenv("BB_SEQUENCE_DUMP_AT");
+            return a && *a ? std::strtol(a, nullptr, 10) : -1;
+        }();
+        static bool armed_at = false;
         static int left = 0, index = 0;
         if (trigger && left == 0 && std::remove(trigger) == 0) {
+            left = 16;
+            index = 0;
+        }
+        if (!armed_at && at >= 0 &&
+            long(BbStats::frame_number.load(std::memory_order_relaxed)) >= at + 1) {
+            armed_at = true;
             left = 16;
             index = 0;
         }
