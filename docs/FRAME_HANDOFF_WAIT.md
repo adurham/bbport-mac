@@ -163,7 +163,7 @@ that boundary is not waiting on either resolver.**
 Note this also disposes of the "semaphore chain serialisation" variant of the event hypothesis
 that BUBBLE listed as the alternative worth 1.2 ms: for it to be the cost, the *signalling* submit
 would have to arrive late. It does not — it is in the same call. The event values advance by 2 per
-frame (`ev_value` 16 487 → 22 093 over 140 s, one per submit), and every one of them is signalled
+frame (`ev_value` 16 487 → 22 093 over 148 s, one per submit), and every one of them is signalled
 a frame before it is awaited.
 
 ## What the dry at those boundaries actually is, and what is left
