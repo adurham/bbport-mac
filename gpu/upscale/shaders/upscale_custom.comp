@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport: pass 1 of the bespoke 2-pass temporal upscaler (BB_UPSCALE_CUSTOM=1, Stage D):
+// reprojection, accumulation and the spatial reconstruction in one dispatch, from the
+// render-size inputs of a scaled preset (854x480) to the output-size image (2560x1440).
+// Pass 2 is the existing taa_sharpen (RCAS) + blit in vk_temporal_upscaler.
+//
+// The helpers and the accumulation rules below are copied from upscale/shaders/taa.comp, which
+// is the validated reference: keep them in sync with taa.comp.
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D color_tex;   // render size, RGBA8Unorm (tonemapped frame)
+layout(binding = 1) uniform sampler2D depth_tex;   // render size, D32Sfloat(+S8), 0..1
+layout(binding = 2) uniform sampler2D motion_tex;  // render size, RG16F, previous-minus-current
+layout(binding = 3) uniform sampler2D history_tex; // output size, RGBA32F (RGB + depth)
+layout(binding = 4, rgba16f) uniform writeonly image2D result_img;   // output size
+layout(binding = 5, rgba32f) uniform writeonly image2D next_history; // output size
+layout(push_constant) uniform Params {
+    vec2 jitter; // RENDER pixels (Halton 2,3); never scaled to the output size
+    uint reset_history;
+    uint pad; // unused here: the TAA diagnostic/A/B switches do not apply to this pass
+    vec4 proj;
+    vec4 prev_proj;
+    vec4 previous_z;
+    vec4 sizes; // xy: render size, zw: output size
+};
+
+// Compare depths in the SAME camera, with tolerance proportional to view distance.
+// Raw device depth is nonlinear; a constant epsilon merges unrelated distant surfaces.
+float expectedPreviousDepth(float depth, vec2 source, ivec2 size) {
+    if (depth >= 1.0) return 1.0;
+    vec2 uv = (source + 0.5 - jitter) / vec2(size);
+    vec2 ndc = uv * 2.0 - 1.0; // +y down the screen, proj carries the sign (camera_motion.comp)
+    float z = proj.w / min(depth - proj.z, -1e-8);
+    float prev_z = dot(previous_z, vec4(ndc * z / proj.xy, z, 1.0));
+    if (prev_z <= 0.0) return -1.0;
+    return prev_proj.z + prev_proj.w / prev_z;
+}
+
+// Depth must be unjittered too. A nearest sample on a sloping surface moves in depth
+// as Halton changes, even with a stationary camera. Use the smaller one-sided slope
+// to avoid extrapolating across a silhouette or a foreground/background discontinuity.
+float depthSlope(float depth, ivec2 source, ivec2 axis, ivec2 size) {
+    float left = depth - texelFetch(depth_tex, clamp(source - axis, ivec2(0), size-1), 0).r;
+    float right = texelFetch(depth_tex, clamp(source + axis, ivec2(0), size-1), 0).r - depth;
+    float slope = abs(left) < abs(right) ? left : right;
+    return abs(slope) <= max(2e-7, abs(proj.z-depth)*0.1) ? slope : 0.0;
+}
+
+// The reconstruction averages in a tonemapped space, as taa.comp:99-108 does: a few very
+// bright HDR pixels (highlights, sparks, sun on water) otherwise dominate the 3x3 fit.
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+vec3 tonemap(vec3 c) { c = max(c, vec3(0.0)); return c / (1.0 + luma(c)); }
+vec3 untonemap(vec3 c) { return c / max(1.0 - luma(c), 1e-4); }
+
+// Moves `history` towards `center` until it is inside the box (clamping per channel instead
+// shifts its hue and changes with every jitter phase).
+vec3 clipToBox(vec3 history, vec3 center, vec3 lo, vec3 hi) {
+    vec3 extent = max(0.5 * (hi - lo), vec3(1e-5));
+    vec3 offset = history - 0.5 * (hi + lo);
+    vec3 units = abs(offset / extent);
+    float m = max(units.x, max(units.y, units.z));
+    return m > 1.0 ? 0.5 * (hi + lo) + offset / m : history;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 out_size = ivec2(sizes.zw);
+    ivec2 render_size = ivec2(sizes.xy);
+    if (any(greaterThanEqual(p, out_size))) return;
+    // Output pixel centre -> render texel space, in the centre-at-integer convention taa.comp
+    // uses (`p + jitter`). 2560/854 is 2.998, not 3.0: nothing here may use a single scalar.
+    vec2 uv = (vec2(p) + 0.5) / vec2(out_size);
+    vec2 render_pos = uv * vec2(render_size) - 0.5;
+    // Jitter is in RENDER pixels (taa.comp:36,80): never divide it by the output size.
+    vec2 current_pos = render_pos + jitter;
+    ivec2 color_source = clamp(ivec2(floor(current_pos + 0.5)), ivec2(0), render_size - 1);
+    ivec2 source = color_source;
+    // 3x3 over the render texels under this output pixel: the RGB min/max box (history clamp)
+    // and a jitter-aware reconstruction (a Blackman-Harris fit, as in UE4). This IS the upscale;
+    // there is no separate spatial pass.
+    vec3 rgb_lo = vec3(1e9), rgb_hi = vec3(-1e9);
+    vec3 filtered = vec3(0.0);
+    float filter_weight = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 q = clamp(color_source + ivec2(x,y), ivec2(0), render_size - 1);
+            vec3 c = texelFetch(color_tex, q, 0).rgb;
+            if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+            rgb_lo = min(rgb_lo, c);
+            rgb_hi = max(rgb_hi, c);
+            vec2 d = vec2(color_source + ivec2(x,y)) - current_pos;
+            float w = exp(-2.29 * dot(d, d));
+            filtered += tonemap(c) * w;
+            filter_weight += w;
+        }
+    vec3 current = untonemap(filtered / filter_weight);
+    rgb_lo = min(rgb_lo, current);
+    rgb_hi = max(rgb_hi, current);
+    float depth = texelFetch(depth_tex, source, 0).r;
+    // Dilate foreground depth/motion, as temporal upscalers do. Thin geometry can
+    // alternate with background under jitter; a 3x3 nearest surface remains trackable.
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 candidate = clamp(color_source+ivec2(x,y),ivec2(0),render_size-1);
+            float candidate_depth = texelFetch(depth_tex,candidate,0).r;
+            if (candidate_depth < depth) {
+                depth = candidate_depth;
+                source = candidate;
+            }
+        }
+    if (depth < 1.0) {
+        vec2 slope = vec2(depthSlope(depth,source,ivec2(1,0),render_size),
+                          depthSlope(depth,source,ivec2(0,1),render_size));
+        depth = clamp(depth + dot(current_pos-vec2(source),slope),0.0,1.0-1e-7);
+    }
+    vec3 result = current;
+    // Do not sample undefined history on reset, including the first dispatch after resizing.
+    if (reset_history == 0) {
+        // Object vectors are already merged into this one (CameraMotion::RecordMotion); the
+        // vector is previous-minus-current in RENDER pixels.
+        vec2 motion = texelFetch(motion_tex, source, 0).rg;
+        // Previous position in OUTPUT pixels, computed in uv: ((src + 0.5 + motion)/render)*out-0.5.
+        vec2 source_uv = (vec2(source) + 0.5) / vec2(render_size);
+        vec2 previous_pos = (source_uv + motion / vec2(render_size)) * vec2(out_size) - 0.5;
+        if (!any(isnan(motion)) && !any(isinf(motion)) &&
+            all(greaterThanEqual(previous_pos, vec2(0))) &&
+            all(lessThanEqual(previous_pos, vec2(out_size - 1)))) {
+            float expected_depth = expectedPreviousDepth(depth, current_pos, render_size);
+            // Validate each bilinear tap separately: interpolating foreground/background
+            // depth invents a surface and causes history rejection along thin edges.
+            // Separate the integer pixel from the subpixel motion before interpolation.
+            // Adding tiny motion to a large coordinate first loses fractional precision.
+            vec2 delta = previous_pos - vec2(p);
+            vec2 integer_motion = floor(delta);
+            ivec2 base = p + ivec2(integer_motion);
+            vec2 fraction = delta - integer_motion;
+            vec3 history_rgb = vec3(0.0);
+            float coverage = 0.0;
+            float threshold = max(2e-7, abs(prev_proj.z - expected_depth) * 0.02);
+            for (int y = 0; y < 2; ++y)
+                for (int x = 0; x < 2; ++x) {
+                    vec4 tap = texelFetch(history_tex,
+                        clamp(base + ivec2(x,y), ivec2(0), out_size - 1), 0);
+                    float w = (x == 0 ? 1.0 - fraction.x : fraction.x) *
+                              (y == 0 ? 1.0 - fraction.y : fraction.y);
+                    bool same_surface = depth >= 1.0 ? tap.a >= 1.0 :
+                        tap.a < 1.0 && abs(tap.a - expected_depth) <= threshold;
+                    // When nothing moves, history in front of the current surface stays:
+                    // a thin surface (railing, window bars) that this jitter phase missed
+                    // otherwise blinks with the jitter sequence (static-camera flicker p99.9
+                    // -45%, 2026-10-03). An object that moved away is bounded by the colour clip
+                    // below, as in TAA without depth rejection. (taa.comp:167-174; length() is in
+                    // render pixels there and here.)
+                    if (!same_surface && length(motion) < 1.0 &&
+                        tap.a < expected_depth && expected_depth < 1.0)
+                        same_surface = true;
+                    if (same_surface && !any(isnan(tap)) && !any(isinf(tap))) {
+                        history_rgb += tap.rgb * w;
+                        coverage += w;
+                    }
+                }
+            // Conservatively discard newly revealed surfaces. RGB clipping handles animated
+            // objects lacking object vectors, transparent effects and lighting changes.
+            if (expected_depth >= 0.0 && coverage > 0.01) {
+                vec3 history_sample = history_rgb / coverage;
+                // Motion in output pixels, so "moving" means the same on screen at 3x.
+                float moving = clamp(length(motion) * float(out_size.x) / float(render_size.x) / 8.0,
+                                     0.0, 1.0);
+                vec3 clipped = clipToBox(history_sample, 0.5 * (rgb_lo + rgb_hi), rgb_lo, rgb_hi);
+                // Reliable history suppresses subpixel shimmer even on distant geometry.
+                float weight = mix(0.98, 0.85, moving) * coverage;
+                result = mix(current, clipped, weight);
+            }
+        }
+    }
+    imageStore(result_img, p, vec4(result, 1.0));
+    imageStore(next_history, p, vec4(result, depth));
+}

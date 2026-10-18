@@ -206,6 +206,13 @@ private:
     bool RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color, Fsr4Upscaler::Image depth,
                     u32 w, u32 h, u32 ow, u32 oh, float frame_ms);
     void RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color, vk::ImageView depth);
+    /// bbport: BB_UPSCALE_CUSTOM=1 on a scaled (startup-patched) session: the bespoke 2-pass
+    /// upscaler replaces FSR 3/TAA. Pass 1 is upscale_custom.comp, pass 2 the RCAS + blit.
+    [[nodiscard]] bool UseCustom() const;
+    /// Records pass 1 into output_image (RGBA16F, output size); false if it could not run.
+    bool RecordCustom(vk::CommandBuffer cmdbuf, vk::ImageView color, vk::ImageView depth, u32 w,
+                      u32 h, u32 ow, u32 oh);
+
     /// bbport: MetalFX is selected, available and has not failed (macOS, vk_metalfx).
     [[nodiscard]] bool UseMetalFx() const;
     /// MetalFX into output_image. Ends the submission: callers fetch CommandBuffer() again.
@@ -230,6 +237,8 @@ private:
 
     bool enabled = false;
     bool failed = false;
+    /// BB_UPSCALE_CUSTOM=1, read once in the constructor; nothing else reads the variable.
+    bool custom_enabled = false;
     /// An FSR 3 dispatch recorded on a recording thread failed; `failed` at the next frame.
     std::atomic<bool> dispatch_failed{false};
     u64 trigger_hash = 0x9a9cf8a9;
@@ -327,6 +336,11 @@ private:
     vk::UniquePipelineLayout taa_sharpen_pipeline_layout;
     vk::UniquePipeline taa_sharpen_pipeline;
     vk::UniquePipeline taa_sharpen_ldr_pipeline;
+    // bbport: BB_UPSCALE_CUSTOM (Stage D), pass 1 of the bespoke upscaler. Off by default.
+    vk::UniqueDescriptorSetLayout custom_desc_layout;
+    vk::UniquePipelineLayout custom_pipeline_layout;
+    vk::UniquePipeline custom_pipeline;
+    bool resources_custom = false; ///< images/pipelines made for the custom upscaler
     // bbport: FSR 4 in linear light on the scaled presets (fsr4_color.comp): the decoded input
     // and the passes that decode it and encode the output again.
     VideoCore::HostImage fsr4_linear_image;

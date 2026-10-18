@@ -22,6 +22,7 @@
 #include "bbgpu/shaders/upscale_merge_comp.h"
 #include "bbgpu/shaders/upscale_reactive_comp.h"
 #include "bbgpu/shaders/taa_comp.h"
+#include "bbgpu/shaders/upscale_custom_comp.h"
 #include "bbgpu/shaders/taa_sharpen_comp.h"
 #include "bbgpu/shaders/taa_sharpen_ldr_comp.h"
 #include "bbgpu/shaders/fsr4_decode_comp.h"
@@ -256,6 +257,11 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
                               .optimalTilingFeatures;
     depth_blit = (features & vk::FormatFeatureFlagBits::eBlitSrc) &&
                  (features & vk::FormatFeatureFlagBits::eBlitDst);
+    // bbport: Stage D, the bespoke 2-pass temporal upscaler (docs/PERF_LOOP.md). Default off; the
+    // variable is read once here and nowhere else. Needs the startup-patched (scaled) session.
+    if (const char* custom = std::getenv("BB_UPSCALE_CUSTOM")) {
+        custom_enabled = custom[0] == '1';
+    }
     if (enabled && !instance.IsStorageImageWriteWithoutFormatEnabled()) {
         std::printf("Upscaler: shaderStorageImageWriteWithoutFormat unsupported, FSR 3 off\n");
         enabled = false;
@@ -287,10 +293,17 @@ bool TemporalUpscaler::Active() const {
            !BbToggle::Disabled(1u << 24);
 }
 
+// bbport: Stage D, the bespoke 2-pass upscaler. Requiring `scaled_session` keeps it on the
+// startup-patched (BB_RENDER_RES) path, whose render size is fixed for the session.
+bool TemporalUpscaler::UseCustom() const {
+    return custom_enabled && scaled_session && Active() && !failed;
+}
+
 bool TemporalUpscaler::ReactiveOn() const {
     // FSR 4 takes no reactive mask itself: the mask blends its output afterwards
-    // (RecordFsr4Reactive). DLSS and MetalFX take none.
+    // (RecordFsr4Reactive). DLSS and MetalFX take none. The custom upscaler takes none either.
     return BbSettings::Get().reactive && !BbToggle::Disabled(1u << 27) && !UseDlss() &&
+           !UseCustom() &&
            BbSettings::Get().upscaler != BbSettings::UpscalerTaa &&
            BbSettings::Get().upscaler != BbSettings::UpscalerMetalFx;
 }
@@ -505,13 +518,14 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     const bool use_fsr4 = UseFsr4() || UseDlss();
     const bool use_taa = BbSettings::Get().upscaler == BbSettings::UpscalerTaa;
     const bool use_metalfx = UseMetalFx();
+    const bool use_custom = UseCustom();
     if (use_taa && (w != ow || h != oh)) {
         std::printf("TAA: remove BB_RENDER_RES to use native-resolution TAA\n");
         return false;
     }
     if (resources_ready && w == width && h == height && ow == out_width && oh == out_height &&
         hdr == context_hdr && use_fsr4 == resources_fsr4 && use_taa == resources_taa &&
-        use_metalfx == resources_metalfx) {
+        use_metalfx == resources_metalfx && use_custom == resources_custom) {
         return true;
     }
     const auto device = instance.GetDevice();
@@ -559,8 +573,8 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     create_info.maxRenderSize = {w, h};
     create_info.maxOutputSize = {ow, oh};
     // FSR 4 has its own model context (vk_fsr4), MetalFX its own scaler (vk_metalfx); the images
-    // below are shared.
-    if (!use_fsr4 && !use_taa && !use_metalfx) {
+    // below are shared. The custom upscaler makes no FSR 3 context either.
+    if (!use_fsr4 && !use_taa && !use_metalfx && !use_custom) {
         if (const u64 issues = ffxVkPortableValidateUpscaleCreateInfo(&create_info)) {
             PrintIssues("create info", issues);
             return false;
@@ -667,7 +681,7 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     for (u32 i = 0; i < taa_history.size(); ++i) {
         taa_history_views[i].reset();
         taa_history[i] = VideoCore::HostImage{};
-        if (use_taa) {
+        if (use_taa || use_custom) {
             make_image(taa_history[i], taa_history_views[i], vk::Format::eR32G32B32A32Sfloat,
                        vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
                            vk::ImageUsageFlagBits::eTransferSrc,
@@ -682,6 +696,11 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     resources_fsr4 = use_fsr4;
     resources_taa = use_taa;
     resources_metalfx = use_metalfx;
+    resources_custom = use_custom;
+    if (use_custom) {
+        std::printf("Upscaler: BB_UPSCALE_CUSTOM engaged %ux%u -> %ux%u (2-pass)\n", w, h, ow, oh);
+        return true;
+    }
     if (use_metalfx) {
         std::printf("Upscaler: MetalFX inputs %ux%u -> %ux%u\n", w, h, ow, oh);
         return true;
@@ -839,6 +858,27 @@ void TemporalUpscaler::CreatePipelines() {
             .addressModeW = vk::SamplerAddressMode::eClampToEdge}));
         taa_pipeline = compute(TAA_COMP, *taa_pipeline_layout);
     }
+    if (custom_enabled && scaled_session) {
+        // bbport: BB_UPSCALE_CUSTOM (Stage D), pass 1 of the bespoke upscaler. Created only under
+        // the gate: nothing is built, and no sampler/layout is allocated, when it is unset. The
+        // TAA sampler above is nearest, which is all this pass needs (every fetch is texelFetch).
+        std::array<vk::DescriptorSetLayoutBinding, 6> bindings{};
+        for (u32 i = 0; i < bindings.size(); ++i) {
+            bindings[i] = {.binding = i,
+                           .descriptorType = i < 4 ? vk::DescriptorType::eCombinedImageSampler
+                                                   : vk::DescriptorType::eStorageImage,
+                           .descriptorCount = 1, .stageFlags = vk::ShaderStageFlagBits::eCompute};
+        }
+        custom_desc_layout = Check(device.createDescriptorSetLayoutUnique({
+            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+            .bindingCount = u32(bindings.size()), .pBindings = bindings.data()}));
+        // TAA's 64-byte block plus sizes (render.xy, output.xy).
+        const vk::PushConstantRange push{vk::ShaderStageFlagBits::eCompute, 0, 80};
+        custom_pipeline_layout = Check(device.createPipelineLayoutUnique({
+            .setLayoutCount = 1, .pSetLayouts = &*custom_desc_layout,
+            .pushConstantRangeCount = 1, .pPushConstantRanges = &push}));
+        custom_pipeline = compute(UPSCALE_CUSTOM_COMP, *custom_pipeline_layout);
+    }
 }
 
 void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
@@ -935,6 +975,85 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
         cmdbuf.dispatch((out_width + 7) / 8, (out_height + 7) / 8, 1);
     }
     taa_next = 1 - taa_next;
+}
+
+// bbport: BB_UPSCALE_CUSTOM pass 1 (upscale_custom.comp): reproject, accumulate and reconstruct
+// in one dispatch, from render-size colour/depth/motion into output_image at the output size.
+// Pass 2 is the caller's existing ExtraSharpen(output_image) + blit into the UI image.
+bool TemporalUpscaler::RecordCustom(vk::CommandBuffer cmdbuf, vk::ImageView color,
+                                    vk::ImageView depth, u32 w, u32 h, u32 ow, u32 oh) {
+    if (!custom_pipeline || !output_view || !taa_history_views[0] || !taa_history_views[1] ||
+        !motion_view) {
+        return false;
+    }
+    // Make scene writes and the last storage-image history writes visible to sampled reads.
+    const vk::MemoryBarrier2 inputs{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite |
+                         vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead |
+                         vk::AccessFlagBits2::eShaderStorageWrite,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &inputs});
+    // Histories alternate between reads and writes. Queue ordering plus this dependency
+    // protects both the previous write and a reused destination's previous read (RecordTaa).
+    std::array<vk::ImageMemoryBarrier2, 2> barriers{};
+    for (u32 i = 0; i < barriers.size(); ++i) {
+        barriers[i] = {.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite |
+                             vk::AccessFlagBits2::eShaderStorageWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead |
+                             vk::AccessFlagBits2::eShaderStorageWrite,
+            .oldLayout = reset ? vk::ImageLayout::eUndefined : vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .image = vk::Image(taa_history[i]),
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+    }
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = u32(barriers.size()),
+                             .pImageMemoryBarriers = barriers.data()});
+    const std::array<vk::ImageView, 6> views{
+        color, depth, *motion_view, *taa_history_views[1 - taa_next],
+        *output_view, *taa_history_views[taa_next]};
+    std::array<vk::DescriptorImageInfo, 6> infos{};
+    std::array<vk::WriteDescriptorSet, 6> writes{};
+    for (u32 i = 0; i < infos.size(); ++i) {
+        infos[i] = {.sampler = i < 4 ? *taa_sampler : vk::Sampler{},
+                    .imageView = views[i], .imageLayout = vk::ImageLayout::eGeneral};
+        writes[i] = {.dstBinding = i, .descriptorCount = 1,
+            .descriptorType = i < 4 ? vk::DescriptorType::eCombinedImageSampler
+                                    : vk::DescriptorType::eStorageImage,
+            .pImageInfo = &infos[i]};
+    }
+    // TAA's 64-byte block (jitter in render pixels, camera matrices, reset) plus the two sizes:
+    // the pass cannot derive them, and 2560/854 is 2.998, so both must be exact.
+    struct Params {
+        std::array<float, 2> jitter;
+        u32 reset, pad;
+        std::array<std::array<float, 4>, 3> depth;
+        std::array<float, 4> sizes; // render.xy, output.xy
+    };
+    static_assert(sizeof(Params) == 80, "upscale_custom.comp push constant block is 80 bytes");
+    const Params params{jitter, reset ? 1u : 0u, 0u, camera_motion.TaaDepthParameters(),
+                        {float(w), float(h), float(ow), float(oh)}};
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *custom_pipeline);
+    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *custom_pipeline_layout, 0,
+                                writes);
+    cmdbuf.pushConstants(*custom_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                         sizeof(params), &params);
+    cmdbuf.dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
+    // The sharpen pass and the blit that follow read this dispatch's writes.
+    const vk::MemoryBarrier2 resolved{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eMemoryRead |
+                         vk::AccessFlagBits2::eMemoryWrite,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &resolved});
+    taa_next = 1 - taa_next;
+    return true;
 }
 
 void TemporalUpscaler::ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h, float applied) {
@@ -1930,7 +2049,8 @@ void TemporalUpscaler::RunScaled() {
     // UI image. They record directly (MetalFX also submits the frame so far and continues in a
     // new command buffer).
     const bool use_metalfx = UseMetalFx();
-    if (UseFsr4() || UseDlss() || use_metalfx ||
+    const bool use_custom = UseCustom();
+    if (UseFsr4() || UseDlss() || use_metalfx || use_custom ||
         BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
         auto cmdbuf = scheduler.CommandBuffer(); // after the commands recorded above
         barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
@@ -1939,6 +2059,9 @@ void TemporalUpscaler::RunScaled() {
         bool ok4 = true;
         if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa) {
             RecordTaa(cmdbuf, color_view, depth_view);
+        } else if (use_custom) {
+            // bbport: BB_UPSCALE_CUSTOM pass 1; pass 2 is the ExtraSharpen + blit below.
+            ok4 = RecordCustom(cmdbuf, color_view, depth_view, w, h, ow, oh);
         } else if (use_metalfx) {
             fsr4_linear_frame = false;
             ok4 = RecordMetalFx({color_image, color.info.pixel_format,
@@ -2054,7 +2177,9 @@ void TemporalUpscaler::RunScaled() {
         }
         if (ok4) {
             if (BbSettings::Get().upscaler != BbSettings::UpscalerTaa) {
-                ExtraSharpen(vk::Image(output_image), false, ow, oh, use_metalfx ? 0.0f : 1.0f);
+                // The custom pass has no RCAS of its own: ExtraSharpen is its pass 2.
+                ExtraSharpen(vk::Image(output_image), false, ow, oh,
+                             use_metalfx || use_custom ? 0.0f : 1.0f);
             }
             barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
                     vk::ImageLayout::eGeneral, all, rw, vk::ImageLayout::eGeneral,
