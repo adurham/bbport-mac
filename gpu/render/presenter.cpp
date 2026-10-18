@@ -13,6 +13,7 @@
 #include "bbport_game_menu.h"
 #include "bbport_overlay.h"
 #include "bbport_timeline.h"
+#include "bbport_frame_timeline.h"
 #include "bbport_toggles.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
@@ -370,7 +371,9 @@ Frame* Presenter::PrepareFrame(const BbVideoOut::BufferAttributeGroup& attribute
             const u64 tick = recent_frame_ticks.front();
             recent_frame_ticks.pop_front();
             BbStats::WaitTimer timer{BbStats::present_wait_ns};
+            BbFrameTimeline::NotePresentWaitBegin(0); // BB_FRAME_TIMELINE: the guest's frame now
             draw_scheduler.Wait(tick);
+            BbFrameTimeline::NotePresentWaitEnd(0);
         }
     }
     return frame;

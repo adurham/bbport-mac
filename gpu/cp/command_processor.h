@@ -185,6 +185,7 @@ private:
         Walk ce;
         u32 queue = 0;
         u64 seq = NoSeq;
+        u64 tl_frame = 1; ///< BB_FRAME_TIMELINE: the guest frame this submission belongs to
         bool started = false;
         bool ce_started = false;
         std::shared_ptr<SubmittedCopy> copy;
@@ -307,6 +308,7 @@ private:
     u64 decoded_total = 0;
     std::deque<std::pair<u64, u64>> frame_ends; ///< (submissions, frame) per sceGnmSubmitDone
     u64 gfx_submit_seq = 0;
+    u64 timeline_frames = 0; ///< BB_FRAME_TIMELINE: frames numbered when the guest sends 0
     Work* last_decoded = nullptr; ///< BB_TIMELINE
 };
 

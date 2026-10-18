@@ -26,6 +26,7 @@
 #include <string_view>
 #include <utility>
 
+#include "bbport_frame_timeline.h"
 #include "bbport_gnm_hooks.h"
 #include "bbport_heap_sites.h"
 #include "bbport_timeline.h"
@@ -346,13 +347,35 @@ u32 SdkVersion() {
     return sdk_version;
 }
 
+bool PipelineMode() {
+    // BB_SUBMIT_PIPELINE=1 (default off, Stage E1): the retire-based pacing of the honest-labels
+    // mode, with the labels as they are otherwise: the guest may run a frame ahead (its first
+    // BB_SUBMIT_AHEAD submissions go straight through, the rest wait for the previous frame to
+    // retire) and the command thread submits each frame as soon as it is recorded, instead of the
+    // console's lock that holds every submission of a frame until the GPU has gone idle.
+    static const bool on = [] {
+        const char* env = std::getenv("BB_SUBMIT_PIPELINE");
+        const bool enabled = env && env[0] == '1';
+        if (enabled) {
+            std::printf("Gnm: BB_SUBMIT_PIPELINE=1 - retire-paced submissions (a frame may run "
+                        "ahead of the GPU)\n");
+        }
+        return enabled;
+    }();
+    return on;
+}
+
 bool SubmitLockOnDecode() {
     // Only with honest labels: without them the GPU idle interrupt comes at decode anyway, and
     // the idle check keeps waiting for deferred fences (BB_WORK_RETIRED, Steam Deck crashes).
-    return SubmitLock() != LockMode::Gpu && Vulkan::Rasterizer::HonestLabels();
+    // BB_SUBMIT_PIPELINE: the pacing alone, for the frame-pipeline measurement (docs/
+    // FRAME_PIPELINE_TIMELINE.md).
+    return SubmitLock() != LockMode::Gpu &&
+           (Vulkan::Rasterizer::HonestLabels() || PipelineMode());
 }
 
 void ReleaseSubmissionLock() {
+    BbFrameTimeline::NoteGpuIdle(0); // BB_FRAME_TIMELINE: the guest may submit again from here
     if (BbRemote::BackActive()) {
         BbRemote::Back::ReleaseSubmissionLock(); // the guest waits in the game process
     }
@@ -366,6 +389,7 @@ void NoteFramesRetired(u64 frames) {
         BbRemote::Back::FramesRetired(frames); // the guest waits in the game process
     }
     BbTimeline::Note(BbTimeline::FrameRetired, frames);
+    BbFrameTimeline::NoteRetire(frames); // BB_FRAME_TIMELINE (default off): the frame's line
     std::scoped_lock lock{pacing.mutex};
     pacing.frames_retired = std::max(pacing.frames_retired, frames);
     pacing.cv.notify_all();

@@ -20,6 +20,7 @@
 
 #include "bbport_ce_stats.h"
 #include "bbport_cpu.h"
+#include "bbport_frame_timeline.h"
 #include "bbport_free_check.h"
 #include "bbport_threads.h"
 #include "bbport_timeline.h"
@@ -167,6 +168,10 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
 
 CommandProcessor::CommandProcessor()
     : guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
+    if (BbFrameTimeline::Enabled()) {
+        std::printf("Frame timeline: BB_FRAME_TIMELINE=1, one line per frame follows\n");
+        std::fflush(stdout);
+    }
     thread = std::jthread{[this](std::stop_token stop) { Run(stop); }};
     if (const char* env = std::getenv("BB_STALL_REPORT"); !(env && env[0] == '0')) {
         stall_watch = std::jthread{[this](std::stop_token stop) { StallWatch(stop); }};
@@ -188,6 +193,10 @@ CommandProcessor::~CommandProcessor() {
 
 void CommandProcessor::SubmitDone(u64 frame) noexcept {
     std::scoped_lock lock{submit_mutex};
+    // BB_FRAME_TIMELINE (default off): in the console's pacing mode the guest sends frame 0 (it
+    // retires no frame there), so the timeline numbers the frames itself to tell them apart. The
+    // number stays out of the guest's own bookkeeping below.
+    BbFrameTimeline::NoteSubmitDone(frame != 0 ? frame : ++timeline_frames);
     if (frame != 0) {
         frame_ends.emplace_back(submissions_total, frame);
     }
@@ -426,6 +435,7 @@ void CommandProcessor::Run(std::stop_token stop) {
                 BbTimeline::Note(BbTimeline::DecodeBegin, u64(current_queue), decoded_total);
             }
             Status status;
+            BbFrameTimeline::NoteDecodeBegin(work->tl_frame); // BB_FRAME_TIMELINE (default off)
             {
                 BB_SECTION(ADecode);
                 status = current_queue == GfxQueueId ? RunGraphics(*work) : RunCompute(*work);
@@ -435,6 +445,7 @@ void CommandProcessor::Run(std::stop_token stop) {
                 continue;
             }
             BbTimeline::Note(BbTimeline::DecodeEnd, u64(current_queue), decoded_total + 1);
+            BbFrameTimeline::NoteDecodeEnd(work->tl_frame); // BB_FRAME_TIMELINE
             bool frame_end;
             {
                 std::scoped_lock lock{queue.mutex};
@@ -584,6 +595,10 @@ void CommandProcessor::SubmitGfx(std::span<const u32> dcb, std::span<const u32> 
     Queue& queue = queues[GfxQueueId];
     auto work = std::make_unique<Work>();
     work->queue = GfxQueueId;
+    // BB_FRAME_TIMELINE (default off): the guest frame this submission belongs to (kept here:
+    // `work` is moved into the queue below).
+    const u64 tl_frame = BbFrameTimeline::CurrentFrame();
+    work->tl_frame = tl_frame;
     // BB_COPY_GPU_BUFFERS: one copy per submission, alive until it is decoded (the guest reused
     // the memory before this thread got to it: "PM4 type 0" while an area loads).
     if (EmulatorSettings.IsCopyGpuBuffers()) {
@@ -616,6 +631,7 @@ void CommandProcessor::SubmitGfx(std::span<const u32> dcb, std::span<const u32> 
                                 dcb.size_bytes());
         queue.works.push_back(std::move(work));
     }
+    BbFrameTimeline::NoteSubmit(tl_frame); // BB_FRAME_TIMELINE (default off)
     std::scoped_lock lock{submit_mutex};
     ++num_submits;
     ++submissions_total;
