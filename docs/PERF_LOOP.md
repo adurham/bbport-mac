@@ -36,20 +36,24 @@ Artifacts: `UPSCALER_CONFIG_BENCH.md` (A), `ENCODER_CENSUS.md` (B, incl. B4 verd
 | B4 encoder line | **KILLED** (0.6 ms best case vs 2.9 needed) | N_min 307, N_vk 335, gap 28.5 (9.3%) = copy line + compute floatability, not the render-pass model; no backend earned; CB packing already closed by `METAL4_PACKING_PROBE.md` |
 | C (implement the merges) | **not implemented**, per B4 | only surviving item: relaxed order-aware hazard rule (~0.3-0.4 ms), needs a rule-A-vs-B validator |
 | D bespoke 2-pass upscaler | **built, measured, CLOSED** (needs >= 1 ms) | 18.780 -> 18.165 ms, **-0.615 ms / +1.8 fps**, and the custom path is less stable frame-to-frame than FSR; gate ships default-off |
+| E1 recording-thread run-ahead | **measured, CLOSED** (the 3.68 ms CPU-late is not recoverable) | timeline shows the guest is held by the console pacing lock until the GPU is idle (`first_submit` +0.07 ms after `gpu_idle`), but with a full frame of run-ahead (6 pipeline modes) p50 stays 18.74-19.06 and 18.77 at the deepest; the frame is GPU-paced at ~18.7 ms |
 
 **The next lever, in rank order (this is where the next session starts):**
 
-1. **The recording thread being late — 3.68 ms of the 6.75 ms idle.** Recorder 7.45 ms < GPU 12.53 ms
-   yet the GPU runs dry, the guest is asleep 16.4 ms on `sceGnmSubmitDone`, and CPU-late gaps cluster
-   on `Compute->Vertex` / `Fragment->Compute` (the next render encoder's setup). That signature is a
-   frame-serialised pipeline, not a throughput mismatch: a fully pipelined frame would be
-   ~max(2.6, 7.45, 12.5) ~ 13 ms, not 19. **Measure first**: per-frame timeline of guest-submit,
-   recorder start/end, first-CB GPU start, last-CB GPU end, and the overlap of recorder(N) against
-   GPU(N-1). If recorder(N) starts within ~0.5 ms of GPU(N-1) ending, one frame of run-ahead is the
-   action and it is worth up to the whole 3.68 ms.
-2. Per-draw recording cost (`8.42 us/draw x 885`), if the timeline shows the recorder already runs a
-   full frame ahead — 3-5x a lean Vulkan->Metal path, with 7 prep workers at 137-147% of a core.
+1. **Reconcile the GPU number: 12.53 ms busy (B5, a stored trace) vs ~18.6 ms implied by stage E1**
+   (pipeline, 100 ahead, presenter unbounded: frame 18.77 ms, decoder idle 0.6 ms, guest waits 15.8
+   ms/frame for the GPU retire). One Metal System Trace of
+   `BB_SUBMIT_PIPELINE=1 BB_SUBMIT_AHEAD=100 BB_FRAMES_AHEAD=0` parsed with the stage-B tooling says
+   which is true, and it decides everything below.
+2. If the GPU really owns ~18.6 ms: the GPU-side levers only (vertex 3.68 of 12.53, the upscaler's
+   dispatches + post pass), since encoder count (B4) and the pipeline (E1) are both measured out.
 3. The relaxed hazard rule (0.3-0.4 ms) last, only with its validator.
+
+**Closed by measurement in E1, do not re-walk:** the frame-pipeline / run-ahead line
+(`docs/FRAME_PIPELINE_TIMELINE.md`): the recorder is serialised behind the GPU by the console pacing
+lock, but unpipelining it (6 modes, up to a full frame of run-ahead and no presenter gate) does not
+move the frame (18.74 -> 18.77-19.06 ms). The recorder's per-draw cost (8.4-10 us/draw, 6.6-8.7
+ms/frame) is not the wall either.
 
 Do not re-walk: encoder count/merging, CB packing, store/load on break pairs, download drain, FSR
 configuration, live-vs-patched render size, the bespoke upscaler as-is.
