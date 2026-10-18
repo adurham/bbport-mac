@@ -19,8 +19,42 @@ loop: stages, gates, commands, artifacts. Any session can resume from here.
 - Fable review (2026-10-17): do NOT build a Metal-native renderer core (#6) — it inherits Metal's
   per-encoder cost and the win lives in bb-gpu's scheduler. Rank: (A) startup-patched render size
   -> (B) encoder census + merge in bb-gpu -> (D) bespoke upscaler -> frame gen -> MetalFX zero-copy.
-- Open blind spot: is the 6.75 ms idle inter-encoder gaps or CPU submission starvation? Already
-  partly measured: ~2.2-2.6 ms CPU-late, ~3.4 ms queued gaps. Stage B must nail the split.
+- Idle split, NAILED in stage B5 (stored trace, 100,915 intervals): **3.68 ms CPU-late + 3.07 ms
+  queued**, which supersedes the earlier partial estimate (~2.2-2.6 CPU-late / ~3.4 queued). The
+  CPU-late side is the port's own recording thread, not the guest and not the commit path.
+
+## Loop status — 2026-10-17, stages A-D run to completion
+
+Artifacts: `UPSCALER_CONFIG_BENCH.md` (A), `ENCODER_CENSUS.md` (B, incl. B4 verdict),
+`STAGE_D_CUSTOM_UPSCALER.md` (D). Worktree: `fix/encoder-merge` @ 97e5104. Docs:
+`build/macos-native-0.6`.
+
+| stage | outcome | number |
+|---|---|---|
+| A1 live vs startup-patched + FSR3.1 p4, 2560 | **gate fails** (needs >= 1 ms) | 18.915 -> 18.675 ms, **-0.24 ms**; no default change |
+| A2 preset sweep (2/3/4, 2560 + 3440, live) | **done, monotonic** | 2560: 21.02 / 20.11 / **18.92**; 3440: 22.75 / 21.93 / **20.81**; p4 default confirmed |
+| B4 encoder line | **KILLED** (0.6 ms best case vs 2.9 needed) | N_min 307, N_vk 335, gap 28.5 (9.3%) = copy line + compute floatability, not the render-pass model; no backend earned; CB packing already closed by `METAL4_PACKING_PROBE.md` |
+| C (implement the merges) | **not implemented**, per B4 | only surviving item: relaxed order-aware hazard rule (~0.3-0.4 ms), needs a rule-A-vs-B validator |
+| D bespoke 2-pass upscaler | **built, measured, CLOSED** (needs >= 1 ms) | 18.780 -> 18.165 ms, **-0.615 ms / +1.8 fps**, and the custom path is less stable frame-to-frame than FSR; gate ships default-off |
+
+**The next lever, in rank order (this is where the next session starts):**
+
+1. **The recording thread being late — 3.68 ms of the 6.75 ms idle.** Recorder 7.45 ms < GPU 12.53 ms
+   yet the GPU runs dry, the guest is asleep 16.4 ms on `sceGnmSubmitDone`, and CPU-late gaps cluster
+   on `Compute->Vertex` / `Fragment->Compute` (the next render encoder's setup). That signature is a
+   frame-serialised pipeline, not a throughput mismatch: a fully pipelined frame would be
+   ~max(2.6, 7.45, 12.5) ~ 13 ms, not 19. **Measure first**: per-frame timeline of guest-submit,
+   recorder start/end, first-CB GPU start, last-CB GPU end, and the overlap of recorder(N) against
+   GPU(N-1). If recorder(N) starts within ~0.5 ms of GPU(N-1) ending, one frame of run-ahead is the
+   action and it is worth up to the whole 3.68 ms.
+2. Per-draw recording cost (`8.42 us/draw x 885`), if the timeline shows the recorder already runs a
+   full frame ahead — 3-5x a lean Vulkan->Metal path, with 7 prep workers at 137-147% of a core.
+3. The relaxed hazard rule (0.3-0.4 ms) last, only with its validator.
+
+Do not re-walk: encoder count/merging, CB packing, store/load on break pairs, download drain, FSR
+configuration, live-vs-patched render size, the bespoke upscaler as-is.
+
+
 
 ## Worktree / conventions
 
@@ -40,7 +74,7 @@ loop: stages, gates, commands, artifacts. Any session can resume from here.
 - No default changes without the owner. Correctness = port captures + the capture-comparison tooling
   against the same-mode noise floor.
 
-## Stage A — upscaler configuration (cheap, hours)
+## Stage A — upscaler configuration — DONE, gate fails (`UPSCALER_CONFIG_BENCH.md`)
 
 A1. Determine whether FSR works with the startup-patched path (`live_resolution=0`): read
     `docs/upscaler.md` + the presenter/upscaler code. TAA needs live; the question is FSR.
@@ -50,7 +84,7 @@ A2. Preset sweep (presets 2-4) in the winning mode, 2560 and 3440.
 
 Artifacts: `docs/UPSCALER_CONFIG_BENCH.md` + JSON/CSV in the worktree `out/`.
 
-## Stage B — encoder census (analysis; the "valuable kernel of #6, extracted")
+## Stage B — encoder census — DONE, line KILLED at B4 (`ENCODER_CENSUS.md`)
 
 B1. Classify the ~340 encoders of one captured frame by TYPE and CAUSE: RT change required by the
     guest, compute<->render transition, barrier split, CopyBuffer break, cache-management copy,
@@ -73,13 +107,13 @@ B5. Confirm the idle split: inter-encoder gaps vs CPU-late, with the CPU side na
 
 Artifacts: `docs/ENCODER_CENSUS.md` (+ data files).
 
-## Stage C — implement what B proves (only if B4 says so)
+## Stage C — implement what B proves — NOT RUN (B4 killed the line; see the status block)
 
 Top-ranked merges from the census, each behind a default-off gate: measure encoder count first,
 then 2+2 A/B + captures; commit each; doc the result honestly (a regression ships default-off with
 its numbers, as with COPY_MERGE).
 
-## Stage D — bespoke temporal upscaler (if the encoder line is capped)
+## Stage D — bespoke temporal upscaler — DONE and CLOSED at -0.615 ms (`STAGE_D_CUSTOM_UPSCALER.md`)
 
 A 2-3 pass reproject + accumulate upscaler on the port's existing machinery (camera AND object
 motion vectors, history/reprojection), instead of FFX's 8 dispatches + barriers. Gate

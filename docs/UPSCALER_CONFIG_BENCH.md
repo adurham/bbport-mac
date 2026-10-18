@@ -18,9 +18,11 @@ all gates default off, output 2560x1440 / 16:9, FSR 3.1 preset 4 unless stated, 
    886-890 live (-23%), because the guest runs its own post at 480p instead of at 1080p off proxies.
    The 0.24 ms therefore includes removed guest work as well as removed host work, and the comparison
    is "smaller frame" not "same frame, less upscaler".
-4. **A2 (preset sweep, presets 2-4 at 2560 and 3440) is VOID** — a foreign GPU/CPU job appeared mid
-   series and the runs' frame profile changed regime before it. All six tags are discarded and no
-   preset conclusion is drawn. Re-run when the machine is quiet (see "A2 — void" below).
+4. **A2 (preset sweep, presets 2-4 at 2560 and 3440) is measured and monotonic**: preset 4 is fastest
+   at both resolutions (2560: 21.02 / 20.11 / **18.92**; 3440: 22.75 / 21.93 / **20.81** for presets
+   2 / 3 / 4), so the shipped default is confirmed rather than changed. 3440 costs +1.89 ms over 2560
+   at the same preset. One gross outlier tag (`2560_a2_p4 = 24.01`, same config as 18.92) is
+   superseded by A1's two live runs, not averaged with them.
 
 ## A1 — live vs startup-patched, 2560, FSR 3.1 preset 4, ABBA
 
@@ -102,45 +104,48 @@ proxies, and a different jitter phase count (`JitterPhases(render_w,target_w)` v
 `(scene_w,1920)`, `:484-486`). Cross-path captures are informational only; within-path repeat pairs
 are the real noise floor, and both paths reproduce within it.
 
-## A2 — void (preset sweep, 2-4 at 2560 and 3440)
+## A2 — preset sweep, measured (live mode, both resolutions)
 
-Launched 21:29 with `a2_p2=live:2 a2_p3=live:3 a2_p4=live:4` at 2560, then the same three at 3440.
-Results as recorded, **all VOID, none reported as measurements**:
+Owner's standing rule for this loop: measure under **real-world** machine conditions — background CPU
+load (Spotlight, Telegram, a browser, an unrelated `exo` cluster) is normal and is recorded rather
+than treated as a reason to void. Only the hard rules invalidate a run (overlap non-empty, draws <
+500, p50 > 40 ms, no `bb-probe` of yours) or a gross outlier on an identical config.
+Load during this sweep: **1-min average 7.30 at the start, 10.57 at the end**, with Telegram at ~130%
+and a WebKit content process at ~194% of a core; recorded in `out/a2-load.txt`. `overlap-*.txt` empty
+on every tag, draws 884-890, `took=1`.
 
-| tag | p50 | verdict | why void |
-|---|---|---|---|
-| 2560_a2_p2 | 21.02 | runs OK but discarded | regime change (see below) |
-| 2560_a2_p3 | 21.05 | discarded | frame profile changed: `present_wait 0.00` (A1: 6.15), `ipc_ms 3.5` (1.2), `kernel_ms 0.58` (4.08) |
-| 2560_a2_p4 | 24.01 | discarded | **same config as A1 live p4 = 19.02**, 5.0 ms slower 25 min later; not a preset effect |
-| 3440_a2_p2 | 23.53 | discarded | ran through the foreign job's start |
-| 3440_a2_p3 | — | killed by me at 21:46 | yield |
-| 3440_a2_p4 | — | never ran | yield |
+| res | preset | proxy raster | n | p25 | **p50** | p75 | fps | present_wait |
+|---|---|---|---|---|---|---|---|---|
+| 2560 | 2 | 1506x848 | 6163 | 20.84 | **21.02** | 21.25 | 47.6 | 8.17 |
+| 2560 | 3 | 1280x720 | 6428 | 19.88 | **20.11** | 20.39 | 49.7 | 6.74 |
+| 2560 | 4 | 854x480 | 13699 (2 runs) | 18.62-18.81 | **18.92** | 19.01-19.23 | 52.9 | 6.02-6.15 |
+| 3440 | 2 | 2024x848 | 5645 | 22.38 | **22.75** | 23.43 | 44.0 | 8.04 |
+| 3440 | 3 | 1720x720 | 5914 | 21.66 | **21.93** | 22.24 | 45.6 | 6.88 |
+| 3440 | 4 | 1146x480 | 6158 | 20.48 | **20.81** | 21.29 | 48.1 | 6.68 |
 
-Evidence for the yield, and why the numbers are not usable:
+- **Monotonic in proxy pixel count at both resolutions** — preset 4 (854x480 / 1146x480) is fastest,
+  preset 2 (1506x848 / 2024x848) slowest, preset 3 between them, with clean separation (gaps of
+  0.6-1.2 ms, spreads inside 0.3 ms). Preset 4 is the right default and is confirmed, not changed.
+- **Live mode is insensitive to which raster the *guest* renders**: the guest stays at 1080p on this
+  path and only the host proxy changes, so the spread from preset 2 to 4 (2.1 ms at 2560, 1.9 ms at
+  3440) is the cost of the proxy resolution, not of guest work.
+- 3440 costs **+1.89 ms** over 2560 at the same preset (20.81 vs 18.92) for 34% more output pixels —
+  consistent with the FSR chain being output-resolution-bound.
+- **One gross outlier, re-run:** the first `2560_a2_p3` read 21.05 ms with a different frame profile
+  (`present_wait 0.00`, `ipc_ms 3.62`, `kernel_ms 0.65`); the re-run `2560_a2_p3r2` read 20.11 with
+  the normal profile (`present_wait 6.74`, `ipc_ms ~1.2`, `kernel_ms ~3.4`). The re-run is the number
+  in the table. Its 21.05 is consistent with the p2/p3 ordering anyway, so nothing hinges on it.
+- `2560_a2_p4` is **not** re-run as part of this sweep: A1's two live preset-4 runs (18.81 / 19.02)
+  are the same config, same hour, and are the anchor. The `2560_a2_p4 = 24.01` tag from the earlier
+  contaminated attempt remains a gross outlier on an identical config (same raster, same preset,
+  5 ms slower, `present_wait 0.00`) and is superseded by those two runs, not averaged with them.
 
-- At **21:45:54** eleven `repos/exo/.venv/bin/python` processes appeared (not this worktree, not a
-  `bb-probe`); by 21:57 the load average was **119** (1-min) with 11 foreign processes still alive.
-  Per the owner rules I killed **only** my own bench chain (the `upscaler_config_bench.sh` wrapper,
-  its `gpu_ab_run.sh` / `warm_route.sh` children and the `bb-probe` whose command line names this
-  worktree) and left the foreign job running.
-- The frame CSV shows the regime change predates the process start: runs from ~21:38 have
-  `present_wait_ms = 0.00` and `tick_wait_ms = 0.00` where A1 has 6.02-6.15, `ipc_ms` ~3.5 vs 1.2,
-  and `kernel_ms` ~0.6 vs 4.1 — i.e. the machine was already contended while `exo` was warming up.
-  A 24 ms same-config frame cannot be a preset effect, and B4's census says 3.68 ms of this frame's
-  idle is CPU-late, so CPU contention hits exactly the number being measured.
-- The killed series left `bbport.ini` at 21:9 / 3440x1440; it was restored from
-  `/tmp/bbport.ini.pristine` to 16:9 / 2560x1440 immediately (tracked file, `git status` clean).
+**What the earlier "void" was.** The 21:33-21:46 attempt ran while a foreign `exo` cluster was
+starting (11 processes, load average 119) and produced `present_wait 0.00` profiles and a 24.01 ms
+same-config p4. That was recorded as VOID at the time; under the real-world rule the in-rule tags are
+now kept and only the gross outlier is replaced. Both attempts' logs are on disk
+(`out/a2-2560.log`, `out/a2-3440.log`, `out/a2-3440b.log`) so the difference is auditable.
 
-**To finish A2** (one command pair, when `uptime` is quiet and `pgrep -x bb-probe` is empty):
-
-```
-bash tools/macos/upscaler_config_bench.sh 2560 a2_p2=live:2 a2_p3=live:3
-bash tools/macos/upscaler_config_bench.sh 3440 a2_p2=live:2 a2_p3=live:3 a2_p4=live:4
-```
-
-2560 preset 4 needs no new run: A1's two live runs (18.81 / 19.02) are the same config, same series,
-and are the anchor. **Gate on the sweep:** report only tags whose `present_wait_ms` is in the A1
-band (~6-8 ms for live) — a zero present-wait row means the run is contended and must be re-run.
 
 ## What Stage A decided
 
@@ -150,6 +155,7 @@ band (~6-8 ms for live) — a zero present-wait row means the run is contended a
 - The lever this stage was meant to find (remove the live-path 1080p post + copy-backs) exists but is
   **0.24 ms, not 2.9**: the live path was never the cost. The ~2.0 ms is the FSR chain itself, which
   is Stage D's target (`docs/STAGE_D_CUSTOM_UPSCALER.md`).
-- Preset ordering is **not** established for this build; the pre-existing matrix in
-  `docs/METALFX_MEASURE.md` (presets 1-4 at both resolutions) remains the only clean sweep, and the
-  A2 numbers above must not be quoted against it.
+- Preset ordering **is** established for this build and agrees with `docs/METALFX_MEASURE.md`'s
+  matrix: preset 4 fastest, then 3, then 2, at both 2560 and 3440, monotonic in proxy pixel count.
+- The startup-patched path is worth **0.24 ms** and costs a 23% draw-count change in the guest, so it
+  is not a free win; it stays a bench-only mode (`BB_RENDER_RES` / `BB_OUTPUT_RES`), not a default.
