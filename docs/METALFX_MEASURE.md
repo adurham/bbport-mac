@@ -122,6 +122,11 @@ remain the gate before anything becomes a default.
 - The owner's visible run is the gate for everything here: quality of the FSR 3.1 presets in
   motion, and the 3440-vs-2560 mode choice. No default has been changed anywhere — `upscaler=off`
   stands until he decides.
+- Encoder/break line status (2026-10-17): **MEASURED AND CAPPED** — copies-merge +0.60 ms alone
+  (the break moves to the barrier behind it); + in-pass barriers together: neutral (-0.04 ms,
+  -0.85 encoders). The marginal in-situ break cost is ~0.03-0.04 ms, so even full elimination is
+  ~1-1.5 ms and cannot close the ~2.9 ms gap to 60 at 2560. Both gates default off; details in
+  docs/ENCODER_ATTRIBUTION.md + docs/INPASS_BARRIER_RESULT.md.
 - Encoder merging — the source survey is done (`docs/ENCODER_MERGE_SURVEY.md`). Confirmed: the
   `none` barrier diagnostic only dropped fences (traces: encoders/frame 324 none vs 298
   legacy — no merging). Top candidates, ranked: (1) the ~28 pass breaks/frame each cost a FULL

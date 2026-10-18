@@ -256,3 +256,24 @@ saves. Items 1 and 2 alone are ~85% of that.
   quoted above.
 - `bbport-metalfx-build/out/mtl-2560_fsr3_4-gpu.xml` + `tools/macos/mtl_gaps.py` — the per-encoder
   size distribution.
+
+## Measured: cutlist #1 and #1+#3 (2026-10-17, fix/encoder-merge)
+
+`BB_COPY_MERGE` alone (98828e2): the copy stops breaking the pass, but its destination is almost
+always read by a draw in the same pass and that draw's barrier then lands inside the open pass —
+**the break moves**: render encoders 232.6 -> 242.4 (+9.8), breaks 45.8 -> 55.4, p50
+18.98 -> 19.58 ms (+0.60). `BB_INPASS_BARRIERS` alone (18dd2d2) fires 0x/frame in the base build
+(every mid-pass barrier carries an image transition); it only bites after the copy merge. Together:
+render encoders 231.8 (-0.85), breaks 44.2 (-1.6), p50 18.94 ms (-0.04 vs base) —
+**performance-neutral**. Correctness on both gates: captures inside the same-mode noise floor
+(base-both mean 5.99, >32 0.86%; same-mode floors 5.50-7.69 / 0.42-1.4%), 0 late conflicts.
+Both gates default off.
+
+The decisive number: removing 1.6 breaks/frame bought -0.04..-0.06 ms — the marginal cost of a
+break **in situ** is ~0.03-0.04 ms, an order of magnitude below the synthetic micro-benchmark's
+per-encoder figure (the game's work overlaps; the synthetic dependent chain did not).
+Consequence: the entire break-elimination line, if every removable break vanished, is worth
+~1-1.5 ms — it cannot close the ~2.9 ms gap to 60 fps at 2560 by itself. The remaining break
+sites (the ~12 copies/frame the hazard rule must refuse, BeginDraw's 13.6/frame,
+ExecuteShaderHLE 9.4/frame) are real but small; treat this line as a 1 ms-class contributor, not
+the 60-fps path.
