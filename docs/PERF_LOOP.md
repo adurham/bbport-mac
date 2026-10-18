@@ -37,17 +37,23 @@ Artifacts: `UPSCALER_CONFIG_BENCH.md` (A), `ENCODER_CENSUS.md` (B, incl. B4 verd
 | C (implement the merges) | **not implemented**, per B4 | only surviving item: relaxed order-aware hazard rule (~0.3-0.4 ms), needs a rule-A-vs-B validator |
 | D bespoke 2-pass upscaler | **built, measured, CLOSED** (needs >= 1 ms) | 18.780 -> 18.165 ms, **-0.615 ms / +1.8 fps**, and the custom path is less stable frame-to-frame than FSR; gate ships default-off |
 | E1 recording-thread run-ahead | **measured, CLOSED** (the 3.68 ms CPU-late is not recoverable) | timeline shows the guest is held by the console pacing lock until the GPU is idle (`first_submit` +0.07 ms after `gpu_idle`), but with a full frame of run-ahead (6 pipeline modes) p50 stays 18.74-19.06 and 18.77 at the deepest; the frame is GPU-paced at ~18.7 ms |
+| E2 GPU-timeline reconciliation | **done, ANSWERED: the GPU executes 12.5 ms** | two traces (default 12.73 / pipe_max 12.54 ms busy of an 18.4 ms frame, 68% occupancy, 0.1-0.2% channel overlap); the 5.9-6.0 ms idle is ~302 command-buffer handoffs at 19.3-19.5 us each (`same-cmdbuf` gaps are 0.2 us), queued/cpu-late 45/55 — so E1's "GPU owns 18.6 ms" was a present-cadence `retire` stamp misread (`gpu_idle -18.35` vs `retire +18.35` in the same frame) |
 
 **The next lever, in rank order (this is where the next session starts):**
 
-1. **Reconcile the GPU number: 12.53 ms busy (B5, a stored trace) vs ~18.6 ms implied by stage E1**
-   (pipeline, 100 ahead, presenter unbounded: frame 18.77 ms, command thread idle 8.9 ms/frame,
-   guest waits 15.8
-   ms/frame for the GPU retire). One Metal System Trace of
-   `BB_SUBMIT_PIPELINE=1 BB_SUBMIT_AHEAD=100 BB_FRAMES_AHEAD=0` parsed with the stage-B tooling says
-   which is true, and it decides everything below.
-2. If the GPU really owns ~18.6 ms: the GPU-side levers only (vertex 3.68 of 12.53, the upscaler's
-   dispatches + post pass), since encoder count (B4) and the pipeline (E1) are both measured out.
+0. **DONE (E2, `docs/GPU_TIMELINE_RECONCILIATION.md`): the GPU executes 12.5 ms and idles 5.9 ms
+   at command-buffer handoffs.** 60 fps needs 16.67, so the GPU has 4.2 ms of slack in execution
+   and the deficit (1.7-2.1 ms) is in the handoff cadence, not in GPU compute. Do not spend the
+   next session cutting GPU work alone: the priced inventory totals ~1.5 ms of pass-transition/CPU
+   savings that the trace says do not touch the 19.4 us handoff.
+1. **Commit cadence, in bb-gpu's recorder** (5.86 ms/frame of GPU-visible drain over ~302 commits,
+   a quarter of them committed 16-17 us before the GPU needs them, while pipeline mode gives the
+   recorder 18.3 ms of notice for 6.7 ms of work): measure per-CB commit time vs GPU start
+   (`BB_FRAME_TIMELINE` extension, no trace needed), then pre-commit a frame's buffers before the
+   GPU drains the previous one. This is the only item large enough to carry the whole deficit.
+2. The largest single GPU block is one **1.5 ms compute pass/frame** (the upscaler chain; stage D
+   reached 0.6 of it) and **fragment 5.4 ms** (2.99 ms in 13.8 medium passes at 2560, no lever
+   scoped yet). Vertex 3.64 is inventory, not a plan.
 3. The relaxed hazard rule (0.3-0.4 ms) last, only with its validator.
 
 **Closed by measurement in E1, do not re-walk:** the frame-pipeline / run-ahead line
