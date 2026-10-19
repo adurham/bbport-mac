@@ -349,11 +349,12 @@ void DefineTexts() {
     // renderer); with the native GPU process it applies on the next launch.
     row(WindowMode, "Window mode", "Режим окна",
         "Windowed keeps the desktop; borderless fills it without a title bar; fullscreen gives "
-        "it to the game and fills the screen at the chosen resolution (bbport.ini "
-        "fullscreen_mode=exclusive puts the display itself on that resolution)",
+        "it to the game and fills the screen at the chosen resolution (the display's own mode is "
+        "never switched on this build: the 2x-HiDPI to native switch panics the display "
+        "coprocessor on macOS 27.2)",
         "В окне — обычное окно; без рамки — во весь экран без заголовка; во весь экран — игра "
-        "занимает дисплей и заполняет его в выбранном разрешении (fullscreen_mode=exclusive в "
-        "bbport.ini переключает на это разрешение сам дисплей)",
+        "занимает дисплей и заполняет его в выбранном разрешении (режим самого дисплея эта "
+        "сборка не переключает: на macOS 27.2 переход с 2x HiDPI роняет копроцессор дисплея)",
         {AddText("Windowed", "В окне"), AddText("Borderless", "Без рамки"),
          AddText("Fullscreen", "Во весь экран")},
         Kind::Select);

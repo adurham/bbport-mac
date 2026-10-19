@@ -577,7 +577,21 @@ void apply_display_mode(SDL_Window* window, const char* why) {
     mode_fill = BbSettings::FullscreenFills();
     mode_setting = BbSettings::Get().fullscreen_mode.load();
     mode_display = display;
-    if (BbSettings::FullscreenKeepsDesktopMode()) {
+    // Belt and braces for the clamp in bbport_settings.cpp: no path in this build may move the
+    // panel. The 2x-HiDPI -> native transition faulted the display coprocessor on all three
+    // attempts on 2026-10-18 — twice from this port, once from BetterDisplay with no app running —
+    // so a fill/exclusive that reached this far is refused here as well, at the call site that
+    // would issue CGDisplaySetDisplayMode.
+    const bool panel_locked =
+        mode_setting != BbSettings::FullscreenDesktop && !BbSettings::DisplayModeSetsAllowed();
+    if (panel_locked) {
+        std::printf("Display mode: fullscreen_mode=%s refused (moving the panel panics this "
+                    "machine's display coprocessor on macOS 27.2); fullscreen_mode=desktop. "
+                    "BB_ALLOW_DISPLAY_MODE_SET=1 re-opens fill/exclusive for testing.\n",
+                    BbSettings::FullscreenModeKey(mode_setting));
+        mode_setting = BbSettings::FullscreenDesktop;
+    }
+    if (BbSettings::FullscreenKeepsDesktopMode() || panel_locked) {
         // The panel is never switched. The window covers the desktop's mode; the output is a
         // render size scaled into it (window.cpp: apply_window_mode enters fullscreen with a null
         // mode, so SDL sets no display mode either).
