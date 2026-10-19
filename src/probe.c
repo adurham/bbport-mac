@@ -272,6 +272,11 @@ static void write_hex(char *out, uint64_t v) {
     const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) out[i] = digits[(v >> (60 - i * 4)) & 15];
 }
+#ifdef __APPLE__
+#include <stddef.h>
+_Static_assert(offsetof(struct __darwin_x86_thread_state64, __r15) == BB_REG_R15 * 8,
+               "BB_REG_* follow Darwin's thread state");
+#endif
 static void dump_frames(ucontext_t *uc) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
     uintptr_t rip=(uintptr_t)BB_CTX_RIP(uc), rbp=(uintptr_t)BB_CTX_RBP(uc);
@@ -300,7 +305,10 @@ static void dump_frames(ucontext_t *uc) {
         static const int pointer_regs[]={BB_REG_RDI,BB_REG_RSI,BB_REG_RBX,BB_REG_R12,BB_REG_R13,BB_REG_R14,BB_REG_R15,BB_REG_RCX,BB_REG_RDX};
         for (size_t i=0;i<sizeof(pointer_regs)/sizeof(*pointer_regs);++i) {
             const uintptr_t p=(uintptr_t)BB_CTX_REG(uc,pointer_regs[i]);
-            if (p<0x800000000ull || p>=0x1200000000ull) continue;
+            /* Guest memory: the low part below BB_LOW_MAX and the first 8 GiB of user memory
+             * (on Linux the same 0x800000000-0x1200000000 as before; on the Mac user memory
+             * starts at 0x7000000000, above Rosetta's carve-out). */
+            if (!((p>=0x800000000ull && p<BB_LOW_MAX) || (p>=BB_USER_MIN && p<BB_USER_MIN+0x200000000ull))) continue;
             uint64_t words[8];
             struct iovec local={words,sizeof(words)}, remote={(void *)p,sizeof(words)};
             if (process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(words)) continue;

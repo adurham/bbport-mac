@@ -376,12 +376,14 @@ void CommandProcessor::ReportStall(const char* why) {
     out += Diagnostics::RecentLabels(40);
     // The command thread's frames (the runtime's SIGUSR2 handler prints its frame-pointer chain
     // to stderr; addresses minus this library's base give the source lines).
+#ifndef __APPLE__ // bbport (macOS): no SIGUSR2 is sent there (no tgkill), so no stack follows
     Dl_info self{};
     if (dladdr(reinterpret_cast<void*>(&BodyWords), &self)) {
         out += fmt::format("  command thread {} stack follows ({} at {:#x}):\n", thread_tid,
                            self.dli_fname ? self.dli_fname : "?",
                            reinterpret_cast<uintptr_t>(self.dli_fbase));
     }
+#endif
     std::fputs(out.c_str(), stdout);
     std::fflush(stdout);
 #if !defined(_WIN32) && !defined(__APPLE__) // bbport (macOS): no tgkill
