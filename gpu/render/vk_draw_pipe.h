@@ -137,7 +137,7 @@ public:
                 ++resolved_prefix;
             } else {
                 ++resolve_waits;
-                __builtin_ia32_pause();
+                BbCpu::Pause();
             }
         }
     }
@@ -338,7 +338,7 @@ private:
                     if (stop.stop_requested()) {
                         return;
                     }
-                    __builtin_ia32_pause();
+                    BbCpu::Pause();
                     if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
                         const u32 seen = resolve_wake.load(std::memory_order_seq_cst);
                         resolvers_sleeping.fetch_add(1, std::memory_order_seq_cst);

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -29,6 +30,17 @@ inline unsigned long HostTid() {
     return static_cast<unsigned long>(id);
 #else
     return static_cast<unsigned long>(gettid());
+#endif
+}
+
+/// The game's main thread: the process's first thread on Linux. bbport (macOS): the loader's
+/// secondary thread (Cocoa keeps the real main thread), recorded by bbgpu_init, which runs on it.
+inline std::atomic<unsigned long> guest_main_tid{0};
+inline bool IsGuestMainThread() {
+#ifdef __APPLE__
+    return HostTid() == guest_main_tid.load(std::memory_order_relaxed);
+#else
+    return gettid() == getpid();
 #endif
 }
 

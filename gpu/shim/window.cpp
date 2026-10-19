@@ -455,7 +455,13 @@ bool WindowSDL::PollEvents() {
     }
     {
         const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+#ifdef __APPLE__
+        // bbport (macOS): F1 opens the settings menu here (Mac keyboards have no Insert key), so
+        // it can't also release the mouse: the open menu lets it go instead (` or § as well).
+        const bool hold = focused && !mouse_user_released && !BbOverlay::MenuOpen();
+#else
         const bool hold = focused && !mouse_user_released;
+#endif
         if (hold != mouse_grabbed) {
             mouse_grabbed = hold;
             SDL_SetWindowMouseGrab(window, hold);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "common/types.h"
+#include "bbport_threads.h"
 #include "bbport_guest_hooks.h"
 #include "bbport_settings.h"
 #include "bbport_guest_code.h"
@@ -1756,7 +1757,7 @@ bool Patch(u64 address, const unsigned char* expected, std::size_t size) {
 }
 
 void PS4_SYSV_ABI FxInitClear(void* context, void* state, void* texture, const float* color) {
-    if (gettid() == getpid() && texture && color &&
+    if (BbThreads::IsGuestMainThread() && texture && color &&
         runtime_memory_is_mapped(reinterpret_cast<u64>(texture) + 0x10, 11 * sizeof(u32))) {
         std::array<u32, 11> target;
         std::memcpy(target.data(), static_cast<const u8*>(texture) + 0x10, sizeof(target));

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "common/types.h"
+#include "bbport_threads.h"
 #include "bbport_gnm_hooks.h"
 #include "bbport_guest_code_hooks.h"
 #include "cp/cp_diagnostics.h"
@@ -216,7 +217,7 @@ std::atomic<u64> callback_hits[8];
 u64 image_base = 0;
 
 void PS4_SYSV_ABI MainContextUse(u64 tag, const Core::GuestRegisterSnapshot* r) {
-    if (gettid() != getpid()) return;
+    if (!BbThreads::IsGuestMainThread()) return;
     const auto read = [](u64 address, void* data, size_t bytes) {
         iovec local{data, bytes}, remote{reinterpret_cast<void*>(address), bytes};
         return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == ssize_t(bytes) ||

@@ -1,3 +1,4 @@
+#include "bbport_threads.h"
 #include "bbport_write_log.h"
 #include "bbport_frame_rate.h"
 #include "bbport_game_menu.h"
@@ -282,6 +283,7 @@ static void RunOnMainThread(std::function<void()> task) {
 #endif
 
 extern "C" int bbgpu_init(const BbGpuConfig* config) {
+    BbThreads::guest_main_tid.store(BbThreads::HostTid(), std::memory_order_relaxed);
     BbSettings::Load();
     // What the translator knows about this game (games/), before anything asks for it.
     Game::Select(config->serial);

@@ -76,7 +76,7 @@ bool HandleFaultingWalkerLoad(void* context, void* fault_address) {
         operands[1].type != ZYDIS_OPERAND_TYPE_MEMORY) {
         return false;
     }
-    auto& registers = static_cast<ucontext_t*>(context)->uc_mcontext.gregs;
+    greg_t* const registers = Common::Gregs(context); // bbport (macOS): Darwin's thread state
     switch (operands[0].reg.value) {
     case ZYDIS_REGISTER_RDI:
         registers[REG_RDI] = 0;

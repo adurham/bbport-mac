@@ -284,22 +284,22 @@ static void dump_frames(ucontext_t *uc) {
      * is in them; the hang of a game thread is read from here afterwards. */
     {
         static const struct { const char *name; int reg; } regs[]={
-            {"rax",REG_RAX},{"rbx",REG_RBX},{"rcx",REG_RCX},{"rdx",REG_RDX},{"rsi",REG_RSI},{"rdi",REG_RDI},
-            {"rbp",REG_RBP},{"rsp",REG_RSP},{"r8",REG_R8},{"r9",REG_R9},{"r10",REG_R10},{"r11",REG_R11},
-            {"r12",REG_R12},{"r13",REG_R13},{"r14",REG_R14},{"r15",REG_R15},
+            {"rax",BB_REG_RAX},{"rbx",BB_REG_RBX},{"rcx",BB_REG_RCX},{"rdx",BB_REG_RDX},{"rsi",BB_REG_RSI},{"rdi",BB_REG_RDI},
+            {"rbp",BB_REG_RBP},{"rsp",BB_REG_RSP},{"r8",BB_REG_R8},{"r9",BB_REG_R9},{"r10",BB_REG_R10},{"r11",BB_REG_R11},
+            {"r12",BB_REG_R12},{"r13",BB_REG_R13},{"r14",BB_REG_R14},{"r15",BB_REG_R15},
         };
         for (size_t i=0;i<sizeof(regs)/sizeof(*regs);++i) {
             char r[]="  tid=0000000000000000 NNN=0000000000000000\n";
             write_hex(r+6,tid);
             r[23]=regs[i].name[0]; r[24]=regs[i].name[1]; r[25]=regs[i].name[2] ? regs[i].name[2] : ' ';
-            write_hex(r+27,(uint64_t)uc->uc_mcontext.gregs[regs[i].reg]);
+            write_hex(r+27,(uint64_t)BB_CTX_REG(uc,regs[i].reg));
             { ssize_t written_=write(2,r,sizeof(r)-1); (void)written_; }
         }
         /* What the pointer registers point at (guest addresses only): the 8 qwords there, so the
          * object a thread waits on can be read from the log. */
-        static const int pointer_regs[]={REG_RDI,REG_RSI,REG_RBX,REG_R12,REG_R13,REG_R14,REG_R15,REG_RCX,REG_RDX};
+        static const int pointer_regs[]={BB_REG_RDI,BB_REG_RSI,BB_REG_RBX,BB_REG_R12,BB_REG_R13,BB_REG_R14,BB_REG_R15,BB_REG_RCX,BB_REG_RDX};
         for (size_t i=0;i<sizeof(pointer_regs)/sizeof(*pointer_regs);++i) {
-            const uintptr_t p=(uintptr_t)uc->uc_mcontext.gregs[pointer_regs[i]];
+            const uintptr_t p=(uintptr_t)BB_CTX_REG(uc,pointer_regs[i]);
             if (p<0x800000000ull || p>=0x1200000000ull) continue;
             uint64_t words[8];
             struct iovec local={words,sizeof(words)}, remote={(void *)p,sizeof(words)};
@@ -312,7 +312,7 @@ static void dump_frames(ucontext_t *uc) {
                 { ssize_t written_=write(2,m,sizeof(m)-1); (void)written_; }
             }
         }
-        uintptr_t sp=(uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+        uintptr_t sp=(uintptr_t)BB_CTX_REG(uc,BB_REG_RSP);
         for (int i=0;i<24;++i) {
             uint64_t word=0;
             struct iovec local={&word,sizeof(word)}, remote={(void *)(sp+8*(uintptr_t)i),sizeof(word)};

@@ -389,7 +389,7 @@ void CommandProcessor::ReportStall(const char* why) {
         syscall(SYS_tgkill, getpid(), thread_tid, SIGUSR2);
     }
 #endif
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__APPLE__) // bbport (macOS): no tgkill or /proc/self/task
     // Every thread of the process prints its frames and registers (the runtime's SIGUSR2 handler):
     // when the guest itself stops (its job system, a lock), they say what each one waits for.
     // BB_STALL_THREADS=0: the command thread only.

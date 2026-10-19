@@ -55,10 +55,33 @@
 #define BB_CTX_RIP(uc) ((uc)->uc_mcontext->__ss.__rip)
 #define BB_CTX_RBP(uc) ((uc)->uc_mcontext->__ss.__rbp)
 #define BB_CTX_RDI(uc) ((uc)->uc_mcontext->__ss.__rdi)
+/* Any general register by index (probe.c's register dump): __darwin_x86_thread_state64 keeps
+ * them as consecutive 64-bit fields in this order. */
+enum { BB_REG_RAX, BB_REG_RBX, BB_REG_RCX, BB_REG_RDX, BB_REG_RDI, BB_REG_RSI, BB_REG_RBP,
+       BB_REG_RSP, BB_REG_R8, BB_REG_R9, BB_REG_R10, BB_REG_R11, BB_REG_R12, BB_REG_R13,
+       BB_REG_R14, BB_REG_R15 };
+#define BB_CTX_REG(uc, reg) (((const uint64_t *)&(uc)->uc_mcontext->__ss)[reg])
 #else
 #define BB_CTX_RIP(uc) ((uc)->uc_mcontext.gregs[REG_RIP])
 #define BB_CTX_RBP(uc) ((uc)->uc_mcontext.gregs[REG_RBP])
 #define BB_CTX_RDI(uc) ((uc)->uc_mcontext.gregs[REG_RDI])
+#define BB_REG_RAX REG_RAX
+#define BB_REG_RBX REG_RBX
+#define BB_REG_RCX REG_RCX
+#define BB_REG_RDX REG_RDX
+#define BB_REG_RDI REG_RDI
+#define BB_REG_RSI REG_RSI
+#define BB_REG_RBP REG_RBP
+#define BB_REG_RSP REG_RSP
+#define BB_REG_R8 REG_R8
+#define BB_REG_R9 REG_R9
+#define BB_REG_R10 REG_R10
+#define BB_REG_R11 REG_R11
+#define BB_REG_R12 REG_R12
+#define BB_REG_R13 REG_R13
+#define BB_REG_R14 REG_R14
+#define BB_REG_R15 REG_R15
+#define BB_CTX_REG(uc, reg) ((uc)->uc_mcontext.gregs[reg])
 #endif
 
 /* Need _GNU_SOURCE on Linux (gettid, pthread_setname_np); only those files use them. */
