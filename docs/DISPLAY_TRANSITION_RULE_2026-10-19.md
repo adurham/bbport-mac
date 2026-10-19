@@ -319,3 +319,43 @@ the bug precisely).
 - Panics: `/Library/Logs/DiagnosticReports/Retired/panic-full-2026-10-18-{172321,232751,235555}.0002.panic`.
 - Persisted display config: `/Library/Preferences/com.apple.windowserver.displays.plist`
   (AW UUID `F74F556F-59FB-41B1-B5AC-E1BF4AFA76F3`, `CurrentInfo: Hz 60, Scale 2, Wide 3440`).
+
+## Test result, 2026-10-19 — DSC isolated
+
+Run after the Apple report was filed, on the owner's go-ahead, machine otherwise idle.
+
+| step | link | DSC | action | result |
+|---|---|---|---|---|
+| 0 | 164.90 Hz, 10-bit HDR10 RGB Full | **Yes**, 1.88:1, 24.37 Gbps | — | — |
+| 1 | 119.99 Hz, 10-bit HDR10 RGB Full | **No**, 17.68 Gbps | desktop 772 (2x, 6880x2880) | panel 120.00 Hz, HiDPI intact |
+| 2 | 119.99 Hz, DSC No | No | desktop **772 → 727** (2x → 1x) | **survived**; pipe went 1:1 at 3440x1440, panel 120.00, watched 122 s |
+| 3 | 119.99 Hz, DSC No | No | desktop **727 → 772** (1x → 2x) | **survived**; HiDPI restored, watched 122 s |
+
+So the plane re-parameterisation is harmless on a non-DSC link, **in both directions** — including
+at 10-bit HDR10 RGB full range, which is what the owner requires.
+
+Read together with the rest of the record, the ingredient is **DSC**:
+
+- all three panics: cross-plane sets on a DSC link (1.87–1.88:1);
+- 10 crossings on 2026-10-16 on `YCbCr422_8bit limited` (no DSC): fine;
+- 2 crossings today on 119.99 Hz 10-bit HDR10 RGB (no DSC): fine;
+- 22 same-plane sets on DSC links: fine.
+
+Not the scale change, not the refresh rate, not 10-bit/HDR/RGB by themselves.
+
+### The configuration that keeps everything and survives
+
+**120 Hz, 10-bit HDR10 RGB Full, DSC off** (desktop mode 772 = 3440x1440 HiDPI, 6880x2880 backing):
+
+- the fatal class no longer exists — 2x <-> 1x is safe both ways, so exclusive-fullscreen games work;
+- HiDPI, forced HDR, 10-bit, RGB full range all intact (brightness 1.0, gamma −0.25, `protectHDR`);
+- persisted: WindowServer `Hz 120, Scale 2, Wide 3440`; BetterDisplay `protectRefreshRate = 120Hz`,
+  `protectRefreshRateMode = 772`.
+
+Cost: 240 Hz and 165 Hz are DSC-coded timings *on this panel* — at either of them a 2x <-> 1x set
+is the fatal class again. 240 stays usable for desktop-only sessions in which nothing will change
+the scale; it cannot be combined with exclusive fullscreen.
+
+Restore to this tier: `betterdisplaycli set -name=AW3425DW -displayModeNumber=772`, then verify
+`-DSCReport` says `Display Stream Compression (DSC): No` — that string is the safety property, not
+the refresh number.

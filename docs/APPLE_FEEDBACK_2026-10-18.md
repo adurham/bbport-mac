@@ -194,3 +194,20 @@ the fatal class. The two recovery scripts on this machine used mode ids captured
 has since been rebuilt (150 is now a 1583x663 mode, not 3440x1440), which would have issued a
 cross-plane set; they now resolve their target by description and refuse to run from a 1x desktop.
 
+
+### 6. Follow-up for the filed report (2026-10-19, after filing)
+
+The DSC hypothesis in §3/§4.1 was tested directly, on a non-DSC link at the same 10-bit HDR10 RGB
+format the fault occurred at:
+
+- 119.99 Hz 10-bit HDR10 RGB Full, `DSC: No`, 17.68 Gbps — then desktop mode 2x (6880x2880) ->
+  1x (3440x1440): **no fault**; pipe ran 1:1 at 3440x1440, panel 120.00 Hz, observed 122 s.
+- the reverse, 1x -> 2x on the same link: **no fault**, HiDPI restored, observed 122 s.
+
+Three panics on DSC-coded links (1.87-1.88:1), twelve crossings without a fault on non-DSC links
+(ten on YCbCr422 8-bit limited, two at 119.99 Hz 10-bit HDR10 RGB), 22 same-plane sets fine.
+
+That makes DSC the discriminator, and it sharpens the question in §4.1: the DSC encoder's input
+descriptor for the source plane is the thing that appears not to be re-derived when the plane
+changes. Same hardware, same OS build, same desktop modes, same bit depth and transfer function —
+only the presence of the DSC stage differs.
