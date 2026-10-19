@@ -482,6 +482,9 @@ void SubmitGfx(const Message& message) {
                                                      sizeof(SubmitGfxArgs));
     const u32 available = (message.size - sizeof(SubmitGfxArgs)) / 4;
     u32 used = 0;
+    // force_copy (0.6's FX initialization clears): the command processor copies the words at
+    // submit, so inline ones are used from the message and not kept.
+    const bool copy = args.force_copy != 0;
     const auto span = [&](u64 address, u32 dwords, u32 is_inline) -> std::span<const u32> {
         if (!dwords) {
             return {};
@@ -490,7 +493,8 @@ void SubmitGfx(const Message& message) {
             if (dwords > available - used) { // (no wrap-around: used <= available)
                 return {};
             }
-            const auto kept = InlineCommands(words + used, dwords);
+            const std::span<const u32> kept =
+                copy ? std::span<const u32>{words + used, dwords} : InlineCommands(words + used, dwords);
             used += dwords;
             return kept;
         }
@@ -498,7 +502,7 @@ void SubmitGfx(const Message& message) {
     };
     const auto dcb = span(args.dcb, args.dcb_dwords, args.inline_dcb);
     const auto ccb = span(args.ccb, args.ccb_dwords, args.inline_ccb);
-    liverpool->SubmitGfx(dcb, ccb);
+    liverpool->SubmitGfx(dcb, ccb, copy);
 }
 
 void Handle(const Message& message, auto&& reply) {
@@ -958,7 +962,24 @@ u64* VideoOutLabels() {
     return g.control->state.vo_labels;
 }
 
+// bbport 0.6's short taps (runtime_pad.c key_latch, in the game process): every key press in this
+// process's window, kept until the game process's pad takes it.
+static bool LatchKeyPress(void*, SDL_Event* event) {
+    if (event->type == SDL_EVENT_KEY_DOWN && !event->key.repeat && g.control) {
+        const u32 code = u32(event->key.scancode);
+        if (code < std::size(g.control->state.key_latch) * 64) {
+            g.control->state.key_latch[code / 64].fetch_or(u64(1) << (code % 64),
+                                                            std::memory_order_relaxed);
+        }
+    }
+    return true;
+}
+
 void PublishWindowState() {
+    static bool latch_watch = false;
+    if (!latch_watch && SDL_WasInit(SDL_INIT_VIDEO)) {
+        latch_watch = SDL_AddEventWatch(LatchKeyPress, nullptr);
+    }
     // The keyboard: the game process's pad reads it (runtime_pad.c through bbgpu_keyboard_state).
     int count = 0;
     if (const bool* keys = SDL_GetKeyboardState(&count)) {
@@ -1045,6 +1066,16 @@ int FileHostPath(const char* guest, char* out, u64 size) {
     }
     std::snprintf(out, std::size_t(size), "%s", reply.path);
     return 0;
+}
+
+void GameEffects(u64 mask) {
+    const ValueArgs args{mask};
+    g.channel->Send(MsgGameEffects, &args, sizeof(args));
+}
+
+void FrameLimit(int fps) {
+    const ValueArgs args{u64(std::max(fps, 0))};
+    g.channel->Send(MsgFrameLimit, &args, sizeof(args));
 }
 
 void RequestRestart() {

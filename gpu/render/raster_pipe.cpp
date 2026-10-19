@@ -253,10 +253,10 @@ void Rasterizer::WaitForInPlaceReads(u64 packet) {
         },
         &data, sizeof(data), BbToggle::PipelinedTasks, false);
     DrainDrawPipe(DrawPipe::ReasonConstRam);
-    const u64 start = __rdtsc();
+    const u64 start = BbCpu::Ticks();
     semaphore->Wait(tick);
     ++constram_gpu_waits;
-    constram_gpu_wait_cycles += __rdtsc() - start;
+    constram_gpu_wait_cycles += BbCpu::Ticks() - start;
 }
 
 void Rasterizer::NoteCommandWriteInOrder(VAddr addr, const void* data, u64 size) {

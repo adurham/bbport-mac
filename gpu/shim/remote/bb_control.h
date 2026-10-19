@@ -46,6 +46,10 @@ struct SharedState {
     std::atomic<std::int32_t> pad_mouse_look{0};
     /// The Toy Pad's lights (runtime_toypad_lights), for bb-gpu's settings menu.
     std::atomic<std::uint32_t> toypad_lights[3]{};
+    /// Keys pressed since the game process's pad last read them (bbport 0.6's short taps,
+    /// runtime_pad.c key_latch): bit n = SDL scancode n, set by bb-gpu's window, taken (cleared)
+    /// by the game process.
+    alignas(64) std::atomic<std::uint64_t> key_latch[8]{};
 };
 
 struct ControlBlock {

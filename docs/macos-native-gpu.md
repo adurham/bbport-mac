@@ -242,6 +242,22 @@ KosmicKrisp its own shader cache.
   reads guest memory only, and a mapping removed under a walk ends that walk (no crash).
 - CI builds bb-gpu on the native branches (the arm64 libraries are cached like the x86-64 ones).
 
+**bbport 0.6 final (2026-10-20).** What 0.6 added across the split:
+
+- Effects switched live: the settings menu (bb-gpu) sends its effects (`MsgGameEffects`) when
+  they change; the game process switches the game's code (`BbGuestHooks::ApplyGameEffects`).
+  The game's own System menu runs in the game process as before (`MsgSettingsChanged`).
+- The live frame rate limit (F3, the settings menu): `MsgFrameLimit` to the game process, whose
+  frame pacer's hooks apply it.
+- Short key taps (`runtime_pad.c` key_latch): bb-gpu's window latches key presses in the control
+  block (`SharedState::key_latch`); the game process's pad takes them.
+- The FX initialization clear (the save load crash fix) submits its commands inline with
+  `force_copy`: bb-gpu's command processor copies them at submit, as in one process.
+- The game's main thread for those hooks is the loader's thread (`BbThreads::IsGuestMainThread`),
+  recorded by the game process's `bbgpu_init`.
+- The render resource cache's extra direct memory is mapped by the game process and mirrored as
+  any mapping; bb-gpu has a stub for `runtime_extra_direct_map`.
+
 **Phase 6, started (2026-10-08).**
 
 - ThreadSanitizer (GCC 13, Linux) on the channel, memory and table tests and on

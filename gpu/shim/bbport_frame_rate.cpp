@@ -18,6 +18,7 @@
 #include "common/types.h"
 #include "bbport_frame_rate.h"
 #include "bbport_guest_code.h"
+#include "remote/bb_remote.h"
 
 #include <sys/mman.h>
 #include <unistd.h>
@@ -373,6 +374,12 @@ bool Unlocked() {
 }
 void SetLimit(int fps) {
     live_limit.store(fps, std::memory_order_relaxed);
+    // bbport (macOS native GPU process): F3 and the settings menu are bb-gpu's, the frame pacer's
+    // hooks the game process's (MsgFrameLimit).
+    if (BbRemote::BackActive()) {
+        BbRemote::Back::FrameLimit(fps);
+        return;
+    }
     if (!unlocked.load(std::memory_order_relaxed) || !live) {
         return;
     }

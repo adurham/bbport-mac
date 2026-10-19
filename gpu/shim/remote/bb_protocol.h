@@ -11,7 +11,7 @@
 
 namespace BbRemote {
 
-inline constexpr std::uint32_t ProtocolVersion = 7;
+inline constexpr std::uint32_t ProtocolVersion = 8;
 
 enum Msg : std::uint32_t {
     // ---- game process -> GPU process ----
@@ -62,6 +62,9 @@ enum Msg : std::uint32_t {
     // bbport 0.6's button prompts (rare: when the prompts change).
     MsgPadPrompt = 110,     ///< call: PadPromptArgs -> PadPromptReply (runtime_pad_prompt)
     MsgFileHostPath = 111,  ///< call: PathArgs -> PathReply (runtime_file_host_path, /app0/ only)
+    // bbport 0.6's live settings: the settings menu and F3 are bb-gpu's, the game's code is here.
+    MsgGameEffects = 112,   ///< ValueArgs: bit e = BbSettings effects[e] (the hot ones switch now)
+    MsgFrameLimit = 113,    ///< ValueArgs: BbFrameRate::SetLimit (0: none)
 };
 
 /// Sizes of the guest structures carried as raw bytes (checked against the real types).
@@ -155,6 +158,9 @@ struct SubmitGfxArgs {
     std::uint64_t dcb, ccb;             ///< guest addresses (0 when inline or empty)
     std::uint32_t dcb_dwords, ccb_dwords;
     std::uint32_t inline_dcb, inline_ccb; ///< 1: the words follow this struct (dcb first)
+    /// 1: the command processor copies the words at submit (bbport 0.6's internal FX
+    /// initialization clears), instead of bb-gpu keeping inline words for good.
+    std::uint32_t force_copy, reserved;
 };
 struct SubmitAscArgs {
     std::uint64_t address;
@@ -253,7 +259,7 @@ static_assert(sizeof(HelloArgs) == 80 && sizeof(HelloReply) == 16 + 16 * MaxTake
               sizeof(ProtectArgs) == 24 && sizeof(ResultReply) == 8 && sizeof(ValueArgs) == 8);
 static_assert(sizeof(FaultArgs) == 24 && sizeof(FaultReply) == 8 + 24 * MaxFaultProtects &&
               sizeof(FaultReply) <= 4096);
-static_assert(sizeof(InitArgs) == 16 + 128 + 32 + 1024 && sizeof(SubmitGfxArgs) == 32 &&
+static_assert(sizeof(InitArgs) == 16 + 128 + 32 + 1024 && sizeof(SubmitGfxArgs) == 40 &&
               sizeof(SubmitAscArgs) == 16 && sizeof(ComputeQueueArgs) == 24);
 static_assert(sizeof(VoArgs) == 8 && sizeof(VoRegisterArgs) == 16 + 40 + 128 &&
               sizeof(VoAttributeArgs) == 48 && sizeof(VoFlipArgs) == 24 &&

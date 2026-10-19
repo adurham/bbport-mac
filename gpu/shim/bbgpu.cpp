@@ -474,6 +474,12 @@ extern "C" const bool* bbgpu_keyboard_state(void) {
     return SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(nullptr) : nullptr;
 }
 
+extern "C" void bbgpu_keyboard_take_latched(volatile uint8_t* latch, int count) {
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::TakeKeyLatch(latch, count); // in-process: runtime_pad.c's own event watch
+    }
+}
+
 extern "C" int bbgpu_mouse_captured(void) {
     if (BbRemote::FrontActive()) {
         return BbRemote::Front::MouseCaptured();

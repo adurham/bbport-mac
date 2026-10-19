@@ -590,6 +590,8 @@ static int keyboard_circle(const bool *k, uint64_t now, int menu) {
 
 static void apply_keyboard(PadData *d, const bool *k) {
     key_watch_start();
+    /* bbport (macOS native GPU process): the window and its key events are bb-gpu's. */
+    bbgpu_keyboard_take_latched(key_latch,SDL_SCANCODE_COUNT);
     const int menu=bbgpu_pointer_wanted()!=0;
     /* The way back in a game menu is Escape; Options opens the menu at other times. A press that
      * began outside a menu is Options for as long as it is held: the menu it opens must not take

@@ -39,7 +39,7 @@ namespace Front {
 /// Starts bb-gpu and initializes the GPU core there. False (reason printed) on failure.
 bool Init(const BbGpuConfig& config);
 
-void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb);
+void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_copy = false);
 void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb);
 void SubmitDone(u64 frame);
 bool IsGpuIdle();
@@ -81,6 +81,8 @@ int ShareRange(void* address, u64 size, int prot);
 int OverlayCapturesInput();
 /// bb-gpu's window keyboard (bbgpu_keyboard_state).
 const bool* KeyboardState();
+/// Keys pressed in bb-gpu's window since the last call: latch[scancode] set to 1 (count entries).
+void TakeKeyLatch(volatile std::uint8_t* latch, int count);
 /// bb-gpu's window mouse (bbgpu_mouse_*).
 void MouseTake(double* dx, double* dy, int* wheel_up, int* wheel_down);
 int MouseCaptured();
@@ -109,6 +111,9 @@ u64* VideoOutLabels();
 /// From the window loop: state the game process reads directly (settings menu open...).
 void PublishWindowState();
 void RequestRestart();
+/// The settings menu's effects (bit e: effects[e]) and frame rate limit, for the game's code.
+void GameEffects(u64 mask);
+void FrameLimit(int fps);
 /// After the frame stats: the game process prints its threads' CPU time and the guest's waits.
 void GameStats(double window_s, double frames);
 // The game process's pad and files for the button prompts (runtime_pad_prompt*,

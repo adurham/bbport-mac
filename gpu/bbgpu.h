@@ -31,6 +31,9 @@ int bbgpu_text_input_begin(const char *initial_utf8, const char *prompt_utf8);
 int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
 /* The keyboard (SDL scancodes, true while held) of the game window, or NULL without one. */
 const bool *bbgpu_keyboard_state(void);
+/* Sets latch[scancode] to 1 for keys pressed in the game window since the last call (short taps,
+ * runtime_pad.c); only with the native GPU process, whose window is in another process. */
+void bbgpu_keyboard_take_latched(volatile uint8_t *latch, int count);
 /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
 int bbgpu_overlay_captures_input(void);
 /* Mouse look (runtime_pad.c): the window takes the mouse when it is clicked (relative mode) and

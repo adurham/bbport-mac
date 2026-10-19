@@ -61,10 +61,18 @@ extern "C" std::uint64_t runtime_heap_growths(void);
 namespace BbGnm {
 
 bool SubmitFxInitZero(u64 address, u32 bytes) {
-    if (!liverpool || !bytes || bytes > 32768 || (bytes & 3) || (address & 3)) return false;
+    // bbport (macOS native GPU process): the queue is bb-gpu's; the commands travel inline, in
+    // order with the game's submissions, and are copied there at submit as here.
+    if ((!liverpool && !BbRemote::FrontActive()) || !bytes || bytes > 32768 || (bytes & 3) ||
+        (address & 3))
+        return false;
     const auto commands = BbFxInit::Commands({address, bytes});
     // This enters the graphics queue in order, with no register changes. The queue owns its
     // copy independently of BB_COPY_GPU_BUFFERS; the initializer may return immediately.
+    if (BbRemote::FrontActive()) {
+        BbRemote::Front::SubmitGfx(commands, {}, true);
+        return true;
+    }
     liverpool->SubmitGfx(commands, {}, true);
     return true;
 }

@@ -6,6 +6,7 @@
 // back interrupts, flip and vblank status, retired frames and page protection changes.
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
@@ -30,8 +31,11 @@
 #include <mach-o/dyld.h>
 #endif
 
+#include "bbport_frame_rate.h"
 #include "bbport_game_menu.h"
+#include "bbport_guest_hooks.h"
 #include "bbport_portable.h"
+#include "bbport_settings.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "common/rdtsc.h"
@@ -346,6 +350,20 @@ void Handle(const Message& message, auto&& reply) {
     case MsgFileHostPath:
         FileHostPath(message, reply);
         break;
+    case MsgGameEffects: {
+        // bb-gpu's settings menu switched effects: the hot ones are switched in the game's code
+        // here (BbGuestHooks::ApplyGameEffects compares with what it applied last).
+        const u64 mask = Payload<ValueArgs>(message).value;
+        auto& settings = BbSettings::Get();
+        for (int e = 0; e < BbSettings::EffectCount; ++e) {
+            settings.effects[e] = ((mask >> e) & 1) != 0;
+        }
+        BbGuestHooks::ApplyGameEffects();
+        break;
+    }
+    case MsgFrameLimit:
+        BbFrameRate::SetLimit(int(std::min<u64>(Payload<ValueArgs>(message).value, 1000)));
+        break;
     case MsgGpuFailed: {
         const auto args = Payload<TextArgs>(message);
         std::fprintf(stderr, "GPU process: %.*s\n", int(sizeof(args.text)), args.text);
@@ -659,11 +677,12 @@ bool Init(const BbGpuConfig& config) {
 
 // ---- GnmDriver ------------------------------------------------------------------------------
 
-void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
+void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_copy) {
     struct {
         SubmitGfxArgs args;
         u32 words[(MaxPayload - sizeof(SubmitGfxArgs)) / 4];
     } message{};
+    message.args.force_copy = force_copy ? 1 : 0;
     std::size_t words = 0;
     // Host data (the init sequences) travels inline; guest command buffers by address.
     const auto add = [&](std::span<const u32> span, u64& address, u32& dwords, u32& inline_flag) {
@@ -927,6 +946,23 @@ int OverlayCapturesInput() {
 const bool* KeyboardState() {
     static_assert(sizeof(bool) == 1);
     return g.control ? reinterpret_cast<const bool*>(g.control->state.keyboard) : nullptr;
+}
+
+void TakeKeyLatch(volatile std::uint8_t* latch, int count) {
+    if (!g.control || !latch) {
+        return;
+    }
+    auto& words = g.control->state.key_latch;
+    for (int w = 0; w < int(std::size(words)); ++w) {
+        u64 bits = words[w].exchange(0, std::memory_order_relaxed);
+        while (bits) {
+            const int code = w * 64 + std::countr_zero(bits);
+            bits &= bits - 1;
+            if (code < count) {
+                latch[code] = 1;
+            }
+        }
+    }
 }
 
 void MouseTake(double* dx, double* dy, int* wheel_up, int* wheel_down) {

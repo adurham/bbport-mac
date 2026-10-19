@@ -30,6 +30,7 @@
 
 #include "bbport_portable.h"
 #include "common/signal_context.h"
+#include "remote/bb_remote.h"
 
 extern "C" void runtime_memory_note_write(uintptr_t address, uint64_t size);
 extern "C" void runtime_re_watch(uint64_t address);
@@ -1922,6 +1923,22 @@ void Install(RangeCallback on_gpu_range_allocated) {
     }
 }
 void ApplyGameEffects() {
+    // bbport (macOS native GPU process): the settings menu runs in bb-gpu, the game's code in the
+    // game process: the menu's effects go there when they change (MsgGameEffects).
+    if (BbRemote::BackActive()) {
+        static_assert(BbSettings::EffectCount <= 64);
+        u64 mask = 0;
+        for (int e = 0; e < BbSettings::EffectCount; ++e) {
+            if (BbSettings::Get().effects[e].load(std::memory_order_relaxed)) {
+                mask |= u64(1) << e;
+            }
+        }
+        static std::atomic<u64> sent{~u64(0)};
+        if (sent.exchange(mask) != mask) {
+            BbRemote::Back::GameEffects(mask);
+        }
+        return;
+    }
     ApplyHotEffects(false);
 }
 

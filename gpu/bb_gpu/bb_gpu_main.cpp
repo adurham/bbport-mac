@@ -109,6 +109,14 @@ int runtime_memory_exclude(uintptr_t, uintptr_t) {
 // The guest code hooks' notes: the hooks run in the game process.
 void runtime_memory_note_write(uintptr_t, uint64_t) {}
 void runtime_re_watch(uint64_t) {}
+// bbport 0.6: the render resource cache's backing is allocated by the game's code hooks, which run
+// in the game process (its mapping reaches this process as any other).
+int runtime_extra_direct_map(uint64_t, uint64_t, void** out) {
+    if (out) {
+        *out = nullptr;
+    }
+    return -1;
+}
 // The button prompts (bbport 0.6): the pad and the game's files are the game process's.
 int runtime_pad_prompt(const char* name, int prefer_mouse, char* label, int size) {
     return Back::PadPrompt(name, prefer_mouse, label, size);
