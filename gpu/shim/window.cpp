@@ -325,6 +325,20 @@ void DefaultOutputToNative(SDL_Window* window) {
 /// The derived display mode (below, with the window modes).
 void apply_display_mode(SDL_Window* window, const char* why);
 
+/// The window-mode apply (below, with the window modes): the constructor calls it synchronously
+/// for the boot mode, while nothing of ours can be on screen yet.
+void apply_window_mode(SDL_Window* window, int mode);
+
+/// BB_DISPLAY_DRY=1: derive and log the pick, set nothing. A fullscreen launch then enters
+/// fullscreen on the desktop's mode — the ordering is exercised, the panel is not moved.
+bool DryDisplayRun() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_DISPLAY_DRY");
+        return env && env[0] && env[0] != '0';
+    }();
+    return on;
+}
+
 } // namespace
 
 namespace {
@@ -337,6 +351,12 @@ SDL_Window* last_window = nullptr;
 /// line asks it for its opacity and colour space, as bbport_layer.mm's own dump does.
 void* window_metal_layer = nullptr;
 #endif
+
+/// The constructor's synchronous window-mode apply is the only moment a display mode may be set:
+/// the window exists, and nothing of ours has been presented (SDL_Metal_CreateView comes after
+/// it), so no scanout surface is re-pointed under the display coprocessor. Cleared at the end of
+/// the constructor; apply_display_mode refuses every later set (it logs, and nothing moves).
+bool boot_mode_phase = true;
 
 } // namespace
 
@@ -373,8 +393,19 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     // The window mode (bbport.ini window_mode / BB_WINDOW_MODE; BB_FULLSCREEN=1 is legacy):
     // applied at creation and, for changes from the menu, live (SetWindowMode below).
     const int window_mode = BbSettings::Get().window_mode.load();
+    // A warm run (BB_WARM_ONLY): hidden window, and it stays windowed (the pipeline caches do not
+    // care about the mode, and switching a hidden window would flicker the owner's screen).
+    const bool warm_window = WarmRun();
+    // A fullscreen launch whose mode MOVES THE PANEL must not be born fullscreen: SDL then sets the
+    // display mode at the first PollEvents, i.e. after the swapchain exists and is presenting.
+    // CGDisplaySetDisplayMode with a drawable of ours scanout-eligible is the sequence that panicked
+    // the display coprocessor on 2026-10-18 (DCPEXT1 axi_rd_err, twice). Such a launch is created
+    // as a plain window and moved to its mode + fullscreen by apply_window_mode below — still
+    // before SDL_Metal_CreateView makes a layer the WindowServer could scan.
+    const bool boot_fullscreen = window_mode == BbSettings::WindowFullscreen && !warm_window;
+    const bool moves_panel = boot_fullscreen && !BbSettings::FullscreenKeepsDesktopMode();
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
-                           window_mode == BbSettings::WindowFullscreen);
+                           window_mode == BbSettings::WindowFullscreen && !moves_panel);
     // A warm run (BB_WARM_ONLY): hidden window; the caches are compiled for later sessions and
     // presenter.cpp asks the game to quit after BB_WARM_SECONDS.
     if (const char* warm = std::getenv("BB_WARM_ONLY"); warm && warm[0] == '1') {
@@ -389,10 +420,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_DestroyProperties(props);
     ASSERT_MSG(window, "Failed to create window: {}", SDL_GetError());
     last_window = window; // the display-mode picker's and the capture hotkey's window
-    // A warm run stays windowed: switching the display mode for a hidden compile pass would
-    // flicker the owner's screen for nothing (the pipeline caches do not care about the mode).
-    const bool warm_window = WarmRun();
-    if (window_mode != BbSettings::WindowWindowed && !warm_window) {
+    if (moves_panel) {
+        // Synchronous, and before SDL_Metal_CreateView below: the panel is moved with no drawable of
+        // ours in existence, and the swapchain is then born on the new mode — no surface is
+        // re-pointed under the display coprocessor.
+        apply_window_mode(window, window_mode);
+    } else if (window_mode != BbSettings::WindowWindowed && !warm_window) {
         SetWindowMode(window_mode); // borderless/fullscreen at start; the menu changes it live
     }
 
@@ -434,6 +467,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     if (warm_window && window_mode == BbSettings::WindowFullscreen) {
         apply_display_mode(window, "fullscreen at start"); // warm: logged, not applied
     }
+    // Past this point a drawable of ours can exist: apply_display_mode refuses every set from here
+    // on (the constructor's synchronous apply above is the one moment the panel may be moved).
+    boot_mode_phase = false;
 }
 
 WindowSDL::~WindowSDL() {
@@ -494,7 +530,11 @@ void apply_display_mode(SDL_Window* window, const char* why) {
     if (!window) {
         return;
     }
-    const bool dry_run = WarmRun(); // logs the pick (the picker's check), switches nothing
+    const bool dry_run = WarmRun() || DryDisplayRun(); // logs the pick (the picker's check), switches nothing
+    // A display mode may only be set from the constructor, before SDL_Metal_CreateView makes a layer
+    // the WindowServer could scan. Every later request is logged and dropped: setting one under a
+    // live swapchain is what took the display coprocessor down (DCPEXT1 axi_rd_err, 2026-10-18).
+    const bool may_set = boot_mode_phase;
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
     const BbSettings::OutputSize output = BbSettings::CurrentOutput();
     mode_output = BbSettings::PackSize(output);
@@ -508,7 +548,14 @@ void apply_display_mode(SDL_Window* window, const char* why) {
         std::printf("Display mode: the desktop's mode is kept (%s; fullscreen_mode=desktop: the panel "
                     "is never switched, %s is rendered and scaled into it)\n",
                     why, BbSettings::SizeText(output).c_str());
-        if (!dry_run) {
+        if (!dry_run && !may_set) {
+            // A restart is what actually puts the panel back: SDL would restore the desktop's mode
+            // here, i.e. switch it under a live swapchain, which is the sequence the gate above
+            // exists to refuse.
+            std::printf("Display mode: the panel stays where startup put it until a restart "
+                        "(fullscreen_mode=desktop takes effect at the next start)\n");
+        }
+        if (!dry_run && may_set) {
             SDL_SetWindowFullscreenMode(window, nullptr);
         }
         return;
@@ -535,7 +582,21 @@ void apply_display_mode(SDL_Window* window, const char* why) {
                     px.width, px.height, chosen->w, chosen->h, chosen->pixel_density, chosen->refresh_rate,
                     BbSettings::SizeText(output).c_str(), why, fill ? " - fullscreen_mode=fill: the "
                     "display's own mode, the output scaled into the window" : " - fullscreen_mode="
-                    "exclusive: the output's own mode", dry_run ? " - warm run: not applied" : "");
+                    "exclusive: the output's own mode", dry_run ? (WarmRun() ? " - warm run: not applied"
+                                                                              : " - BB_DISPLAY_DRY: not applied")
+                                                                  : "");
+        if (!dry_run && !may_set) {
+            // Mechanically refused: apply_display_mode only ever runs with the panel safe to move
+            // from the constructor (boot_mode_phase). Under a live swapchain the set below is the
+            // sequence that panicked the display coprocessor, so nothing moves and the log says why.
+            std::printf("Display mode: %s needs a restart (fullscreen_mode=%s moves the panel at "
+                        "startup only, before the first drawable; the display is never switched "
+                        "under a live swapchain)\n",
+                        BbSettings::SizeText(output).c_str(),
+                        BbSettings::FullscreenModeKey(BbSettings::Get().fullscreen_mode.load()));
+            SDL_free(listed);
+            return;
+        }
         if (!dry_run && !SDL_SetWindowFullscreenMode(window, chosen)) {
             std::printf("Display mode: SDL refused it (%s): the desktop's mode\n", SDL_GetError());
             SDL_SetWindowFullscreenMode(window, nullptr);
@@ -543,7 +604,7 @@ void apply_display_mode(SDL_Window* window, const char* why) {
     } else {
         std::printf("Display mode: none listed for output %s (%s): the desktop's mode\n",
                     BbSettings::SizeText(wanted).c_str(), why);
-        if (!dry_run) {
+        if (!dry_run && may_set) {
             SDL_SetWindowFullscreenMode(window, nullptr);
         }
     }
