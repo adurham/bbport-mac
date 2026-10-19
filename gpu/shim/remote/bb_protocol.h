@@ -65,6 +65,7 @@ enum Msg : std::uint32_t {
     // bbport 0.6's live settings: the settings menu and F3 are bb-gpu's, the game's code is here.
     MsgGameEffects = 112,   ///< ValueArgs: bit e = BbSettings effects[e] (the hot ones switch now)
     MsgFrameLimit = 113,    ///< ValueArgs: BbFrameRate::SetLimit (0: none)
+    MsgDisplayAspect = 114, ///< ValueArgs: float bits, BbGuestHooks::SetDisplayAspect (the output's)
 };
 
 /// Sizes of the guest structures carried as raw bytes (checked against the real types).

@@ -70,8 +70,7 @@ bool SubmitFxInitZero(u64 address, u32 bytes) {
     // This enters the graphics queue in order, with no register changes. The queue owns its
     // copy independently of BB_COPY_GPU_BUFFERS; the initializer may return immediately.
     if (BbRemote::FrontActive()) {
-        BbRemote::Front::SubmitGfx(commands, {}, true);
-        return true;
+        return BbRemote::Front::SubmitGfx(commands, {}, true); // false: the game's own clear runs
     }
     liverpool->SubmitGfx(commands, {}, true);
     return true;

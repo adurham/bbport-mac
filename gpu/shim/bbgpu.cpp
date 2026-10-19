@@ -333,6 +333,17 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         // The game's System menu pages (this process) offer MetalFX: bb-gpu checks the device
         // and falls back as it does for its own menu.
         BbSettings::Get().metalfx_supported = true;
+        // The hooks in the game's own code (fixes, live effects, aspect ratio): the game's code
+        // is in this process; in one process the buffer cache installs them, here bb-gpu doesn't.
+        // No GPU-range notifications: those need the PC memory model.
+        if (const Game::Profile* game = Game::Active(); game && game->install_hooks) {
+            const char* hooks_env = std::getenv("BB_GUEST_HOOKS");
+            if (hooks_env && hooks_env[0] == '0') {
+                std::printf("Guest hooks: off (BB_GUEST_HOOKS=0): nothing in the game's own code is hooked\n");
+            } else {
+                game->install_hooks(Game::CoreServices{.fresh_range = nullptr});
+            }
+        }
 #ifdef __APPLE__
         // Gamepads stay here (runtime_pad.c reads them through SDL): this process's main thread,
         // idle without a window, keeps their events and run loop going.

@@ -14,6 +14,7 @@
 #include <array>
 #include <bit>
 #include <atomic>
+#include <mutex>
 #include "bbport_guest_code_hooks.h"
 #include <cmath>
 #include <chrono>
@@ -326,6 +327,11 @@ void WriteHotCode(u64 address, const u8* bytes, std::size_t size, bool data) {
 extern "C" int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
 
 void ApplyHotEffects(bool force, u64 fresh = 0) {
+    // bbport: the game's menu (submit thread), a new options object (game thread) and, with the
+    // native GPU process, the channel's reader may switch at once; WriteHotCode's protection
+    // changes must not interleave.
+    static std::mutex apply_mutex;
+    std::scoped_lock apply_lock{apply_mutex};
     auto& settings = BbSettings::Get();
     for (auto& code : hot_code) {
         if (!code.ready) {
@@ -1951,6 +1957,12 @@ std::uint64_t CameraState() {
 }
 
 void SetDisplayAspect(float aspect) {
+    // bbport (macOS native GPU process): the upscaler is bb-gpu's, the camera and HUD hooks the
+    // game process's (MsgDisplayAspect); called on a change only.
+    if (BbRemote::BackActive()) {
+        BbRemote::Back::DisplayAspect(aspect);
+        return;
+    }
     constexpr float game = 16.0f / 9.0f;
     const bool other = aspect > 0.5f && aspect < 8.0f && std::abs(aspect - game) > 0.001f;
     std::uint32_t bits = 0, fov = 0;

@@ -5,6 +5,8 @@
 #include "game_profile.h"
 #include "bbport_guest_hooks.h"
 #include "bloodborne_menu_pointer.h"
+#include "remote/bb_remote.h"
+#include <cstdio>
 
 namespace Game {
 namespace {
@@ -30,8 +32,14 @@ constexpr CodeRange DynamicWriters[] = {
 void InstallHooks(const CoreServices& services) {
     // The resource loaders' copies, the GPU memory range allocator and the heap (bbport_guest_hooks).
     BbGuestHooks::Install(services.fresh_range);
-    // The mouse as a pointer in the game's menus (bloodborne_menu_pointer).
-    BbMenuPointer::Install();
+    // The mouse as a pointer in the game's menus (bloodborne_menu_pointer). bbport (macOS native
+    // GPU process): its window part would be bb-gpu's and its game hook this process's; not split
+    // yet, so the keyboard and gamepad drive the menus there.
+    if (BbRemote::FrontActive()) {
+        std::printf("Menu pointer: not with the native GPU process yet\n");
+    } else {
+        BbMenuPointer::Install();
+    }
 }
 } // namespace
 

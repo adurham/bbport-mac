@@ -485,6 +485,10 @@ void SubmitGfx(const Message& message) {
     // force_copy (0.6's FX initialization clears): the command processor copies the words at
     // submit, so inline ones are used from the message and not kept.
     const bool copy = args.force_copy != 0;
+    if (copy && ((args.dcb_dwords && !args.inline_dcb) || (args.ccb_dwords && !args.inline_ccb))) {
+        std::fprintf(stderr, "GPU process: a copied submission must travel inline; refused\n");
+        return;
+    }
     const auto span = [&](u64 address, u32 dwords, u32 is_inline) -> std::span<const u32> {
         if (!dwords) {
             return {};
@@ -1076,6 +1080,13 @@ void GameEffects(u64 mask) {
 void FrameLimit(int fps) {
     const ValueArgs args{u64(std::max(fps, 0))};
     g.channel->Send(MsgFrameLimit, &args, sizeof(args));
+}
+
+void DisplayAspect(float aspect) {
+    u32 bits = 0;
+    std::memcpy(&bits, &aspect, sizeof(bits));
+    const ValueArgs args{bits};
+    g.channel->Send(MsgDisplayAspect, &args, sizeof(args));
 }
 
 void RequestRestart() {

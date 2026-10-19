@@ -48,6 +48,7 @@
 #endif
 #include "common/signal_context.h"
 #include "core/signals.h"
+#include "remote/bb_remote.h"
 #include <vk_mem_alloc.h>
 
 extern "C" int runtime_memory_vma_info(uintptr_t address, int* prot, int* type, uintptr_t* end);
@@ -611,7 +612,10 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     // the old memory model; only GPU-range notifications require memory in place (#214).
     const char* hooks_env = std::getenv("BB_GUEST_HOOKS");
     const Game::Profile* game = Game::Active();
-    if (game && game->install_hooks && !(hooks_env && hooks_env[0] == '0')) {
+    if (game && game->install_hooks && BbRemote::BackActive()) {
+        // bbport (macOS native GPU process): the game's code is in the game process, which
+        // installs them (bbgpu_init there).
+    } else if (game && game->install_hooks && !(hooks_env && hooks_env[0] == '0')) {
         static BufferCache* hooked_cache = this;
         game->install_hooks(Game::CoreServices{
             .fresh_range = GuestInPlace() ? +[](u64 address, u64 size) {

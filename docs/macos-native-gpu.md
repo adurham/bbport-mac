@@ -257,6 +257,13 @@ KosmicKrisp its own shader cache.
   recorded by the game process's `bbgpu_init`.
 - The render resource cache's extra direct memory is mapped by the game process and mirrored as
   any mapping; bb-gpu has a stub for `runtime_extra_direct_map`.
+- 0.6 installs the hooks in the game's code with either memory model, from the buffer cache's
+  constructor, which runs in bb-gpu here: the game process installs them in `bbgpu_init`
+  instead, and bb-gpu skips them. The output's aspect ratio for the camera and HUD hooks comes
+  from bb-gpu's upscaler (`MsgDisplayAspect`).
+- Not split yet: the mouse as a pointer in the game's menus (`BbMenuPointer`: its game hook
+  belongs here, its window part in bb-gpu). With the native GPU process the keyboard and
+  gamepad drive the game's menus.
 
 **Phase 6, started (2026-10-08).**
 

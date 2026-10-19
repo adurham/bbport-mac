@@ -39,7 +39,8 @@ namespace Front {
 /// Starts bb-gpu and initializes the GPU core there. False (reason printed) on failure.
 bool Init(const BbGpuConfig& config);
 
-void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_copy = false);
+/// False when host words were too many to send inline (dropped).
+bool SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_copy = false);
 void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb);
 void SubmitDone(u64 frame);
 bool IsGpuIdle();
@@ -114,6 +115,8 @@ void RequestRestart();
 /// The settings menu's effects (bit e: effects[e]) and frame rate limit, for the game's code.
 void GameEffects(u64 mask);
 void FrameLimit(int fps);
+/// The output's aspect ratio for the game's camera and HUD hooks (BbGuestHooks::SetDisplayAspect).
+void DisplayAspect(float aspect);
 /// After the frame stats: the game process prints its threads' CPU time and the guest's waits.
 void GameStats(double window_s, double frames);
 // The game process's pad and files for the button prompts (runtime_pad_prompt*,

@@ -9,6 +9,7 @@
 #include <bit>
 #include <atomic>
 #include <cerrno>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -364,6 +365,14 @@ void Handle(const Message& message, auto&& reply) {
     case MsgFrameLimit:
         BbFrameRate::SetLimit(int(std::min<u64>(Payload<ValueArgs>(message).value, 1000)));
         break;
+    case MsgDisplayAspect: {
+        // SetDisplayAspect takes only 0.5..8 as another aspect ratio (else the game's 16:9).
+        const u32 bits = u32(Payload<ValueArgs>(message).value);
+        float aspect = 0.0f;
+        std::memcpy(&aspect, &bits, sizeof(aspect));
+        BbGuestHooks::SetDisplayAspect(std::isfinite(aspect) ? aspect : 0.0f);
+        break;
+    }
     case MsgGpuFailed: {
         const auto args = Payload<TextArgs>(message);
         std::fprintf(stderr, "GPU process: %.*s\n", int(sizeof(args.text)), args.text);
@@ -677,7 +686,7 @@ bool Init(const BbGpuConfig& config) {
 
 // ---- GnmDriver ------------------------------------------------------------------------------
 
-void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_copy) {
+bool SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_copy) {
     struct {
         SubmitGfxArgs args;
         u32 words[(MaxPayload - sizeof(SubmitGfxArgs)) / 4];
@@ -706,9 +715,10 @@ void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_co
         !add(ccb, message.args.ccb, message.args.ccb_dwords, message.args.inline_ccb)) {
         std::fprintf(stderr, "GPU process: a %zu+%zu dword submission in host memory is too "
                      "large to forward; dropped\n", dcb.size(), ccb.size());
-        return;
+        return false;
     }
     g.channel->Send(MsgSubmitGfx, &message, u32(sizeof(SubmitGfxArgs) + words * 4));
+    return true;
 }
 
 void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {
