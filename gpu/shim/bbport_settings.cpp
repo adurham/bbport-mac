@@ -184,7 +184,14 @@ const char* AspectKey(int aspect) {
 }
 
 const char* FullscreenModeKey(int mode) {
-    return std::clamp(mode, 0, FullscreenModeCount - 1) == FullscreenExclusive ? "exclusive" : "fill";
+    switch (std::clamp(mode, 0, FullscreenModeCount - 1)) {
+    case FullscreenFill:
+        return "fill";
+    case FullscreenExclusive:
+        return "exclusive";
+    default:
+        return "desktop";
+    }
 }
 
 OutputSize Monitor() {

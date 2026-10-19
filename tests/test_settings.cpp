@@ -72,17 +72,25 @@ int main() {
     BbSettings::Load();
     assert(s.menu_language == BbSettings::MenuLanguage::Russian && s.menu_language_chosen);
 
-    // fullscreen_mode: fill (the default) is render-and-scale, exclusive is the display-mode switch
-    // (window.cpp). The file keeps the choice and BB_FULLSCREEN_MODE overrides it.
-    assert(s.fullscreen_mode == BbSettings::FullscreenFill && BbSettings::FullscreenFills());
+    // fullscreen_mode: desktop (the default) never sets a display mode, fill puts the panel on its
+    // own native 1x mode once, exclusive puts the display on the output's mode (window.cpp). The
+    // file keeps the choice and BB_FULLSCREEN_MODE overrides it.
+    assert(s.fullscreen_mode == BbSettings::FullscreenDesktop && BbSettings::FullscreenFills());
+    assert(BbSettings::FullscreenKeepsDesktopMode() && !BbSettings::FullscreenMovesDisplay());
     s.fullscreen_mode = BbSettings::FullscreenExclusive;
     BbSettings::Save();
     assert(Read(path).find("fullscreen_mode=exclusive\n") != std::string::npos);
     BbSettings::Load();
     assert(s.fullscreen_mode == BbSettings::FullscreenExclusive && !BbSettings::FullscreenFills());
+    assert(!BbSettings::FullscreenKeepsDesktopMode() && BbSettings::FullscreenMovesDisplay());
     setenv("BB_FULLSCREEN_MODE", "fill", 1);
     BbSettings::Load();
     assert(s.fullscreen_mode == BbSettings::FullscreenFill);
+    assert(BbSettings::FullscreenFills() && BbSettings::FullscreenMovesDisplay());
+    setenv("BB_FULLSCREEN_MODE", "desktop", 1);
+    BbSettings::Load();
+    assert(s.fullscreen_mode == BbSettings::FullscreenDesktop);
+    assert(BbSettings::FullscreenKeepsDesktopMode() && !BbSettings::FullscreenMovesDisplay());
     unsetenv("BB_FULLSCREEN_MODE");
 
     // A resolution can only move the display mode where fullscreen puts the display itself on it
@@ -92,6 +100,8 @@ int main() {
     s.fullscreen_mode = BbSettings::FullscreenExclusive;
     assert(BbSettings::ResolutionMovesDisplayMode());
     s.fullscreen_mode = BbSettings::FullscreenFill;
+    assert(!BbSettings::ResolutionMovesDisplayMode());
+    s.fullscreen_mode = BbSettings::FullscreenDesktop;
 
     // The aspect ratio drives the output, one direction: the aspect ratio's list holds it and the
     // height is kept (BbSettings::SetAspect). Entry 5 of the 16:9 list is not entry 5 of 21:9's —

@@ -841,10 +841,12 @@ void Menu() {
             "the game. Switch back from this menu (F1).",
             "Без рамки — окно во весь экран без заголовка; во весь экран — игра занимает дисплей. "
             "Вернуться можно из этого же меню (F1)."));
-        // How fullscreen reaches the display (window.cpp, bbport.ini fullscreen_mode): fill — the
-        // default — renders the output and scales it into a window on the display's own mode; the
-        // exclusive semantics puts the display itself on the output's mode.
+        // How fullscreen reaches the display (window.cpp, bbport.ini fullscreen_mode): desktop —
+        // the default — keeps the display's mode and scales the output into the window; fill puts
+        // the panel on its native 1x mode once; exclusive puts the display itself on the output's
+        // mode. Only the last two touch the panel, and only at startup.
         static const char* fullscreen_modes[] = {
+            BbSettings::MenuText("Keep the desktop's mode (never switch)", "Оставить режим рабочего стола"),
             BbSettings::MenuText("Fill the screen (render and scale)",
                                  "Заполнять экран (рендер и масштаб)"),
             BbSettings::MenuText("Switch the display mode", "Переключать режим дисплея")};
@@ -859,20 +861,20 @@ void Menu() {
             ImGui::EndCombo();
         }
         Hint(BbSettings::MenuText(
-            "Fill (opt-in): the game is drawn at the chosen resolution and scaled up to the "
-            "whole screen; the display keeps the mode it is on, so changing the resolution never "
-            "blanks the screen and Direct keeps working. Text and UI are sharpest when the "
-            "resolution is the display's own size. Switch the display mode (the default): the display itself is "
-            "put on the chosen resolution — pixel-for-pixel where the panel has it, and for other "
-            "sizes the screen goes black for a moment, the panel's own scaler stretches the "
-            "picture and Direct has to be set up again.",
-            "Заполнять (опция): кадр рисуется в выбранном разрешении и растягивается на "
-            "весь экран; дисплей остаётся в своём режиме, поэтому смена разрешения не гасит "
-            "экран и Direct продолжает работать. Текст и интерфейс всего чётче, когда "
-            "разрешение совпадает с собственным разрешением дисплея. Переключать режим "
-            "дисплея: дисплей переходит в выбранное разрешение — пиксель в пиксель там, где "
-            "панель его имеет, а для остальных размеров экран на мгновение гаснет, картинку "
-            "растягивает собственный скалер панели и Direct приходится настраивать заново."));
+            "Keep the desktop's mode (default): the game fills the screen on the mode the "
+            "display is already on and the frame is scaled to it — the panel is never touched, so "
+            "nothing can blank the screen or reset Direct. Fill (opt-in): the panel is put on its "
+            "own native mode once and the frame is scaled into it. Switch the display mode "
+            "(opt-in): the display itself is put on the chosen resolution — pixel-for-pixel where "
+            "the panel has it, and for other sizes the screen goes black for a moment, the panel's "
+            "own scaler stretches the picture and Direct has to be set up again.",
+            "Оставить режим рабочего стола (по умолчанию): игра занимает экран в том режиме, в "
+            "котором дисплей уже находится, а кадр масштабируется под него — панель не трогается. "
+            "Заполнять (опция): панель один раз переводится в свой родной режим, кадр "
+            "масштабируется в него. Переключать режим дисплея (опция): дисплей переходит в "
+            "выбранное разрешение — пиксель в пиксель там, где панель его имеет, а для остальных "
+            "размеров экран на мгновение гаснет, картинку растягивает собственный скалер панели и "
+            "Direct приходится настраивать заново."));
     }
     // Frame rate (bbport_frame_rate.cpp): the port's own hooks; changed live.
     ImGui::SeparatorText(BbSettings::MenuText("Frame rate", "Частота кадров"));

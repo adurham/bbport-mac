@@ -297,11 +297,12 @@ void DefaultOutputToNative(SDL_Window* window) {
     if (native.width <= 0 || current == native ||
         (chosen && (!fullscreen || BbSettings::FullscreenFills() || HasModeOfPixels(window, current)))) {
         if (BbSettings::FullscreenFills() && fullscreen && !HasModeOfPixels(window, current)) {
-            // Fill: no display mode of that size is needed — the output is rendered at it and the
-            // renderer scales it into the window (the display keeps its own mode).
-            std::printf("Output: %s kept (fullscreen_mode=fill: rendered at this size and scaled "
+            // Desktop/fill: no display mode of that size is needed — the output is rendered at it
+            // and the renderer scales it into the window (the display keeps its own mode).
+            std::printf("Output: %s kept (fullscreen_mode=%s: rendered at this size and scaled "
                         "into the display's own mode; was it a mode, it would be switched)\n",
-                        BbSettings::SizeText(current).c_str());
+                        BbSettings::SizeText(current).c_str(),
+                        BbSettings::FullscreenModeKey(s.fullscreen_mode.load()));
         }
         return;
     }
@@ -446,6 +447,7 @@ std::atomic<int> pending_window_mode{-1}; ///< a mode from a menu, waiting for t
 std::uint32_t mode_output = 0;    ///< BbSettings::PackSize of the output it was picked for
 SDL_DisplayID mode_display = 0;   ///< the display it was picked on
 bool mode_fill = true;            ///< the fullscreen semantics (BbSettings::FullscreenMode) it was picked for
+int mode_setting = -1;            ///< BbSettings::FullscreenMode value it was picked for (desktop/fill/exclusive)
 
 /// The display mode for an output of `wanted` pixels: compared in pixels (SDL lists macOS modes
 /// in points with a density: "looks like 3440x1440" is 3440x1440 at 2.0 = 6880x2880 pixels),
@@ -477,10 +479,12 @@ const SDL_DisplayMode* pick_display_mode(SDL_DisplayMode** listed, int count, Bb
 /// the window is fullscreen already, else on entering it). The window's thread only. A warm run
 /// never switches modes (its window is hidden and windowed).
 ///
-/// With fullscreen_mode=fill (the default) the display is put on its own native 1x mode — once,
-/// and it stays there: the chosen output resolution is then a render resolution the renderer
-/// scales into the window, so no resolution change touches the display at all. With
-/// fullscreen_mode=exclusive the mode is the output's own, as it was before.
+/// fullscreen_mode=desktop (the default) never sets a display mode: the window covers the display
+/// on the mode the desktop is on and the renderer scales the output into it, so no
+/// CGDisplaySetDisplayMode is issued at any point. With fullscreen_mode=fill the display is put on
+/// its own native 1x mode once, and the chosen output resolution is then a render resolution the
+/// renderer scales into the window. With fullscreen_mode=exclusive the mode is the output's own,
+/// as it was before. Both of those move the panel, so both are opt-in.
 void apply_display_mode(SDL_Window* window, const char* why) {
     if (!window) {
         return;
@@ -488,12 +492,25 @@ void apply_display_mode(SDL_Window* window, const char* why) {
     const bool dry_run = WarmRun(); // logs the pick (the picker's check), switches nothing
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
     const BbSettings::OutputSize output = BbSettings::CurrentOutput();
+    mode_output = BbSettings::PackSize(output);
+    mode_fill = BbSettings::FullscreenFills();
+    mode_setting = BbSettings::Get().fullscreen_mode.load();
+    mode_display = display;
+    if (BbSettings::FullscreenKeepsDesktopMode()) {
+        // The panel is never switched. The window covers the desktop's mode; the output is a
+        // render size scaled into it (window.cpp: apply_window_mode enters fullscreen with a null
+        // mode, so SDL sets no display mode either).
+        std::printf("Display mode: the desktop's mode is kept (%s; fullscreen_mode=desktop: the panel "
+                    "is never switched, %s is rendered and scaled into it)\n",
+                    why, BbSettings::SizeText(output).c_str());
+        if (!dry_run) {
+            SDL_SetWindowFullscreenMode(window, nullptr);
+        }
+        return;
+    }
     const bool fill = BbSettings::FullscreenFills();
     const BbSettings::OutputSize native = fill ? NativePixels(window) : BbSettings::OutputSize{0, 0};
     const BbSettings::OutputSize wanted = fill && native.width > 0 ? native : output;
-    mode_output = BbSettings::PackSize(output);
-    mode_fill = fill;
-    mode_display = display;
     int count = 0;
     SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(display, &count);
     const SDL_DisplayMode* chosen = pick_display_mode(listed, count, wanted);
@@ -538,9 +555,13 @@ void apply_display_mode(SDL_Window* window, const char* why) {
 /// default) or another display picks again. A resolution the player did not confirm never
 /// reaches BbSettings, so cancelling or the timeout leaves the mode as it is.
 ///
-/// Fill (the default): the display keeps its own mode, so a resolution change switches nothing at
-/// all — the renderer scales the new output into the same window (no flash, and no mode of the
-/// panel's own scaler in between). Exclusive: the mode follows the output, as it always did.
+/// Desktop (the default) and fill: the display keeps its own mode, so a resolution change switches
+/// nothing at all — the renderer scales the new output into the same window (no flash, and no mode
+/// of the panel's own scaler in between). Exclusive: the mode is the output's own, applied at
+/// startup; a change made while the game runs is NOT applied to the display. Setting a display
+/// mode under a live swapchain — the drawable torn down and re-created around
+/// CGDisplaySetDisplayMode — is the sequence that panicked the display coprocessor on 2026-10-18
+/// (DCPEXT1 axi_rd_err), so that switch waits for the next start.
 void follow_display_mode(SDL_Window* window, int applied_mode) {
     // A warm run stays windowed, so its applied mode is never fullscreen: it follows the saved
     // one instead and logs each pick without applying it (apply_display_mode's dry run) — the
@@ -552,7 +573,7 @@ void follow_display_mode(SDL_Window* window, int applied_mode) {
         return;
     }
     const bool fill = BbSettings::FullscreenFills();
-    if (fill != mode_fill) {
+    if (BbSettings::Get().fullscreen_mode.load() != mode_setting) {
         apply_display_mode(window, "the fullscreen setting changed");
         return;
     }
@@ -560,14 +581,29 @@ void follow_display_mode(SDL_Window* window, int applied_mode) {
     const bool display_changed = SDL_GetDisplayForWindow(window) != mode_display;
     if (!display_changed && output_changed && fill) {
         // The resolution is a render resolution inside the window: nothing to switch, and nothing
-        // to re-derive (the mode does not depend on the output in fill mode).
+        // to re-derive (the mode does not depend on the output in fill/desktop mode).
         mode_output = BbSettings::PackSize(BbSettings::CurrentOutput());
-        std::printf("Display mode: %s rendered and scaled into the window (fullscreen_mode=fill); "
+        std::printf("Display mode: %s rendered and scaled into the window (fullscreen_mode=%s); "
                     "the display stays on its own mode\n",
-                    BbSettings::SizeText(BbSettings::CurrentOutput()).c_str());
+                    BbSettings::SizeText(BbSettings::CurrentOutput()).c_str(),
+                    BbSettings::FullscreenModeKey(BbSettings::Get().fullscreen_mode.load()));
     }
-    if (display_changed || (output_changed && !fill)) {
-        apply_display_mode(window, output_changed ? "output resolution changed" : "display changed");
+    if (display_changed) {
+        mode_display = SDL_GetDisplayForWindow(window);
+        if (BbSettings::FullscreenMovesDisplay()) {
+            std::printf("Display mode: the window moved to another display: fullscreen_mode=%s "
+                        "applies its mode at the next start (the display is never switched under a "
+                        "running swapchain)\n",
+                        BbSettings::FullscreenModeKey(BbSettings::Get().fullscreen_mode.load()));
+        }
+    }
+    if (output_changed && !fill && display_changed == false && BbSettings::FullscreenMovesDisplay()) {
+        // Exclusive: the new output is a display mode. It is not set here — see the comment above.
+        std::printf("Display mode: output %s needs a restart (fullscreen_mode=exclusive sets the "
+                    "display mode at startup only; the display is never switched under a running "
+                    "swapchain)\n",
+                    BbSettings::SizeText(BbSettings::CurrentOutput()).c_str());
+        mode_output = BbSettings::PackSize(BbSettings::CurrentOutput());
     }
 }
 
@@ -597,12 +633,16 @@ void apply_window_mode(SDL_Window* window, int mode) {
     }
     case BbSettings::WindowFullscreen: {
         // The fullscreen window runs on an explicit display mode, never on whatever mode the
-        // desktop happens to use. fullscreen_mode=fill (the default): the display's own native 1x
+        // desktop happens to use — except with fullscreen_mode=desktop (the default), which is
+        // the desktop's mode and never sets one: the panel is not touched, and the chosen output
+        // resolution is a render size scaled into the window. fill: the display's own native 1x
         // mode, and the chosen output resolution is scaled into it (one blit, the panel always
-        // full, Direct stable — a resolution change never switches the display). exclusive: the
-        // output's own mode, so the window's surface matches the mode pixel-for-pixel, which is
-        // what Direct scan-out is made of; P.T.'s "exclusive" fullscreen does the same.
-        apply_display_mode(window, BbSettings::FullscreenFills() ? "fullscreen (fill)" : "fullscreen (exclusive)");
+        // full — a resolution change never switches the display). exclusive: the output's own
+        // mode, so the window's surface matches the mode pixel-for-pixel, which is what Direct
+        // scan-out is made of; P.T.'s "exclusive" fullscreen does the same.
+        apply_display_mode(window, BbSettings::FullscreenKeepsDesktopMode() ? "fullscreen (desktop mode kept)"
+                                         : BbSettings::FullscreenFills()        ? "fullscreen (fill)"
+                                                                                : "fullscreen (exclusive)");
         SDL_SetWindowBordered(window, true);
         SDL_SetWindowFullscreen(window, true);
 #ifdef __APPLE__
