@@ -177,9 +177,29 @@ slices clean (x86-64 `libbbgpu.dylib` + arm64 `bb-gpu`), `settings-test` passes 
 on the pre-fix `window.cpp` — it asserts the ordering above, so a revert to the queued boot mode
 turns red. The launch that proves it is a covering run and waits for the owner's word.
 
-`bbport.ini` on the owner's machine is back on `fullscreen_mode=exclusive` (that file is not in
-git): exclusive is what he asked to keep, and the ordering above is what is meant to make it safe.
-The escape hatch, if the next launch panics anyway, is `fullscreen_mode=desktop` — that path sets
-no mode at all.
+`bbport.ini` on the owner's machine was on `fullscreen_mode=exclusive` after the 17:22 crash. That is
+no longer defensible — see the next section; both inis are now on `fullscreen_mode=desktop`, which
+sets no mode at all.
+
+## Third panic, 23:54:41 — no app at all, the switch itself
+
+The owner turned HiDPI off in BetterDisplay by hand, ~27 min into a clean boot with nothing of ours
+running (no game, no `bb-probe`, no `bb-gpu`, no Metal surface), and the machine went down with the
+same `DCPEXT1 … axi_rd_err [0x40381400]`, same faulting task, 24 s after the last message of the
+working session and within the ~37 s of log that `logd` lost.
+
+That settles the question the first two panics could not answer. The 775 → 1x transition is not
+survivable on this machine on macOS 27.2 (26B5112a) by *anyone* who issues it: not the port, not
+BetterDisplay, no third-party surface involved. Consequences:
+
+- The ordering fix (mode before any drawable) is still correct hygiene, but it cannot make the
+  switch safe. It only guarantees the port is never the process holding a surface across it.
+- Anything in the port that sets a mode is now a crash button. `fullscreen_mode=desktop` is the
+  only usable value until Apple fixes the DCP firmware; `fill` and `exclusive` must stay opt-in and
+  are documented as panic-capable on this OS build.
+- The 240 Hz panel mode is reachable only by staying on the HiDPI desktop mode: with
+  `fullscreen_mode=desktop` + `retina=1` the drawable matches the mode's 6880x2880 framebuffer, so
+  the fullscreen is Direct and no set is issued.
+
 
 
