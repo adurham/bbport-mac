@@ -377,6 +377,14 @@ void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq,
     std::fflush(stderr);
 }
 
+bool CopyCheckWanted() {
+    static const bool wanted = [] {
+        const char* v = std::getenv("BB_SUBMIT_CHECK");
+        return v && v[0] == '1';
+    }();
+    return wanted;
+}
+
 void CheckSubmittedCopy(const SubmittedCopy& copy, u64 seq) {
     // The guest memory may be unmapped by now: read it without faulting.
     static std::atomic<u64> changed{0}, checked{0};

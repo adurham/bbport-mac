@@ -163,7 +163,7 @@ void CommandProcessor::EndGraphics(Work& work) {
             BbStats::gpu_minor_faults.store(usage.ru_minflt, std::memory_order_relaxed);
         }
     }
-    if (work.copy && BbFreeCheck::Enabled()) {
+    if (work.copy && (BbFreeCheck::Enabled() || Diagnostics::CopyCheckWanted())) {
         Diagnostics::CheckSubmittedCopy(*work.copy, work.seq);
     }
 }

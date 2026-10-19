@@ -106,4 +106,10 @@ inline std::shared_ptr<SubmittedCopy> TakeCopy(std::span<const u32> dcb, std::sp
 /// After it was decoded: whether the guest changed its command buffers since.
 void CheckSubmittedCopy(const SubmittedCopy& copy, u64 seq);
 
+/// Whether the per-submission copy-vs-guest watchdog runs (`BB_SUBMIT_CHECK=1`). It compares the
+/// whole command buffer on every submission, so it stays off by default. It is deliberately not
+/// gated on BbFreeCheck::Enabled() any more: that is a separate Linux-only diagnostic, and gating
+/// on it kept this check dead on macOS — the one platform where the torn submission was seen.
+bool CopyCheckWanted();
+
 } // namespace BbCp::Diagnostics
