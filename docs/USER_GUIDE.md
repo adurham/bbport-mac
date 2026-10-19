@@ -162,22 +162,31 @@ connected, set `BB_GAMEPAD=` followed by part of the controller's name in *Extra
 | Keyboard | PS4 |
 |---|---|
 | W A S D | left stick |
-| arrow keys | right stick |
-| I J K L | D-pad |
-| Space / Left Shift / E / Q | Cross / Circle / Square / Triangle |
-| Enter | Options |
-| 1 / 3 | L1 / R1 |
-| R / F | L2 / R2 |
-| Z / C | L3 / R3 |
-| Tab / Backspace | touchpad |
+| I J K L | right stick (the camera) |
+| Space | dodge (a short Circle press) |
+| Left Shift | run (Circle held); **Shift + Space** jumps |
+| F / Enter | Cross (interact, confirm) |
+| Q | Triangle (blood vial) |
+| Tab / R | Square (quick item) |
+| E | L1 (transform the weapon) |
+| C | R3 (lock-on) |
+| Left Control | L3 |
+| Escape | Options (the menu) |
+| 1 / 2 / 3 / 4 and the arrow keys | D-pad left / right / up / down |
+| G / Backspace | touchpad left / right (gestures) |
 
-**Mouse**: click into the game window to look around with the mouse. Opening the overlay menu
-(**F1**, **`** or **§**) or switching to another app lets the mouse go; another click takes it
-again. While the game holds the mouse:
+**F3** turns a 30 FPS limit on and off while you play (Laurence's cinematic is safest at 30). On
+a Mac keyboard that's **fn+F3**, unless the F-keys are set to work as standard function keys.
+
+**Mouse**: the game holds the mouse while its window has focus, for looking around. Opening the
+overlay menu (**F1**, **`** or **§**) or switching to another app lets the mouse go; closing the
+menu or clicking in the game takes it again. While the game holds the mouse:
 
 | Mouse | PS4 |
 |---|---|
-| left / right button | R1 / L2 |
+| move | right stick (the camera) |
+| left button | R1 (attack); with Left Shift, R2 |
+| right button | L2 (the gun) |
 | middle button | R3 |
 | side buttons (back / forward) | R2 / L1 |
 | wheel | D-pad up / down (quick items) |

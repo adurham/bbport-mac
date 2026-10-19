@@ -272,6 +272,11 @@ static void write_hex(char *out, uint64_t v) {
     const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) out[i] = digits[(v >> (60 - i * 4)) & 15];
 }
+#ifdef __APPLE__
+#include <stddef.h>
+_Static_assert(offsetof(struct __darwin_x86_thread_state64, __r15) == BB_REG_R15 * 8,
+               "BB_REG_* follow Darwin's thread state");
+#endif
 static void dump_frames(ucontext_t *uc) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
     uintptr_t rip=(uintptr_t)BB_CTX_RIP(uc), rbp=(uintptr_t)BB_CTX_RBP(uc);
@@ -280,6 +285,53 @@ static void dump_frames(ucontext_t *uc) {
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
     write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)BB_CTX_RDI(uc));
     { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
+    /* All the registers and the top of the stack: what a thread waits for (a lock, a job, an event)
+     * is in them; the hang of a game thread is read from here afterwards. */
+    {
+        static const struct { const char *name; int reg; } regs[]={
+            {"rax",BB_REG_RAX},{"rbx",BB_REG_RBX},{"rcx",BB_REG_RCX},{"rdx",BB_REG_RDX},{"rsi",BB_REG_RSI},{"rdi",BB_REG_RDI},
+            {"rbp",BB_REG_RBP},{"rsp",BB_REG_RSP},{"r8",BB_REG_R8},{"r9",BB_REG_R9},{"r10",BB_REG_R10},{"r11",BB_REG_R11},
+            {"r12",BB_REG_R12},{"r13",BB_REG_R13},{"r14",BB_REG_R14},{"r15",BB_REG_R15},
+        };
+        for (size_t i=0;i<sizeof(regs)/sizeof(*regs);++i) {
+            char r[]="  tid=0000000000000000 NNN=0000000000000000\n";
+            write_hex(r+6,tid);
+            r[23]=regs[i].name[0]; r[24]=regs[i].name[1]; r[25]=regs[i].name[2] ? regs[i].name[2] : ' ';
+            write_hex(r+27,(uint64_t)BB_CTX_REG(uc,regs[i].reg));
+            { ssize_t written_=write(2,r,sizeof(r)-1); (void)written_; }
+        }
+        /* What the pointer registers point at (guest addresses only): the 8 qwords there, so the
+         * object a thread waits on can be read from the log. */
+        static const int pointer_regs[]={BB_REG_RDI,BB_REG_RSI,BB_REG_RBX,BB_REG_R12,BB_REG_R13,BB_REG_R14,BB_REG_R15,BB_REG_RCX,BB_REG_RDX};
+        for (size_t i=0;i<sizeof(pointer_regs)/sizeof(*pointer_regs);++i) {
+            const uintptr_t p=(uintptr_t)BB_CTX_REG(uc,pointer_regs[i]);
+            /* Guest memory: the low part below BB_LOW_MAX and the first 8 GiB of user memory
+             * (on Linux the same 0x800000000-0x1200000000 as before; on the Mac user memory
+             * starts at 0x7000000000, above Rosetta's carve-out). */
+            if (!((p>=0x800000000ull && p<BB_LOW_MAX) || (p>=BB_USER_MIN && p<BB_USER_MIN+0x200000000ull))) continue;
+            uint64_t words[8];
+            struct iovec local={words,sizeof(words)}, remote={(void *)p,sizeof(words)};
+            if (process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(words)) continue;
+            for (int k=0;k<8;++k) {
+                char m[]="  tid=0000000000000000 at 0000000000000000+00=0000000000000000\n";
+                write_hex(m+6,tid); write_hex(m+26,p);
+                m[43]=(char)('0'+(k*8)/10%10); m[44]=(char)('0'+(k*8)%10);
+                write_hex(m+46,words[k]);
+                { ssize_t written_=write(2,m,sizeof(m)-1); (void)written_; }
+            }
+        }
+        uintptr_t sp=(uintptr_t)BB_CTX_REG(uc,BB_REG_RSP);
+        for (int i=0;i<24;++i) {
+            uint64_t word=0;
+            struct iovec local={&word,sizeof(word)}, remote={(void *)(sp+8*(uintptr_t)i),sizeof(word)};
+            if (process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(word)) break;
+            char w[]="  tid=0000000000000000 stack+000=0000000000000000\n";
+            write_hex(w+6,tid);
+            w[29]=(char)('0'+(i*8)/100%10); w[30]=(char)('0'+(i*8)/10%10); w[31]=(char)('0'+(i*8)%10);
+            write_hex(w+33,word);
+            { ssize_t written_=write(2,w,sizeof(w)-1); (void)written_; }
+        }
+    }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
         { ssize_t written_=write(2,line,sizeof(line)-1); (void)written_; }
@@ -653,6 +705,7 @@ static int probe_main(int argc, char **argv) {
         printf("Unresolved imports: %" PRIu64 "\n", unresolved_count);
         free(listed);
     }
+    runtime_net_image_mapped(image, size); /* online modules that read the original code */
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
 #ifdef __APPLE__
     {
@@ -719,6 +772,7 @@ static int probe_main(int argc, char **argv) {
             if (result) fail("module initializer failed");
         }
     }
+    runtime_net_start(); /* online sessions start with the game */
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;
     struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
