@@ -699,7 +699,8 @@ bool SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb, bool force_co
         if (span.empty()) {
             return true;
         }
-        if (Shared(span.data(), span.size_bytes())) {
+        // force_copy words always travel inline (bb-gpu refuses them by address).
+        if (!force_copy && Shared(span.data(), span.size_bytes())) {
             address = reinterpret_cast<u64>(span.data());
             return true;
         }

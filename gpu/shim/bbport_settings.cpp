@@ -417,9 +417,7 @@ void Save() {
         put("reactive_threshold", fixed(v.reactive_threshold, 2));
         put("reactive_max", fixed(v.reactive_max, 2));
         put("debug_view", std::to_string(v.debug_view.load()));
-    }
-    put("show_fps", flag(v.show_fps));
-    if (all) {
+        put("show_fps", flag(v.show_fps)); // the overlay's (the game's menu has no row for it)
         put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
         put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
     }
