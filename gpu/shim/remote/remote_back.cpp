@@ -714,9 +714,42 @@ void Handle(const Message& message, auto&& reply) {
     }
 }
 
+/// BB_SUBMIT_STALL_MS=n: a diagnostic for the torn-submission race, off unless the env var is set.
+/// The reader thread goes away for n ms at most once every kStallPeriodMs, between messages, so the
+/// guest keeps producing submissions (and rewriting their buffers) while their copies queue behind
+/// this thread — what a busy reader did during an area load. A sleep inside the copy, or one per
+/// submission, postpones the guest's progress together with the copy and so cannot widen this race;
+/// this can. The ring holds 1 MiB of small submit messages, so a stall of this length queues them
+/// instead of blocking the guest.
+void StallBetweenMessages() {
+    static const int stall_ms = [] {
+        const char* value = std::getenv("BB_SUBMIT_STALL_MS");
+        return value ? std::atoi(value) : 0;
+    }();
+    if (stall_ms <= 0) {
+        return;
+    }
+    static constexpr auto kStallPeriodMs = 500;
+    static std::chrono::steady_clock::time_point last_stall;
+    static unsigned long stalls = 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_stall.time_since_epoch().count() != 0 &&
+        now - last_stall < std::chrono::milliseconds(kStallPeriodMs)) {
+        return;
+    }
+    last_stall = now;
+    ++stalls;
+    if (stalls % 20 == 0) {
+        std::fprintf(stderr, "GPU process: reader stall %d ms, %lu so far\n", stall_ms, stalls);
+        std::fflush(stderr);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms));
+}
+
 void ReaderThread() {
     Common::SetCurrentThreadName("bb:remote");
     for (;;) {
+        StallBetweenMessages();
         g.channel->ReceiveOne([](const Message& message, auto&& reply) { Handle(message, reply); },
                               [] { return false; });
     }
