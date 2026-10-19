@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
+# macOS: this script is the Linux/Steam Deck build. The Mac port has its own entry points
+# (tools/macos/build.sh for the Rosetta probe + Metal GPU library, tools/macos/run.sh to play);
+# running this one there reconfigures out/gpu for Linux and then dies at the probe link
+# (-no-pie), leaving the Mac build's CMake cache clobbered and a full rebuild behind. Stop
+# before touching the tree (tools/macos/run.sh sets BB_PREBUILT, so it never gets here).
+if [[ $(uname -s) == Darwin && -z ${BB_ALLOW_MACOS_LINUX_BUILD:-} ]]; then
+    echo 'This is the Linux build. On macOS: bash tools/macos/build.sh, then tools/macos/run.sh.' >&2
+    exit 1
+fi
 mkdir -p out
 if [[ -z ${CC:-} ]]; then
     CC=$(command -v cc || command -v gcc || true)
