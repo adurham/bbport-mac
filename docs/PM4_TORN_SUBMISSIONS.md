@@ -39,6 +39,23 @@
 > exports it, despite `remote_front.cpp`'s comment calling it "run.sh's default". Any run that does
 > not export it decodes guest memory directly — there is no copy to tear, and `BB_SUBMIT_ASYNC` is
 > a no-op there. Check that flag before believing any pm4 result, old or new.
+>
+> **Era-exact attempt (later the same night).** The surviving crash's own build, `77e4f46`, was
+> rebuilt with its own era harness (`warmfill.sh` → `warm_route.sh`, Continue at 45 s, load at 75 s)
+> and run 20 times with copies on: 0 bad-PM4. One run died at the identical instant (the line after
+> `CSClothThread5 created`) on a *different* packet — `end-of-pipe data select 6
+> [cp_packets.h:446]` in `CommandProcessor::NotePendingEop`, a well-formed type-3 packet whose EOP
+> data-select field decoded to 6 (DataSel defines 0–5). Same family, different signature, 1/20.
+> The one difference that could not be closed: the crash log ran on the AW3425DW at 3440x1440/240
+> (layer 3440x1440 over a 6880x2880 mode); the AW was not attached that night, so every run
+> presented at 1512x982 on the built-in panel. Re-run with the AW attached before drawing any
+> conclusion. Night summary: `docs/pm4-results/NIGHT_2026-10-19.md`.
+>
+> **Diagnostic fixed:** `Diagnostics::CheckSubmittedCopy` — the per-submission copy-vs-guest
+> watchdog, and the thing that makes a crash report say whether the copy was torn — was gated on
+> `BbFreeCheck::Enabled()`, a Linux-only diagnostic that returns false on Apple. It now runs behind
+> `BB_SUBMIT_CHECK=1` on macOS (native `dc2a2c8`, `fix/pm4-crash` `ee57500`); verified by a 120 s
+> hidden run logging `Submit check: 0 of 20000 …`.
 
 `Bad PM4 packet ... PM4 type 1 packet (0x70d1b005)`, then `Unreachable code!` and
 `STOP: GPU library assertion failed (cp_graphics.cpp:203)`. bb-gpu exits and takes the run with it.
