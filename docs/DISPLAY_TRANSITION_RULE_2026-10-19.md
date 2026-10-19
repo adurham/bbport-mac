@@ -36,9 +36,18 @@ times (§3), and the fault follows the *plane change on the HDR link*, not 775 i
 
 ## 1. The mode table as it is now — ids are not stable
 
-`betterdisplaycli get -name=AW3425DW -displayModeList` (949 entries) and the SkyLight mode
-table agree; CoreGraphics's `CGDisplayCopyAllDisplayModes` does **not** list 769-774 (a
-known gap — do not conclude "the mode does not exist" from it).
+`betterdisplaycli get -name=AW3425DW -displayModeList` (949 entries), the SkyLight mode table
+and WindowServer's own resolved list all agree. WindowServer prints it with the pixel size in
+parentheses, which is the field that decides the hazard:
+
+```
+769 RGhA [3440 x 1440 (6880 x 2880) 2x @ 240.0Hz], dp-x = 2.000 (scaler, safe, fake_vfm)
+775 RGhA [3440 x 1440 (6880 x 2880) 2x @  60.0Hz], dp-x = 2.000 (scaler, safe, fake_vfm)
+724 RGhA [3440 x 1440 (3440 x 1440) 1x @ 240.0Hz], dp-x = 1.000 (scaler, native, safe, default)
+```
+
+CoreGraphics's `CGDisplayCopyAllDisplayModes` does **not** list 769-774 (a known gap — do not
+conclude "the mode does not exist" from it).
 
 | id | point size | pixel size | density | nominal Hz | note |
 |---|---|---|---|---|---|
@@ -168,7 +177,7 @@ it touched memory the old plane owned. It also explains the first panic's immedi
 (same operation, different timing).
 
 What is *not* in the log: the faulting register's semantics (0x40381400 / 0x40381408 remain
-unresolved) and anything from the last 65 s / 109 s before panics 1 and 3.
+unresolved), the 65 s before panic 1, and the 37 s before panic 3.
 
 ## 5. The control: the same reconfiguration on a different link, ten times, no fault
 
