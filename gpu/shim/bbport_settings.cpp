@@ -401,23 +401,28 @@ void Save() {
         return std::string(text);
     };
     const auto flag = [](bool value) { return std::string(value ? "1" : "0"); };
-    if (v.menu_language_chosen) {
+    const bool all = !save_game_menu_keys_only;
+    if (all && v.menu_language_chosen) {
         put("menu_language", v.menu_language == MenuLanguage::Russian ? "ru" : "en");
     }
     put("upscaler", UpscalerName(v.upscaler));
     put("preset", std::to_string(v.preset.load()));
     put("sharpen", flag(v.sharpen));
     put("sharpness", fixed(v.sharpness, 2));
-    put("jitter", flag(v.jitter));
-    put("reactive", flag(v.reactive));
-    put("object_motion", flag(v.object_motion));
-    put("reactive_scale", fixed(v.reactive_scale, 2));
-    put("reactive_threshold", fixed(v.reactive_threshold, 2));
-    put("reactive_max", fixed(v.reactive_max, 2));
-    put("debug_view", std::to_string(v.debug_view.load()));
+    if (all) {
+        put("jitter", flag(v.jitter));
+        put("reactive", flag(v.reactive));
+        put("object_motion", flag(v.object_motion));
+        put("reactive_scale", fixed(v.reactive_scale, 2));
+        put("reactive_threshold", fixed(v.reactive_threshold, 2));
+        put("reactive_max", fixed(v.reactive_max, 2));
+        put("debug_view", std::to_string(v.debug_view.load()));
+    }
     put("show_fps", flag(v.show_fps));
-    put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
-    put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
+    if (all) {
+        put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
+        put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
+    }
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         put(Effects[e].key, flag(v.effects[e]));
@@ -426,9 +431,11 @@ void Save() {
     put("aspect_ratio", AspectKey(v.aspect));
     put("output_res", SizeText(CurrentOutput()));
     // Read by run.sh at start.
-    put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
-    put("frame_generation", flag(v.frame_generation));
-    if (v.menu_x >= 0.0f && v.menu_y >= 0.0f) {
+    if (all) {
+        put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
+        put("frame_generation", flag(v.frame_generation));
+    }
+    if (all && v.menu_x >= 0.0f && v.menu_y >= 0.0f) {
         put("menu_pos", fixed(v.menu_x, 4) + "," + fixed(v.menu_y, 4));
     }
 

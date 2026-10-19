@@ -333,6 +333,8 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         // The game's System menu pages (this process) offer MetalFX: bb-gpu checks the device
         // and falls back as it does for its own menu.
         BbSettings::Get().metalfx_supported = true;
+        // The game's System menu saves only its own keys; bb-gpu's overlay owns the rest.
+        BbSettings::save_game_menu_keys_only = true;
         // The hooks in the game's own code (fixes, live effects, aspect ratio): the game's code
         // is in this process; in one process the buffer cache installs them, here bb-gpu doesn't.
         // No GPU-range notifications: those need the PC memory model.

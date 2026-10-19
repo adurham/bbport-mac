@@ -175,6 +175,10 @@ int RenderPreset();
 bool ResolutionNeedsRestart();
 /// Writes the file (menu changes).
 void Save();
+/// bbport (macOS native GPU process): the game process writes only the keys the game's System
+/// menu pages change; the rest (the overlay's advanced settings, its language and position) are
+/// bb-gpu's, whose copy is the current one, and stay as the file has them.
+inline bool save_game_menu_keys_only = false;
 /// bbport (macOS native GPU process): reads bbport.ini again into the values the game's System menu
 /// pages change (output, upscaler, preset, sharpening, FPS counter, model detail, effects), so
 /// that the process which did not make a change follows it. Startup values stay.
