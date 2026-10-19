@@ -1,5 +1,24 @@
 # Feedback to Apple — DCPEXT1 `axi_rd_err` on a display-mode switch (2026-10-18)
 
+## FILED — 2026-10-19 09:45 CDT
+
+Submitted through Feedback Assistant.app (com.apple.appleseed.FeedbackAssistant 5.1) on the
+affected machine, with the AW3425DW attached.
+
+| field | value |
+|---|---|
+| product / area | macOS / **Displays & Graphics** |
+| issue type | Incorrect/Unexpected Behavior |
+| detail | "Something else not on this list" |
+| scope | one or more external displays only; port **Thunderbolt**; no third-party virtual display |
+| vendor/model | Dell Alienware AW3425DW, 3440x1440 240 Hz OLED ultrawide (FW M3B102) |
+| adapter | Microsoft Surface Thunderbolt 4 Dock (display to dock by USB-C, dock uplink TB4) |
+| attachments | the three `.panic` reports, the WindowServer display log for 2026-10-18 evening, the AW3425DW SkyLight mode table — plus the app's own macOS Sysdiagnose and System Information Report |
+| upload | 463,865,043 bytes, completed 09:45–09:49 (local form-response record `ZREMOTEID 125986706`) |
+| **FB number** | **not yet assigned locally at filing time** — arrives by email to the Apple ID and then shows in Feedback Assistant → Submitted. Paste it here when it lands. |
+
+The body below is exactly what was submitted (the addendum included).
+
 Paste-ready addendum for the Feedback filed after the second panic. Facts only, with artifact
 paths; unknowns stated as unknowns.
 
