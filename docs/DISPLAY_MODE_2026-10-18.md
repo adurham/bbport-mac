@@ -195,11 +195,32 @@ BetterDisplay, no third-party surface involved. Consequences:
 - The ordering fix (mode before any drawable) is still correct hygiene, but it cannot make the
   switch safe. It only guarantees the port is never the process holding a surface across it.
 - Anything in the port that sets a mode is now a crash button. `fullscreen_mode=desktop` is the
-  only usable value until Apple fixes the DCP firmware; `fill` and `exclusive` must stay opt-in and
-  are documented as panic-capable on this OS build.
-- The 240 Hz panel mode is reachable only by staying on the HiDPI desktop mode: with
-  `fullscreen_mode=desktop` + `retina=1` the drawable matches the mode's 6880x2880 framebuffer, so
-  the fullscreen is Direct and no set is issued.
+  only usable value until Apple fixes the DCP firmware; `fill` and `exclusive` are refused outright
+  in this build (below).
+
+## The gate: the panel is never moved
+
+`fill` and `exclusive` are no longer reachable in this build, in two places that must both hold:
+
+- `bbport_settings.cpp`, the `fullscreen_mode` parser (ini and `BB_FULLSCREEN_MODE` alike) rewrites
+  `fill`/`exclusive` to `desktop` and logs
+  `Display mode: fullscreen_mode=<x> is refused (moving the panel panics this machine's display
+  coprocessor on macOS 27.2); fullscreen_mode=desktop. BB_ALLOW_DISPLAY_MODE_SET=1 re-opens
+  fill/exclusive for testing.` The stored value reads back as `desktop`, so the menu, the readouts
+  and `ReloadLive` see what is actually in effect.
+- `window.cpp`'s `apply_display_mode` refuses a moving mode again at the call site that would issue
+  `CGDisplaySetDisplayMode` (the `panel_locked` branch), so even a value written straight into the
+  settings struct — the relay's copy-back, a future caller — cannot reach the set.
+
+`BB_ALLOW_DISPLAY_MODE_SET=1` is the single escape hatch, for the day Apple ships a DCP firmware
+fix or for a controlled test. `tests/test_settings.cpp` asserts the clamp both ways and
+`tests/test_display_mode_order.py` fails if either refusal is removed. The game menu's Window-mode
+description no longer advertises a panel switch (EN and RU).
+
+The 240 Hz panel mode is still reachable without moving anything: `fullscreen_mode=desktop` +
+`retina=1` gives a drawable equal to the mode's 6880x2880 framebuffer, so the fullscreen is Direct
+and no set is issued.
+
 
 
 
