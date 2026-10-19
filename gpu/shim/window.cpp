@@ -363,6 +363,11 @@ void* window_metal_layer = nullptr;
 /// the constructor; apply_display_mode refuses every later set (it logs, and nothing moves).
 bool boot_mode_phase = true;
 
+/// apply_display_mode's last pick asked for a mode the display was not already on, i.e. a real
+/// CGDisplaySetDisplayMode is in flight. The constructor waits for it to land before the layer is
+/// created; the picker choosing the current mode again (the common case) must not cost a wait.
+bool mode_set_pending = false;
+
 } // namespace
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
@@ -442,7 +447,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         // SDL's Cocoa fullscreen transition is asynchronous: entering fullscreen returns before
         // CoreGraphics has applied the mode. Waiting here is the point of the ordering — the layer
         // must be created ON the new mode, not during the switch.
-        if (!DryDisplayRun()) {
+        if (!DryDisplayRun() && mode_set_pending) {
             const int settle = bb_display_wait_mode_change(CocoaWindow(window), before_w, before_h, 3000);
             if (settle == 1) {
                 std::printf("Display mode: the panel is on the new mode before the first drawable "
@@ -452,6 +457,8 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
                             "the drawable is created anyway — the layer dump below says what it is\n",
                             before_w, before_h);
             }
+        } else if (!DryDisplayRun()) {
+            std::printf("Display mode: the pick already was the current mode; no swap to wait for\n");
         }
 #endif
     } else if (window_mode != BbSettings::WindowWindowed && !warm_window) {
@@ -626,6 +633,9 @@ void apply_display_mode(SDL_Window* window, const char* why) {
             SDL_free(listed);
             return;
         }
+        const SDL_DisplayMode* now = SDL_GetDesktopDisplayMode(display);
+        mode_set_pending = !now || now->w != chosen->w || now->h != chosen->h ||
+                           now->pixel_density != chosen->pixel_density;
         if (!dry_run && !SDL_SetWindowFullscreenMode(window, chosen)) {
             std::printf("Display mode: SDL refused it (%s): the desktop's mode\n", SDL_GetError());
             SDL_SetWindowFullscreenMode(window, nullptr);
