@@ -45,11 +45,26 @@ the mode change landed normally: the display went to 3440x1440@240 (mode id 724,
 scanout went 1:1, and the app ran at 120.0 fps with 8.0 ms median frame time for ~110 s before the
 DCP faulted. A streamed WindowServer/CoreDisplay log ends at 23:26:43.95.
 
+**Panic 3 — 2026-10-18 23:54:41** (`panic-full-2026-10-18-235555`, incident
+`B738ED63-5F39-497C-945B-01E9BDB9A354`):
+`DCPEXT1 PANIC - IOMFB int_handler_gated: failure: axi_rd_err [0x40381400]`, faulting task
+`iomfb_driver(9)`. **Nothing of ours was running.** The owner turned HiDPI off in BetterDisplay by
+hand — the same 775 → native-1x switch, issued by a third-party display tool, with no game, no
+`bb-probe`, no `bb-gpu` and no Metal surface of ours alive. Verified from the report itself (its
+process list contains no bbport process; the port's own logs end on the previous evening) and from
+the machine's boot: up 27 min, WindowServer's mode log shows the desktop on 775 for the whole boot,
+and the switch fell in the last 37 s that `logd` lost before the fault.
+
+**This is the decisive report: it removes every component of ours from the trigger and leaves the
+775 → native transition itself.** Two of three panics had the port running; the third had nothing,
+and all three share the initiator, the faulting task and the register.
+
 **Correlation:** for roughly two months before 2026-10-17 the desktop happened to be on a mode
-identical to the one the app requests, so no mode change was issued and launches were stable. Since
-the desktop moved to the 2x HiDPI mode (775), the first two launches that actually performed the
-775 → 724 switch both panicked — once within seconds, once after ~110 s of apparently normal
-operation at 1:1 scanout.
+identical to the one the app requests, so no mode change was ever issued and launches were stable.
+Since the desktop moved to the 2x HiDPI mode (775), every 775 → 724 transition attempted on this
+machine has panicked it — twice from the game's startup (once within seconds, once after ~110 s of
+apparently normal 1:1 operation) and once from BetterDisplay alone with no app at all. The app's
+only role in the first two was to request the same transition the OS cannot survive here.
 
 **Request:**
 1. Decode the faulting register `0x40381400` / `0x40381408` against IOMFB symbols and tell us which
@@ -63,11 +78,11 @@ operation at 1:1 scanout.
    `log stream` predicates, an RTKit trace) so the next reproduction carries a real trace rather
    than the truncated log tail.
 
-**Attachments:** both `.panic` reports; both sysdiagnoses (taken 1.5–2.5 min after each reboot);
-the app's own log for the second run (mode id 724 applied at 23:24:52, 1:1 scanout, 120 fps until
-the fault); the streamed WindowServer/CoreDisplay log covering 23:24–23:26; a BetterDisplay
+**Attachments:** all three `.panic` reports; the sysdiagnoses taken 1.5–2.5 min after the first two
+reboots; the app's own log for the second run (mode id 724 applied at 23:24:52, 1:1 scanout, 120 fps
+until the fault); the streamed WindowServer/CoreDisplay log covering 23:24–23:26; a BetterDisplay
 configuration export for the injected mode.
 
-**Unknowns we are not claiming:** we have not tried the same 775 → 724 switch with no app running
-and no third-party scanout surface alive; and we have not repeated the failing launch (each attempt
-is another hard reboot).
+**Unknowns we are not claiming:** we still have no trace captured at the moment of the switch —
+`logd` loses the tail and none of the three reports carries a stackshot — and since every attempt
+costs another hard reboot we have not deliberately repeated one to get it.
