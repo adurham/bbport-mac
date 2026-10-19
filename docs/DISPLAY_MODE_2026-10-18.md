@@ -70,16 +70,21 @@ untagged (or tagged with the display's own space), `framebufferOnly`, and nothin
 Consequences here:
 
 - On a 1x desktop mode (3440x1440) a 3440x1440 drawable matches: Direct is possible.
-- On the 2x mode (6880x2880 framebuffer) a 3440x1440 drawable never matches — the frame is
-  composited, upscaled to the backing store and downscaled by the pipe. `retina=1` makes the
-  drawable 6880x2880 (matching, and 4x the fill cost); `retina=0` does not.
-- 240 Hz is unreachable from a 60 Hz desktop mode without moving the panel. The correct way, if
-  it is ever wanted as an in-app option, is a timing-only switch (same pixel size and depth,
-  different refresh) behind an explicit consent dialog, remembered, with the swapchain torn down
-  before the set and the previous mode restored on exit and on crash.
+- On the 2x mode (6880x2880 framebuffer) only a 6880x2880 drawable matches. `retina=1` makes the
+  drawable exactly that; `retina=0` leaves it at 3440x1440, which the WindowServer upscales to the
+  backing store and the pipe then scales back down to the panel (Composited, "never Direct").
+- The cost of the matching drawable is the encode pass only: the scene renders at the output
+  resolution (the game's display buffer), and `EncodePass::Render` draws that buffer into the
+  frame image — one full-screen textured quad at the backing size, plus the swapchain's memory
+  (79 MB per 6880x2880 BGRA8 image). It is not a 4x scene render.
+- 240 Hz is unreachable from a 60 Hz desktop mode: the mode is 60 Hz by construction. If an in-app
+  option for it is ever wanted, the correct shape is a timing-only switch (same pixel size and
+  depth, different refresh) behind an explicit consent dialog, remembered, with the swapchain torn
+  down before the set and the previous mode restored on exit and on crash.
 
-The plain fix for a 240 Hz gaming session is a display setting, not a code path: run the panel at
-its native 3440x1440 @ 240 Hz.
+The owner runs the AW3425DW on the HiDPI mode deliberately; that is the supported configuration:
+`fullscreen_mode=desktop` (never touches the panel) plus `retina=1` (drawable = the mode's
+framebuffer) gives a Direct-capable fullscreen with no mode set, at the mode's 60 Hz.
 
 ## Verification
 
@@ -88,4 +93,5 @@ its native 3440x1440 @ 240 Hz.
   `BB_FULLSCREEN_MODE=desktop`.
 - Not yet run live: the fullscreen path needs a covering run on the machine (and the external
   display plugged back in). `fullscreen_mode=desktop` issues no mode set, so it is the run that
-  cannot repeat the panic.
+  cannot repeat the panic. The layer dump prints `drawable matches/differs from the mode's pixels`
+  on the first present, so that run answers the Direct question by itself.

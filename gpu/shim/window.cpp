@@ -358,9 +358,14 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
 #ifdef __APPLE__
-    // bbport (macOS): a Retina-resolution drawable — twice the pixels of a scaled display, which
-    // the compositor then scales back down (heavy, and never Direct). The setting (bbport.ini
-    // retina; BB_RETINA overrides) turns it off so the surface matches the panel's pixels.
+    // bbport (macOS): the drawable's pixels. A scaled desktop (a HiDPI mode: 6880x2880 backing for
+    // a 3440x1440 panel) is scanned out from that backing store, so a drawable of the backing
+    // store's pixels is what the WindowServer can scan directly ("Direct" in the Metal HUD);
+    // anything smaller is composited, upscaled to the backing store and then scaled down to the
+    // panel. On such a display "on" is the correct setting: only the encode pass (a full-screen
+    // textured quad) runs at the backing size — the scene renders at the output resolution. On a
+    // 1x desktop mode the drawable is the panel's pixels either way. The setting (bbport.ini
+    // retina; BB_RETINA overrides) turns it off for experiments.
     const char* retina = std::getenv("BB_RETINA");
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN,
                            retina ? retina[0] != '0' : BbSettings::Get().retina.load());

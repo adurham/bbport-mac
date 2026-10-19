@@ -170,9 +170,11 @@ struct Values {
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};
-    /// Retina-density window (macOS: SDL high pixel density; BB_RETINA overrides). On a display
-    /// that is already scaled, "on" makes the window's surface twice the panel and the compositor
-    /// scales it back — heavy and never Direct. Off matches the display's pixels.
+    /// Drawable density (macOS: SDL high pixel density; BB_RETINA overrides). The drawable should
+    /// match the display mode's *framebuffer* pixels: on a 1x mode that is the panel's size, on a
+    /// scaled (HiDPI) desktop it is the backing store (6880x2880 for "looks like 3440x1440"), which
+    /// is what Direct scan-out requires. Only the encode pass runs at the drawable size; the scene
+    /// renders at the output resolution.
     std::atomic<bool> retina{true};
     /// The game window's mode (WindowMode; window.cpp applies it at creation and live). The
     /// legacy BB_FULLSCREEN=1 asks for fullscreen when the file does not choose a mode.
