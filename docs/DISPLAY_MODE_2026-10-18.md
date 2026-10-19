@@ -77,14 +77,17 @@ Consequences here:
   resolution (the game's display buffer), and `EncodePass::Render` draws that buffer into the
   frame image — one full-screen textured quad at the backing size, plus the swapchain's memory
   (79 MB per 6880x2880 BGRA8 image). It is not a 4x scene render.
-- 240 Hz is unreachable from a 60 Hz desktop mode: the mode is 60 Hz by construction. If an in-app
-  option for it is ever wanted, the correct shape is a timing-only switch (same pixel size and
-  depth, different refresh) behind an explicit consent dialog, remembered, with the swapchain torn
-  down before the set and the previous mode restored on exit and on crash.
+- The refresh rate of a scaled (HiDPI) mode is not what macOS reports: `system_profiler` and
+  `CGDisplayModeGetRefreshRate` show the AW's HiDPI mode as 60 Hz while the link runs it at
+  240 Hz (BetterDisplay's own record: `defaultRefreshRate@Display:25 = 240`,
+  `protectRefreshRate@Display:25 = 240Hz`). Do not use the reported rate to reason about this
+  display. A scaled mode at 240 Hz also means a 6880x2880 backing store scanned out and
+  downscaled to the panel 240 times a second — an extreme load on the same DCP that panicked, and
+  one more reason nothing in the port may set a mode underneath it.
 
-The owner runs the AW3425DW on the HiDPI mode deliberately; that is the supported configuration:
-`fullscreen_mode=desktop` (never touches the panel) plus `retina=1` (drawable = the mode's
-framebuffer) gives a Direct-capable fullscreen with no mode set, at the mode's 60 Hz.
+The owner runs the AW3425DW on the HiDPI mode deliberately (240 Hz, reported by macOS as 60);
+that is the supported configuration: `fullscreen_mode=desktop` (never touches the panel) plus
+`retina=1` (drawable = the mode's framebuffer) gives a Direct-capable fullscreen with no mode set.
 
 ## Verification
 
