@@ -1,12 +1,16 @@
 """The display-mode ordering gate (docs/DISPLAY_MODE_2026-10-18.md).
 
-The 2026-10-18 crashes (two of them, DCPEXT1 axi_rd_err) both happened when the port changed the
-display mode while its swapchain was already alive: the boot window mode was only *queued* by the
-constructor and applied at the first `PollEvents()` — after the main thread had built the presenter.
+The 2026-10-18 crashes (three of them, DCPEXT1 axi_rd_err — the third from BetterDisplay with no
+app running at all) all trace to changing the display mode off the 2x HiDPI desktop mode: the first
+two happened while the port's swapchain was alive, because the boot window mode was only *queued* by
+the constructor and applied at the first `PollEvents()` — after the main thread had built the
+presenter.
 
 These checks are source-level on purpose: the behaviour they protect cannot be exercised without
 moving a real panel, and moving it is what took the machine down. They fail if the ordering is
-reverted, if the boot mode is queued again, or if a set path loses its `boot_mode_phase` guard.
+reverted, if the boot mode is queued again, if a set path loses its `boot_mode_phase` guard, or if
+the fill/exclusive refusal (the panel is never moved at all unless BB_ALLOW_DISPLAY_MODE_SET=1) is
+removed.
 """
 from paths import ROOT
 import re
@@ -99,6 +103,27 @@ class DisplayModeOrder(unittest.TestCase):
             self.assertTrue(guarded or fallback,
                             f'un-gated SDL_SetWindowFullscreenMode(nullptr) at line {line_no + 1} '
                             f'of apply_display_mode: {line.strip()}')
+
+    def test_a_panel_moving_mode_is_refused_without_the_override(self):
+        body = display_mode_body()
+        self.assertIn('BbSettings::DisplayModeSetsAllowed()', body,
+                      'apply_display_mode no longer consults DisplayModeSetsAllowed: fill/exclusive '
+                      'could reach CGDisplaySetDisplayMode again, which panics this machine')
+        lock_at = body.index('const bool panel_locked')
+        branch_at = body.index('FullscreenKeepsDesktopMode() || panel_locked')
+        self.assertLess(lock_at, branch_at,
+                        'the refusal must be decided before the desktop branch is chosen')
+
+    def test_the_parser_clamps_fill_and_exclusive(self):
+        src = (ROOT / 'gpu/shim/bbport_settings.cpp').read_text()
+        start = src.index('} else if (key == "fullscreen_mode") {')
+        end = src.index('} else if (key == "confirm_native_mode")', start)
+        body = src[start:end]
+        self.assertIn('DisplayModeSetsAllowed()', body,
+                      'the ini/env value is stored unclamped: a file saying exclusive puts the '
+                      'panel move back on the table on the next launch')
+        self.assertIn('v.fullscreen_mode = FullscreenDesktop;', body,
+                      'the clamp no longer rewrites the value to desktop')
 
 
 if __name__ == '__main__':
