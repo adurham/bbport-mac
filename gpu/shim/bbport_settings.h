@@ -30,13 +30,23 @@ enum class MenuLanguage { English, Russian };
 /// The game window's mode (window.cpp): kept in bbport.ini, changed from the menu live.
 enum WindowMode : int { WindowWindowed = 0, WindowBorderless, WindowFullscreen, WindowModeCount };
 /// How fullscreen is done (window.cpp); bbport.ini fullscreen_mode, BB_FULLSCREEN_MODE overrides.
-/// Fill: the output resolution is rendered and scaled into a window on the display's own native
-/// mode — one blit, always the whole panel, and the display mode never moves (Direct stays put).
+/// Desktop (the default): the display keeps the mode it is on — the window covers it and the
+/// output resolution is rendered and scaled into the window. Nothing calls
+/// CGDisplaySetDisplayMode, so nothing can move the panel (a mode switch from a HiDPI desktop
+/// mode while a fullscreen drawable is being promoted panicked the display coprocessor on
+/// 2026-10-18: DCPEXT1 axi_rd_err).
+/// Fill: the display is put on its own native 1x mode once, and the output is scaled into it —
+/// one blit, always the whole panel, and the mode never moves again.
 /// Exclusive: the display itself is put on the output's mode — 1:1 pixels when the panel has that
 /// size, and for every other one a mode switch: flashes, the panel's scaler and a Direct
-/// renegotiation. The reference ports (P.T.) do the latter; Fill is the default here.
-enum FullscreenMode : int { FullscreenFill = 0, FullscreenExclusive, FullscreenModeCount };
-/// bbport.ini value ("fill", "exclusive").
+/// renegotiation. The reference ports (P.T.) do the latter; it is opt-in here.
+enum FullscreenMode : int {
+    FullscreenDesktop = 0,
+    FullscreenFill,
+    FullscreenExclusive,
+    FullscreenModeCount
+};
+/// bbport.ini value ("desktop", "fill", "exclusive").
 const char* FullscreenModeKey(int mode);
 /// The game's frame rate (bbport_frame_rate): the game's own 30, or the port's hooks at 60/90 with
 /// no cap beyond the pacer's safety maximum.
@@ -160,17 +170,19 @@ struct Values {
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};
-    /// Retina-density window (macOS: SDL high pixel density; BB_RETINA overrides). On a display
-    /// that is already scaled, "on" makes the window's surface twice the panel and the compositor
-    /// scales it back — heavy and never Direct. Off matches the display's pixels.
+    /// Drawable density (macOS: SDL high pixel density; BB_RETINA overrides). The drawable should
+    /// match the display mode's *framebuffer* pixels: on a 1x mode that is the panel's size, on a
+    /// scaled (HiDPI) desktop it is the backing store (6880x2880 for "looks like 3440x1440"), which
+    /// is what Direct scan-out requires. Only the encode pass runs at the drawable size; the scene
+    /// renders at the output resolution.
     std::atomic<bool> retina{true};
     /// The game window's mode (WindowMode; window.cpp applies it at creation and live). The
     /// legacy BB_FULLSCREEN=1 asks for fullscreen when the file does not choose a mode.
     std::atomic<int> window_mode{WindowWindowed};
-    /// How fullscreen puts the picture on the display (FullscreenMode; window.cpp). Fill — the
-    /// default — renders the chosen output and scales it into a window on the display's native
-    /// mode; Exclusive switches the display mode itself.
-    std::atomic<int> fullscreen_mode{FullscreenExclusive};
+    /// How fullscreen puts the picture on the display (FullscreenMode; window.cpp). Desktop —
+    /// the default — keeps the display's mode and scales the output into the window; Fill puts
+    /// the panel on its native 1x mode once; Exclusive switches the display to the output's mode.
+    std::atomic<int> fullscreen_mode{FullscreenDesktop};
     /// Whether a resolution change that lands on the display's native 1x mode applies without the
     /// confirmation modal (bbport_confirm.cpp, BB_CONFIRM_NATIVE): the reference ports show no
     /// dialog for the native size at all, and it is the size most changes pick. Off: ask for
@@ -213,10 +225,19 @@ struct Values {
 
 Values& Get();
 /// window.cpp: whether fullscreen renders the chosen output and scales it into a window on the
-/// display's own native mode (the default) instead of putting the display on the output's mode.
-/// True while no window has read the setting at all (the default is Fill).
+/// display's own mode (desktop and fill) instead of putting the display on the output's mode.
 inline bool FullscreenFills() {
     return Get().fullscreen_mode.load(std::memory_order_relaxed) != FullscreenExclusive;
+}
+/// window.cpp: whether fullscreen leaves the display's mode exactly as the desktop has it — the
+/// default, and the only one that never issues a display mode set.
+inline bool FullscreenKeepsDesktopMode() {
+    return Get().fullscreen_mode.load(std::memory_order_relaxed) == FullscreenDesktop;
+}
+/// window.cpp: whether fullscreen may set a display mode at all (fill: the panel's native 1x
+/// mode once; exclusive: the output's mode). Both are opt-in; the default never does.
+inline bool FullscreenMovesDisplay() {
+    return !FullscreenKeepsDesktopMode();
 }
 /// bbport_confirm.cpp: whether a resolution change can move the display mode at all — only where
 /// fullscreen puts the display itself on the output's mode. Everywhere else the display keeps its

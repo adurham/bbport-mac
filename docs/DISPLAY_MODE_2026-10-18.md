@@ -126,3 +126,52 @@ What it means:
   backing store into the panel at the link's 240 Hz (see above). If that also takes the DCP down,
   the panel's HiDPI configuration is the common factor, not the mode set.
 
+## The fix: the panel moves before anything of ours can be on screen
+
+Both crashes had the mode set **after** the swapchain existed. That was structural, not bad luck:
+
+1. `WindowSDL` created the window with `SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN = true`, so it was
+   already fullscreen on the desktop's mode.
+2. The boot window mode was only *queued* (`SetWindowMode` → `pending_window_mode`) because
+   `apply_window_mode` did not exist yet in the object's life.
+3. The first `PollEvents()` in the window thread applied it — while the main thread had already
+   built the presenter/swapchain and the game could be presenting. `SDL_SetWindowFullscreenMode`
+   then issued `CGDisplaySetDisplayMode` under a live, scanout-eligible drawable.
+
+The ordering is now enforced in code:
+
+- A fullscreen launch whose mode moves the panel (`fill`, `exclusive` — i.e. not `desktop`) is
+  created as a **plain window**, then moved to its mode and to fullscreen **synchronously in the
+  constructor** via `apply_window_mode()`, before `SDL_Metal_CreateView` makes a layer the
+  WindowServer could scan, and before `g_window_ready` lets the main thread build the presenter.
+  The swapchain is then born on the new mode; no surface is ever re-pointed under the DCP.
+- `boot_mode_phase` is cleared at the end of the constructor. `apply_display_mode()` checks it and
+  **refuses every later set** — the menu's fullscreen row, a confirmed resolution change, a display
+  change — logging `… needs a restart (… moves the panel at startup only, before the first
+  drawable …)` and moving nothing. This is a mechanical gate: there is no path left that issues
+  `CGDisplaySetDisplayMode` from a running window.
+- `BB_DISPLAY_DRY=1` forces the dry path (pick logged, nothing set), so the ordering and the picker
+  can be exercised in a fullscreen launch without moving the panel — SDL enters fullscreen on the
+  desktop's own mode instead.
+
+What this does **not** cover, and is the next thing to look at if a panic ever recurs:
+
+- Leaving fullscreen (`windowed`/`borderless`, or quitting) makes SDL restore the desktop mode —
+  a set, under our window, though not under a drawable we present from by then. Today's crashes
+  were both on the way *in*, never on the way out.
+- The window thread calls `_Exit(0)` when the window closes, so SDL's own restore never runs on
+  quit: after a clean exit from `exclusive` the panel may stay on the game's mode. Not written yet
+  because it cannot be verified without a covering run.
+
+Live verification status: **not run.** What is checked here: `tools/macos/build.sh` builds both
+slices clean (x86-64 `libbbgpu.dylib` + arm64 `bb-gpu`), `settings-test` passes on both, and
+`tests/test_display_mode_order.py` (5 checks, run by `python3 -m unittest discover -s tests`) fails
+on the pre-fix `window.cpp` — it asserts the ordering above, so a revert to the queued boot mode
+turns red. The launch that proves it is a covering run and waits for the owner's word.
+
+`bbport.ini` on the owner's machine is back on `fullscreen_mode=exclusive` (that file is not in
+git): exclusive is what he asked to keep, and the ordering above is what is meant to make it safe.
+The escape hatch, if the next launch panics anyway, is `fullscreen_mode=desktop` — that path sets
+no mode at all.
+
+
