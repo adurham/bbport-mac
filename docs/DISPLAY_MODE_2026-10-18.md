@@ -98,3 +98,31 @@ that is the supported configuration: `fullscreen_mode=desktop` (never touches th
   display plugged back in). `fullscreen_mode=desktop` issues no mode set, so it is the run that
   cannot repeat the panic. The layer dump prints `drawable matches/differs from the mode's pixels`
   on the first present, so that run answers the Direct question by itself.
+
+## Second panic, 23:26:44 — the same signature, and it survived the set for 110 s
+
+Same machine, same macOS build, six hours later. Run:
+`BB_FULLSCREEN_MODE=exclusive BB_SAVE_LOG=1 bash tools/macos/run.sh` (ini: `window_mode=fullscreen`,
+`output_res=3440x1440`).
+
+- `logs/20261018_232449.log`: started 23:24:49 on the HiDPI mode (`drawable matches the mode's
+  pixels`, mode 6880x2880), SDL set 3440x1440 @ 240 (mode id 724, `native 1`) at 23:24:52, scanout
+  went `1:1`, and the port ran **120.0 FPS steady** at 8.0 ms median — the statistics reach 104 s.
+- `panic-full-2026-10-18-232751`: `DCPEXT1 PANIC - IOMFB int_handler_gated: failure: axi_rd_err
+  [0x40381408]`, faulting task `iomfb_driver(9)` — same initiator, same register as the 17:22 one.
+  Wall clock ~23:26:44 (the streamed WindowServer/DCP log ends 23:26:43.95); the report lists a
+  single `bb-probe`, `processUptime` 133 s.
+
+What it means:
+
+- The mode set is **not instantly fatal**. This time the pipe ran 1:1 at 3440x1440/240 for ~110 s
+  after `CGDisplaySetDisplayMode` before it faulted, so "set during drawable promotion" is not a
+  complete account of the fault — it is only the step the two crashed runs share and the surviving
+  Oct 16/17 launches do not (those matched the current mode, so SDL set nothing).
+- Correction to an earlier claim in the working session: that run was ~2 minutes old, not
+  "40+ minutes". The session's own uptime was misread as the game's; the report's `processUptime`
+  settles it.
+- An un-tested risk remains: `desktop` fullscreen sets no mode, but it still scans a 6880x2880
+  backing store into the panel at the link's 240 Hz (see above). If that also takes the DCP down,
+  the panel's HiDPI configuration is the common factor, not the mode set.
+
