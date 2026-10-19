@@ -52,6 +52,17 @@ class DisplayModeOrder(unittest.TestCase):
                         'the display mode must be set before SDL_Metal_CreateView makes a layer the '
                         'WindowServer could scan')
 
+    def test_the_settle_wait_is_between_the_set_and_the_metal_view(self):
+        body = ctor_body()
+        self.assertIn('bb_display_wait_mode_change(', body,
+                      'no settle wait: SDL\'s fullscreen transition is asynchronous, so the mode may '
+                      'still be in flight when the layer is created')
+        apply_at = body.index('apply_window_mode(window, window_mode)')
+        wait_at = body.index('bb_display_wait_mode_change(')
+        metal_at = body.index('SDL_Metal_CreateView(')
+        self.assertLess(apply_at, wait_at, 'the wait must come after the set')
+        self.assertLess(wait_at, metal_at, 'the wait must finish before the layer exists')
+
     def test_boot_mode_is_not_queued(self):
         body = ctor_body()
         apply_at = body.index('apply_window_mode(window, window_mode)')
