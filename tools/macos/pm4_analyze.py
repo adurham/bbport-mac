@@ -109,10 +109,18 @@ def verdict(arms, dstar):
     fixed = [a for n, a in arms.items() if "fixed" in n and a["valid"]]
     old_runs = sum(a["valid"] for a in old)
     old_mm = sum(a["mismatch_runs"] for a in old)
+    old_checked = sum(a["checked"] for a in old)
     fix_runs = sum(a["valid"] for a in fixed)
     fix_mm = sum(a["mismatch_runs"] for a in fixed)
     fix_asserts = sum(a["asserts"] for a in fixed)
     if not fixed:
+        if old_runs >= 3 and old_mm == 0:
+            return ("**fix closes the race, causality unproven in-game** — the positive control was "
+                    "negative: %d valid old-path runs checked %d submissions and no submission "
+                    "changed between submit and copy, so the in-game harness does not exercise the "
+                    "race and the fixed arm was not launched (prereg: control negative). The "
+                    "protocol itself is covered by the synthetic result "
+                    "(docs/PM4_SYNTHETIC_2026-10-19.md)." % (old_runs, old_checked))
         return ("**unproven at this sample size** — no valid fixed-path runs in the record "
                 "(old: %d valid, %d with a mismatch)." % (old_runs, old_mm))
     if fix_mm:

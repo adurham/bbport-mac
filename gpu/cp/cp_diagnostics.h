@@ -5,9 +5,14 @@
 #pragma once
 
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
+
+#include <xxhash.h>
 
 #include "common/types.h"
 
@@ -53,7 +58,51 @@ struct SubmittedCopy {
     const u32* guest_ccb{};
     std::size_t ccb_dwords{};
     std::chrono::steady_clock::time_point submitted;
+    /// BB_PARSE_CHECK=1 (diagnostics): XXH3 of `data` when the copy was taken and again just
+    /// before the walk reads it (0: not taken). Equal hashes mean the copy was not damaged after
+    /// it was taken: a bad packet in it was torn at the copy, or already wrong in guest memory.
+    u64 copy_hash{};
+    u64 parse_hash{};
 };
+/// BB_PARSE_CHECK=1: hash the copy at the two points the bad-packet report compares. Off by
+/// default: two XXH3 passes over every submission's copy cost more than the rest of the walk.
+inline bool ParseCheckEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_PARSE_CHECK");
+        return env && (env[0] == '1' || env[0] == 'y' || env[0] == 't');
+    }();
+    return enabled;
+}
+inline void NoteCopyTimeHash(SubmittedCopy& copy) {
+    if (ParseCheckEnabled() && !copy.data.empty()) {
+        copy.copy_hash = XXH3_64bits(copy.data.data(), copy.data.size() * sizeof(u32));
+    }
+}
+inline void NoteParseTimeHash(SubmittedCopy& copy) {
+    if (ParseCheckEnabled() && !copy.data.empty()) {
+        copy.parse_hash = XXH3_64bits(copy.data.data(), copy.data.size() * sizeof(u32));
+    }
+}
+/// BB_COPY_GPU_BUFFERS: one copy per submission, taken from the guest's words at this moment and
+/// alive until it is decoded. This is the copy the split's submit must not return before
+/// (docs/PM4_TORN_SUBMISSIONS.md); tests/test_pm4_submit.cpp calls it through the same function.
+inline std::shared_ptr<SubmittedCopy> TakeCopy(std::span<const u32> dcb, std::span<const u32> ccb) {
+    auto copy = std::make_shared<SubmittedCopy>();
+    copy->data.resize(dcb.size() + ccb.size());
+    if (!dcb.empty()) {
+        std::memcpy(copy->data.data(), dcb.data(), dcb.size_bytes());
+    }
+    if (!ccb.empty()) {
+        std::memcpy(copy->data.data() + dcb.size(), ccb.data(), ccb.size_bytes());
+    }
+    copy->guest_dcb = dcb.data();
+    copy->dcb_dwords = dcb.size();
+    copy->guest_ccb = ccb.data();
+    copy->ccb_dwords = ccb.size();
+    copy->submitted = std::chrono::steady_clock::now();
+    NoteCopyTimeHash(*copy);
+    return copy;
+}
 /// After it was decoded: whether the guest changed its command buffers since.
 void CheckSubmittedCopy(const SubmittedCopy& copy, u64 seq);
 

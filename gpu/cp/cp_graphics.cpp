@@ -172,6 +172,9 @@ void CommandProcessor::EndGraphics(Work& work) {
 
 CommandProcessor::Status CommandProcessor::RunGraphics(Work& work) {
     if (!work.started) {
+        if (work.copy) {
+            Diagnostics::NoteParseTimeHash(*work.copy); // BB_PARSE_CHECK=1: before the walk reads it
+        }
         BeginGraphics(work);
     }
     Walk& walk = work.walk;

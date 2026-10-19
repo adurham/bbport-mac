@@ -45,6 +45,7 @@
 #include "remote/bb_control.h"
 #include "remote/bb_protocol.h"
 #include "remote/bb_remote.h"
+#include "remote/bb_submit_path.h"
 #include "bbport_settings.h"
 #include <xxhash.h>
 
@@ -711,30 +712,6 @@ bool Init(const BbGpuConfig& config) {
 
 // ---- GnmDriver ------------------------------------------------------------------------------
 
-/// Whether a graphics submission waits until bb-gpu has taken it. The game may write a command
-/// buffer again as soon as it believes the GPU has it: in-process, the command processor copies
-/// the words inside sceGnmSubmitCommandBuffers (BB_COPY_GPU_BUFFERS, run.sh's default). Sent
-/// without waiting, bb-gpu's reader thread copied them whenever it got to the message - behind
-/// write faults and mappings that wait for its GPU thread during an area load - so the copy could
-/// mix two versions of the buffer: packets cut short, a NOP whose body holds the next packets,
-/// decoded as "PM4 type 0/1 packet" (docs/PM4_TORN_SUBMISSIONS.md). Waiting gives the native
-/// split the in-process guarantee: the words are copied before the call returns.
-/// BB_SUBMIT_ASYNC=1 (diagnostics): the old way.
-bool SubmitWaitsForCopy() {
-    static const bool wait = [] {
-        const char* copy = std::getenv("BB_COPY_GPU_BUFFERS");
-        const char* async = std::getenv("BB_SUBMIT_ASYNC");
-        const bool copied = copy && (copy[0] == '1' || copy[0] == 'y' || copy[0] == 't');
-        const bool on = copied && !(async && async[0] == '1');
-        std::printf("GPU process: graphics submissions %s\n",
-                    on       ? "return once bb-gpu has copied them (BB_COPY_GPU_BUFFERS)"
-                    : copied ? "return before bb-gpu has copied them (BB_SUBMIT_ASYNC=1)"
-                             : "are decoded from guest memory (BB_COPY_GPU_BUFFERS=0)");
-        return on;
-    }();
-    return wait;
-}
-
 void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     struct {
         SubmitGfxArgs args;
@@ -767,22 +744,14 @@ void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
     }
     // BB_SUBMIT_CHECK=1 (diagnostics): the words as the game submitted them, for bb-gpu to
     // compare with what it takes ("Submit check:" lines).
-    static const bool check = [] {
-        const char* env = std::getenv("BB_SUBMIT_CHECK");
-        return env && env[0] == '1';
-    }();
-    if (check) {
-        message.args.dcb_hash = dcb.empty() ? 0 : XXH3_64bits(dcb.data(), dcb.size_bytes());
-        message.args.ccb_hash = ccb.empty() ? 0 : XXH3_64bits(ccb.data(), ccb.size_bytes());
-        message.args.submit_ns = MonotonicNs();
-    }
+    SubmitPath::NoteSubmissionHashes(message.args, dcb, ccb, MonotonicNs());
     const u32 size = u32(sizeof(SubmitGfxArgs) + words * 4);
-    if (SubmitWaitsForCopy()) {
+    // Waits for bb-gpu's copy when the port waits (BB_COPY_GPU_BUFFERS, the default);
+    // BB_SUBMIT_ASYNC=1 sends it and returns (the old path, diagnostics).
+    SubmitPath::Send(*g.channel, &message, size, [&] {
         ResultReply taken{};
         TimedCall(false, MsgSubmitGfx, &message, size, &taken, sizeof(taken));
-        return;
-    }
-    g.channel->Send(MsgSubmitGfx, &message, size);
+    });
 }
 
 void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb) {

@@ -12,6 +12,7 @@
 
 #include <fmt/format.h>
 #include <magic_enum/magic_enum.hpp>
+#include <xxhash.h>
 
 #include "bbport_portable.h"
 #include "bbport_write_log.h"
@@ -145,6 +146,7 @@ bool DcbStatsEnabled() {
     static const bool enabled = EmulatorSettingsImpl::Flag("BB_DCB_STATS", false);
     return enabled;
 }
+
 
 void NoteWait(int outcome, double ms) {
     ++stats.wait_outcome[outcome];
@@ -352,6 +354,23 @@ void ReportBadPacket(uintptr_t base, std::size_t dwords, const u32* at, u64 seq,
                 guest += fmt::format("{}{:08x}{}", mark, now[i - from], i == stop ? "]" : "");
             }
             std::fprintf(stderr, "%s\n%s\n", copied.c_str(), guest.c_str());
+        }
+    }
+    // BB_PARSE_CHECK=1: the copy as taken and as the walk found it - a difference is damage after
+    // the copy, in bb-gpu's own heap; the same hash means the tear (if any) happened at the copy.
+    if (copy && copy->copy_hash) {
+        const bool same = copy->parse_hash == copy->copy_hash;
+        std::fprintf(stderr,
+                     "  the copy's hash %#llx at copy time, %#llx before the walk: %s\n",
+                     (unsigned long long)copy->copy_hash,
+                     (unsigned long long)(copy->parse_hash ? copy->parse_hash : copy->copy_hash),
+                     copy->parse_hash == 0 ? "not hashed before the walk"
+                     : same ? "unchanged since the copy (torn at the copy, or already wrong in "
+                              "guest memory: compare the game's dwords above)"
+                            : "CHANGED since the copy: damaged later in bb-gpu's heap");
+        if (!same) {
+            const auto now = XXH3_64bits(copy->data.data(), copy->data.size() * sizeof(u32));
+            std::fprintf(stderr, "  the copy holds %#llx now\n", (unsigned long long)now);
         }
     }
     BbWriteLog::DumpRange(base, dwords * 4);

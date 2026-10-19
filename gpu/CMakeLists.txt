@@ -297,6 +297,12 @@ add_executable(cp-decoder-test EXCLUDE_FROM_ALL ../tests/test_cp_decoder.cpp cp/
 target_compile_options(cp-decoder-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(cp-decoder-test PRIVATE cp)
 add_executable(settings-test EXCLUDE_FROM_ALL ../tests/test_settings.cpp shim/bbport_settings.cpp)
+# The split's submission path under a guest that reuses its buffer (the PM4 campaign): the real
+# channel, the real wait/check/copy functions, no GPU device and no game.
+add_executable(pm4-submit-test EXCLUDE_FROM_ALL ../tests/test_pm4_submit.cpp)
+target_include_directories(pm4-submit-test PRIVATE . shim)
+target_link_libraries(pm4-submit-test PRIVATE PkgConfig::XXHASH)
+target_compile_options(pm4-submit-test PRIVATE -UNDEBUG -Wall -Wextra)
 target_compile_options(settings-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(settings-test PRIVATE .. shim)
 

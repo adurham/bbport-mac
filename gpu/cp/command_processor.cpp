@@ -587,15 +587,7 @@ void CommandProcessor::SubmitGfx(std::span<const u32> dcb, std::span<const u32> 
     // BB_COPY_GPU_BUFFERS: one copy per submission, alive until it is decoded (the guest reused
     // the memory before this thread got to it: "PM4 type 0" while an area loads).
     if (EmulatorSettings.IsCopyGpuBuffers()) {
-        auto copy = std::make_shared<SubmittedCopy>();
-        copy->data.resize(dcb.size() + ccb.size());
-        std::memcpy(copy->data.data(), dcb.data(), dcb.size_bytes());
-        std::memcpy(copy->data.data() + dcb.size(), ccb.data(), ccb.size_bytes());
-        copy->guest_dcb = dcb.data();
-        copy->dcb_dwords = dcb.size();
-        copy->guest_ccb = ccb.data();
-        copy->ccb_dwords = ccb.size();
-        copy->submitted = std::chrono::steady_clock::now();
+        auto copy = Diagnostics::TakeCopy(dcb, ccb);
         dcb = {copy->data.data(), copy->dcb_dwords};
         ccb = {copy->data.data() + copy->dcb_dwords, copy->ccb_dwords};
         work->copy = std::move(copy);
