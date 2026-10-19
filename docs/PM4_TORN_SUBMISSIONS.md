@@ -1,5 +1,45 @@
 # The "PM4 type 1 packet (0x70d1b005)" GPU assertion
 
+> **CORRECTION — 2026-10-19, and read this before the rest of the page.** An overnight campaign
+> re-ran this bug properly and found that the evidence table below does not support what it appears
+> to claim. Full detail: `docs/pm4-results/recon-2026-10-19.md`, raw runs in
+> `docs/pm4-results/prefix-ab-2026-10-19.jsonl`, campaign record in `docs/PM4_PREREG_2026-10-19.md`
+> and `docs/PM4_SYNTHETIC_2026-10-19.md`. In short:
+>
+> 1. **The "before" leg was never pre-fix code.** Its own logs carry the banner
+>    `GPU process: graphics submissions do not wait for bb-gpu's copy (BB_SUBMIT_ASYNC=1)` and
+>    "Submit check:" lines — and `BB_SUBMIT_ASYNC` / "Submit check" do not exist at `47fa499`
+>    (`9215a10^`); they arrive *with* the fix commit. So the before/after table compares the fixed
+>    build to itself with an env switch, which is a valid test of the switch and not of the code.
+> 2. **`docs/pm4-repro/before.txt`'s `asserts=1` is a counter artifact.** Its eight runs are the
+>    eight clean runs: the retained logs it labels contain zero assertion lines and zero
+>    `Bad PM4 packet`, each ends `GPU process exited (0)`, and the `max_draws` values match the
+>    retained logs exactly. The file came from an earlier uncommitted loop whose counter is not on
+>    disk. The "0 asserts in 8" in the table below and the "asserts=1" in that file are the same
+>    eight runs.
+> 3. **`changed_submissions` has never measured anything.** Both scripts grep
+>    `^Submit check: submission`, a string no build prints (the real lines are
+>    `Submit check: N of M …` and `Submit check: submission N's dcb …`). It reads 0 for every run
+>    ever recorded, with or without a live hash check.
+> 4. **Genuine pre-fix code does not reproduce it.** `47fa499` (`9215a10^`, `SubmitWaitsForCopy`
+>    absent) built and run 15 times hidden on attack/combat/interact/street with
+>    `BB_COPY_GPU_BUFFERS=1`: 15/15 valid, 15/15 clean. Six more with the renderer's reader thread
+>    deliberately stalling 200–500 ms between messages (the suspected widening condition): 6/6
+>    clean. The only surviving crash log is `out/warmfill/yharnam.log` (2026-10-16 16:52, build
+>    `77e4f46`), and the "4 of 17" rate is not re-derivable — three logs survive in `out/warmfill`
+>    and one of them crashed.
+>
+> What still stands: the **synthetic** protocol result — protocol 9 (the fix) 0 torn in 37,000
+> submissions vs protocol 8 83–100% torn, with a concurrent-writer control proving the detector
+> fires. The fix's guarantee is real at the protocol level. Its credit for the live crash is
+> unproven, and unprovable in this harness until the reproduction is resurrected.
+>
+> **Config landmine found in the same sweep:** `BB_COPY_GPU_BUFFERS` defaults to **false**
+> (`gpu/shim/core/emulator_settings.h:55` and its `gpu/bbnet` twin) and no script under `tools/`
+> exports it, despite `remote_front.cpp`'s comment calling it "run.sh's default". Any run that does
+> not export it decodes guest memory directly — there is no copy to tear, and `BB_SUBMIT_ASYNC` is
+> a no-op there. Check that flag before believing any pm4 result, old or new.
+
 `Bad PM4 packet ... PM4 type 1 packet (0x70d1b005)`, then `Unreachable code!` and
 `STOP: GPU library assertion failed (cp_graphics.cpp:203)`. bb-gpu exits and takes the run with it.
 The warm-route session saw it in 4 of 17 runs. This page covers what the packet is, what the evidence
