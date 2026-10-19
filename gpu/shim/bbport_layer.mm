@@ -437,3 +437,54 @@ extern "C" void bb_log_display_mode(void* nswindow, const char* why) {
         std::fflush(stdout);
     }
 }
+
+/// The window's display: the pixel size of the mode it is on now (window.cpp: the mode-set settle).
+extern "C" int bb_display_current_pixels(void* nswindow, int* width, int* height) {
+    @autoreleasepool {
+        NSWindow* window = (__bridge NSWindow*)nswindow;
+        const CGDirectDisplayID display = window ? DisplayOf(window) : CGMainDisplayID();
+        CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+        if (!mode) {
+            *width = *height = 0;
+            return 0;
+        }
+        const int w = int(CGDisplayModeGetPixelWidth(mode));
+        const int h = int(CGDisplayModeGetPixelHeight(mode));
+        CFRelease(mode);
+        *width = w;
+        *height = h;
+        return w > 0 && h > 0;
+    }
+}
+
+/// Waits for a display-mode set to have landed: CGDisplaySetDisplayMode takes effect asynchronously
+/// (SDL's fullscreen transition returns first), so the only evidence that it is done is that the
+/// display reports a different pixel size — stable for two samples. 1 = changed and settled, 2 =
+/// never left the old size (the pick was already the current mode, or the set did not take).
+extern "C" int bb_display_wait_mode_change(void* nswindow, int old_width, int old_height, int timeout_ms) {
+    @autoreleasepool {
+        NSWindow* window = (__bridge NSWindow*)nswindow;
+        const CGDirectDisplayID display = window ? DisplayOf(window) : CGMainDisplayID();
+        const NSDate* deadline = [NSDate dateWithTimeIntervalSinceNow:timeout_ms / 1000.0];
+        int last_w = 0, last_h = 0, stable = 0;
+        while ([deadline timeIntervalSinceNow] > 0) {
+            CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+            int w = 0, h = 0;
+            if (mode) {
+                w = int(CGDisplayModeGetPixelWidth(mode));
+                h = int(CGDisplayModeGetPixelHeight(mode));
+                CFRelease(mode);
+            }
+            if (w != old_width || h != old_height) {
+                stable = (w == last_w && h == last_h) ? stable + 1 : 0;
+                last_w = w;
+                last_h = h;
+                if (stable >= 1) {
+                    return 1;
+                }
+            }
+            [NSThread sleepForTimeInterval:0.01];
+        }
+        return 2;
+    }
+}

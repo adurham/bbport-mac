@@ -29,6 +29,11 @@ extern "C" void bb_warm_disable_app_nap(void);
 // bbport_layer.mm: the display's mode after a switch, and the panel's native pixel size.
 extern "C" void bb_log_display_mode(void* nswindow, const char* why);
 extern "C" int bb_display_native_pixels(void* nswindow, int* width, int* height);
+// bbport_layer.mm: the display's mode now, and waiting for a mode set to have landed. SDL's Cocoa
+// fullscreen transition is asynchronous, so entering fullscreen returns before CoreGraphics has
+// applied the mode — the drawable must not be created until it has.
+extern "C" int bb_display_current_pixels(void* nswindow, int* width, int* height);
+extern "C" int bb_display_wait_mode_change(void* nswindow, int old_width, int old_height, int timeout_ms);
 #endif
 
 
@@ -361,6 +366,10 @@ bool boot_mode_phase = true;
 } // namespace
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
+    // A window that loses focus must not leave fullscreen: SDL would restore the desktop mode under
+    // a live drawable, mid-session — the same hazard class as a mode set at launch (DCPEXT1
+    // axi_rd_err, 2026-10-18). A notification or Cmd-Tab is enough to trigger it by default.
+    SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
@@ -424,7 +433,27 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         // Synchronous, and before SDL_Metal_CreateView below: the panel is moved with no drawable of
         // ours in existence, and the swapchain is then born on the new mode — no surface is
         // re-pointed under the display coprocessor.
+#ifdef __APPLE__
+        int before_w = 0, before_h = 0;
+        bb_display_current_pixels(CocoaWindow(window), &before_w, &before_h);
+#endif
         apply_window_mode(window, window_mode);
+#ifdef __APPLE__
+        // SDL's Cocoa fullscreen transition is asynchronous: entering fullscreen returns before
+        // CoreGraphics has applied the mode. Waiting here is the point of the ordering — the layer
+        // must be created ON the new mode, not during the switch.
+        if (!DryDisplayRun()) {
+            const int settle = bb_display_wait_mode_change(CocoaWindow(window), before_w, before_h, 3000);
+            if (settle == 1) {
+                std::printf("Display mode: the panel is on the new mode before the first drawable "
+                            "exists (was %dx%d)\n", before_w, before_h);
+            } else {
+                std::printf("Display mode: the panel did not report a new mode within 3 s (was %dx%d); "
+                            "the drawable is created anyway — the layer dump below says what it is\n",
+                            before_w, before_h);
+            }
+        }
+#endif
     } else if (window_mode != BbSettings::WindowWindowed && !warm_window) {
         SetWindowMode(window_mode); // borderless/fullscreen at start; the menu changes it live
     }

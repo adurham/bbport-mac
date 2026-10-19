@@ -156,12 +156,20 @@ The ordering is now enforced in code:
 
 What this does **not** cover, and is the next thing to look at if a panic ever recurs:
 
-- Leaving fullscreen (`windowed`/`borderless`, or quitting) makes SDL restore the desktop mode —
-  a set, under our window, though not under a drawable we present from by then. Today's crashes
-  were both on the way *in*, never on the way out.
-- The window thread calls `_Exit(0)` when the window closes, so SDL's own restore never runs on
-  quit: after a clean exit from `exclusive` the panel may stay on the game's mode. Not written yet
-  because it cannot be verified without a covering run.
+- **Leaving fullscreen from the menu** (`windowed`/`borderless`) still makes SDL restore the
+  desktop mode — a set, under our window, with the swapchain alive. It is user-initiated and the
+  port never does it on its own; the unplanned variant (focus loss, Cmd-Tab, a notification) is now
+  prevented by `SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0`.
+- **Quitting** never reaches SDL's restore: the window thread calls `_Exit(0)` after the loop, so
+  there is no transition at exit — and the panel is left on the game's mode, i.e. the desktop comes
+  back at 1x until the HiDPI mode is selected again. That is a UX bug, not a DCP hazard (no set is
+  issued). Fixing it means an ordered shutdown: stop presents → wait for the last frame → destroy
+  the swapchain → destroy the window → then restore, from a state with no drawable of ours alive.
+  Not written here because it cannot be verified without a covering run.
+- The stronger variant (own the mode ourselves before `SDL_Init`, use borderless fullscreen so SDL
+  never has a mode to apply or restore, and never restore at all) removes every transition except
+  the startup one, but it hands the owner a manual mode restore in BetterDisplay after each exit —
+  rejected for that reason, recorded here as the fallback design.
 
 Live verification status: **not run.** What is checked here: `tools/macos/build.sh` builds both
 slices clean (x86-64 `libbbgpu.dylib` + arm64 `bb-gpu`), `settings-test` passes on both, and
