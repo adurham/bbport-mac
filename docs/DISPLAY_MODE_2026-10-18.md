@@ -221,6 +221,34 @@ The 240 Hz panel mode is still reachable without moving anything: `fullscreen_mo
 `retina=1` gives a drawable equal to the mode's 6880x2880 framebuffer, so the fullscreen is Direct
 and no set is issued.
 
+## Follow-up, 2026-10-19: what actually faults (read-only investigation)
+
+`DISPLAY_TRANSITION_RULE_2026-10-19.md` replaces the mode-number framing above with the
+mechanical one. Summary of what changed:
+
+- **775 is not a one-way door.** It was left for 769 three times (10-17 15:59:35, 10-18
+  11:24:50, 10-18 22:14:58) and re-entered seven times; one of those runs kept the desktop on
+  769 for 4 h 29 min including a dock hotplug. Zero faults. 769 and 775 are the *same plane*
+  (both 6880x2880); only the nominal refresh differs (240 vs 60).
+- **The fatal class is narrower and the log names it.** Every faulting set changed the pipe's
+  source width (6880 -> 3440, `modeset_required: 1, resource_release_required: 1`,
+  "IOMFB needs a modeset ... for pipe reconfiguration"); every same-plane set reports
+  `0 / 0`. 22 same-plane sets, 0 faults; 1 logged cross-plane set, fatal 108.6 s later, plus
+  the 2 unlogged ones.
+- **The mode change alone is not sufficient.** The same 2x -> 1x reconfiguration was
+  performed ten times on 2026-10-16 on the `YCbCr422_8bit limited` link without a fault.
+  After the link became `RGB_PQ_10bit full` (HDR10, PQ, DSC at 240) every cross-plane set has
+  been fatal. The link is the ingredient; the scale change is the trigger.
+- **The old mode ids are gone.** The table was rebuilt: 150 is now `1583x663 HiDPI 240`
+  (3166x1326), 155 is now `1600x670 1x 240`, 152 is `1583x663 HiDPI 165`. `display-gold-240`
+  and `display-gold-165` were still calling 150/151 — i.e. the documented recovery had become
+  a cross-plane set to a 1583x663 desktop. Both are rewritten to resolve their target by name
+  and to refuse any non-2x target or 1x starting state.
+
+The gate in this tree is unchanged and still correct: the port never issues a set, and
+`fullscreen_mode=desktop` + `retina=1` remains the supported fullscreen.
+
+
 
 
 
