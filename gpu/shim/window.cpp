@@ -700,6 +700,9 @@ void apply_display_mode(SDL_Window* window, const char* why) {
 #endif
 }
 
+void LogFullscreenFlag(SDL_Window* window, const char* when);
+bool EnsureFullscreenFlag(SDL_Window* window, const char* when);
+
 /// PollEvents: the derived mode follows its inputs. Fullscreen only (windowed and borderless
 /// use the desktop's mode); a changed output (a confirmed resolution, the overlay's, the native
 /// default) or another display picks again. A resolution the player did not confirm never
@@ -759,6 +762,7 @@ void follow_display_mode(SDL_Window* window, int applied_mode) {
         SDL_SetWindowFullscreen(window, false);
         apply_display_mode(window, "output resolution changed (live)");
         SDL_SetWindowFullscreen(window, true);
+        EnsureFullscreenFlag(window, "after the live mode change");
 #ifdef __APPLE__
         if (!WarmRun()) {
             SDL_SyncWindow(window);
@@ -766,6 +770,38 @@ void follow_display_mode(SDL_Window* window, int applied_mode) {
         }
 #endif
     }
+}
+
+/// Whether SDL has the window flagged as a real fullscreen window — the flag WindowServer reads to
+/// hand the layer the direct scan-out path. A window that covers the display but is not flagged
+/// (SDL_WINDOW_FULLSCREEN_DESKTOP semantics, which SDL falls back to when the requested mode equals
+/// the desktop's) is composited even when the drawable matches the mode's pixels. 2026-10-20: the
+/// owner's run reported Composited with drawable 3440x1440 over a 1:1 3440x1440 mode, and the layer
+/// dump showed `fullscreen 0` — after a boot that enters fullscreen from a plain window (the
+/// ordering fix) with the panel already on the requested mode.
+void LogFullscreenFlag(SDL_Window* window, const char* when) {
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+    std::printf("Window: fullscreen flag %d (%s)\n", (flags & SDL_WINDOW_FULLSCREEN) ? 1 : 0, when);
+}
+
+/// Enters fullscreen and, if SDL did not flag the window as a real fullscreen window, leaves and
+/// enters once more — the second entry happens with the display already on the target mode, which
+/// is the state SDL needs to take the exclusive path. Logged either way, so a run that still reads
+/// Composited says whether the flag took: if it did and the HUD still says Composited, the cause is
+/// above the window (a compositor overlay, e.g. BetterDisplay's filter) and not this.
+bool EnsureFullscreenFlag(SDL_Window* window, const char* when) {
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) {
+        LogFullscreenFlag(window, when);
+        return true;
+    }
+    std::printf("Window: not flagged fullscreen %s; leaving and entering again\n", when);
+    SDL_SetWindowFullscreen(window, false);
+    SDL_SyncWindow(window);
+    SDL_SetWindowFullscreen(window, true);
+    SDL_SyncWindow(window);
+    const bool took = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+    LogFullscreenFlag(window, took ? "re-entry took" : "re-entry did NOT take");
+    return took;
 }
 
 /// The window mode itself. Window calls change AppKit state, so this runs on the window's own
@@ -806,9 +842,11 @@ void apply_window_mode(SDL_Window* window, int mode) {
                                                                                 : "fullscreen (exclusive)");
         SDL_SetWindowBordered(window, true);
         SDL_SetWindowFullscreen(window, true);
+        EnsureFullscreenFlag(window, "after entering fullscreen");
 #ifdef __APPLE__
         if (!WarmRun()) {
             SDL_SyncWindow(window); // the switch has happened: what CoreGraphics reports now
+            LogFullscreenFlag(window, "after the switch");
             bb_log_display_mode(CocoaWindow(window), "entered fullscreen");
         }
 #endif
