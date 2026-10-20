@@ -30,6 +30,7 @@
 #include "render/vk_breadcrumbs.h"
 #include "memory/fault_sites.h"
 #include "vulkan/instance.h"
+#include "vulkan/play_state.h"
 #include "render/scheduler.h"
 #if __has_include("remote/bb_remote.h")
 #include "remote/bb_remote.h" // the native line: whether this process is bb-gpu (Back)
@@ -297,6 +298,14 @@ void OnFlipStats() {
     static double worst_ms;
     const auto now = Clock::now();
     const double frame_ms = std::chrono::duration<double, std::milli>(now - last).count();
+    // bbport (BB_KK_TRIM_LOADONLY): what this flip was, for gates that must not work during play
+    // (vulkan/play_state.h). A no-op unless such a gate is on.
+    {
+        static u64 published_draws = 0;
+        const u64 all_draws = BbStats::draws.load(std::memory_order_relaxed);
+        Vulkan::PlayState::PublishFrame(frame_ms, all_draws - published_draws);
+        published_draws = all_draws;
+    }
     worst_ms = std::max(worst_ms, frame_ms);
     static std::vector<double> intervals;
     intervals.push_back(frame_ms);

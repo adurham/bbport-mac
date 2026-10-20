@@ -12,6 +12,9 @@
 #include <atomic>
 #include <chrono>
 #include <mach/mach.h>
+#include <mach/mach_host.h>
+#include <mach/vm_statistics.h>
+#include <sys/sysctl.h>
 #endif
 
 #include "bbport_toggles.h"
@@ -639,6 +642,92 @@ u64 Instance::GetDeviceMemoryUsage() const {
 }
 
 #ifdef __APPLE__
+/// bbport (BB_MEM_BUDGET_RESERVE): whether the budget is the reserve-aware ceiling below.
+bool BudgetReserveOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_MEM_BUDGET_RESERVE");
+        const bool set = env != nullptr && *env != '\0' && !(env[0] == '0' && env[1] == '\0');
+        if (set) {
+            std::printf("GPU: memory budget reserve on (BB_MEM_BUDGET_RESERVE): hw.memsize less "
+                        "wired and compressor pages, less a 6 GiB reserve, floored at 4 GiB\n");
+            std::fflush(stdout);
+        }
+        return set;
+    }();
+    return on;
+}
+
+struct MachineMemory {
+    u64 total = 0;      ///< hw.memsize
+    u64 wired = 0;      ///< wire_count * page size
+    u64 compressor = 0; ///< compressor_page_count * page size
+    bool ok = false;
+};
+
+/// The machine's own numbers, straight from the kernel: hw.memsize, and the wired and compressed
+/// pages the VM is holding (host_statistics64). Nothing here is this process's view of itself.
+MachineMemory ReadMachineMemory() {
+    MachineMemory m;
+    u64 memsize = 0;
+    std::size_t length = sizeof(memsize);
+    if (sysctlbyname("hw.memsize", &memsize, &length, nullptr, 0) != 0 || memsize == 0) {
+        return m;
+    }
+    vm_statistics64_data_t stats{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                          reinterpret_cast<host_info64_t>(&stats),
+                          &count) != KERN_SUCCESS) {
+        return m;
+    }
+    vm_size_t page = 0;
+    if (host_page_size(mach_host_self(), &page) != KERN_SUCCESS || page == 0) {
+        return m;
+    }
+    m.total = memsize;
+    m.wired = u64(stats.wire_count) * u64(page);
+    m.compressor = u64(stats.compressor_page_count) * u64(page);
+    m.ok = true;
+    return m;
+}
+
+/// The reserve-aware GPU budget: what the Mac can still hand out once a 6 GiB reserve is kept for
+/// the system (WindowServer, the guest, the compressor growing), floored at 4 GiB so the texture
+/// cache never collapses to a size that evicts images in use, and never above the port's own
+/// budget — this only ever takes budget away. Metal's limit is ~75% of the machine whatever else
+/// is running; this is the same question asked of the machine as it is now.
+u64 ReserveAwareBudget(u64 current) {
+    constexpr u64 Reserve = u64{6} << 30;
+    constexpr u64 Floor = u64{4} << 30;
+    const MachineMemory m = ReadMachineMemory();
+    if (!m.ok) {
+        return current;
+    }
+    const u64 used = m.wired + m.compressor;
+    const u64 available = m.total > used + Reserve ? m.total - used - Reserve : 0;
+    const u64 ceiling = std::max(available, Floor);
+    const u64 budget = std::min(current, ceiling);
+    // One line when the result moves by 1 GiB or more, the same way the budget line above is
+    // rate-limited, with every input on it: which of the two numbers is binding is the first thing
+    // to ask of a run.
+    static std::atomic<u64> printed{0};
+    const auto moved = [](u64 a, u64 b) { return (a > b ? a - b : b - a) >= (u64{1} << 30); };
+    u64 last = printed.load(std::memory_order_relaxed);
+    if (moved(last, budget) &&
+        printed.compare_exchange_strong(last, budget, std::memory_order_relaxed)) {
+        std::printf("GPU: memory budget %llu MiB (reserve: hw.memsize %llu MiB, less %llu MiB "
+                    "wired and %llu MiB compressor, less %llu MiB reserve = %llu MiB, floor "
+                    "%llu MiB; the port's own budget %llu MiB, so %s)\n",
+                    (unsigned long long)(budget >> 20), (unsigned long long)(m.total >> 20),
+                    (unsigned long long)(m.wired >> 20), (unsigned long long)(m.compressor >> 20),
+                    (unsigned long long)(Reserve >> 20), (unsigned long long)(available >> 20),
+                    (unsigned long long)(Floor >> 20), (unsigned long long)(current >> 20),
+                    budget < current ? "the reserve is the binding one" : "the port's budget is");
+        std::fflush(stdout);
+    }
+    return budget;
+}
+
 /// bbport (macOS): the Mac's memory is shared by the CPU and the GPU, and Metal's limit (the
 /// heap size, recommendedMaxWorkingSetSize, ~75% of the Mac's memory) is for everything this
 /// process has, not for the GPU alone. The game's direct memory (5-9 GB), its heap, Rosetta and
@@ -720,6 +809,9 @@ u64 Instance::GetDeviceMemoryBudgetNow() const {
         gpu_usage += budget.heapUsage[heap];
     }
     total = UnifiedMemoryBudget(total, gpu_usage);
+    if (BudgetReserveOn()) {
+        total = ReserveAwareBudget(total);
+    }
 #else
     for (const u32 heap : counted_heaps) {
         total += budget.heapBudget[heap];

@@ -9,6 +9,7 @@
 
 #include "common/assert.h"
 #include "vulkan/instance.h"
+#include "vulkan/play_state.h"
 #include "vulkan/timeline.h"
 
 #ifdef __APPLE__
@@ -60,6 +61,7 @@ u64 FootprintBytes() {
 struct TrimGate {
     bool read = false;
     bool on = false;
+    bool load_only = false;
     double secs = 0.0;
     std::chrono::steady_clock::time_point next{};
     u64 rounds = 0;
@@ -75,7 +77,14 @@ bool GateOn() {
     if (gate.on) {
         gate.secs = std::atof(value);
         gate.next = std::chrono::steady_clock::now();
-        std::printf("PROBE TRIM: BB_KK_TRIM_POOL on, every %g s\n", gate.secs);
+        // BB_KK_TRIM_LOADONLY=1 (extension of the same gate): <secs> stays the *minimum* spacing,
+        // but a trim only happens on a Commit where the engine is not mid-play — it stays armed
+        // and fires at the first such moment (title, menu, load, stall). See play_state.h for why
+        // that is where the bytes are cheapest to take back.
+        gate.load_only = PlayState::Enabled();
+        std::printf("PROBE TRIM: BB_KK_TRIM_POOL on, every %g s%s\n", gate.secs,
+                    gate.load_only ? ", waiting for a frame that is not play (BB_KK_TRIM_LOADONLY)"
+                                   : "");
         std::fflush(stdout);
     }
     gate.read = true;
@@ -157,6 +166,15 @@ void CommandPool::MaybeTrim(u64 done) {
     if (now < gate.next) {
         return;
     }
+    // bbport (BB_KK_TRIM_LOADONLY): the interval has passed — that is the earliest this may run,
+    // not when it must. A trim during play is what cost the 5 s version its 73-88 ms frames, so
+    // wait: gate.next is not advanced until a trim actually happens, so the pool stays armed and
+    // this fires at the first Commit that is not inside a playing frame.
+    const double frame_ms = PlayState::LastFrameMs();
+    const u64 draws = PlayState::LastDraws();
+    if (gate.load_only && PlayState::MidPlay()) {
+        return;
+    }
     gate.next = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                           std::chrono::duration<double>(gate.secs));
 
@@ -191,11 +209,25 @@ void CommandPool::MaybeTrim(u64 done) {
     const u64 after = FootprintBytes();
     constexpr u64 MiB = 1u << 20;
     ++gate.rounds;
-    std::printf("PROBE TRIM %llu: pool trimmed, buffers freed %u, entries %zu->%zu, "
-                "footprint %llu->%llu MiB (delta %lld MiB)\n",
-                (unsigned long long)gate.rounds, unsigned(idle.size()), before_entries,
-                entries.size(), (unsigned long long)(before / MiB), (unsigned long long)(after / MiB),
-                (long long)((std::int64_t(after) - std::int64_t(before)) / std::int64_t(MiB)));
+    if (gate.load_only) {
+        std::printf("PROBE TRIM %llu: pool trimmed, buffers freed %u, entries %zu->%zu, "
+                    "footprint %llu->%llu MiB (delta %lld MiB) [not play: last frame %.0f ms, "
+                    "%.0f draws/frame]\n",
+                    (unsigned long long)gate.rounds, unsigned(idle.size()), before_entries,
+                    entries.size(), (unsigned long long)(before / MiB),
+                    (unsigned long long)(after / MiB),
+                    (long long)((std::int64_t(after) - std::int64_t(before)) /
+                                std::int64_t(MiB)),
+                    frame_ms, double(draws));
+    } else {
+        std::printf("PROBE TRIM %llu: pool trimmed, buffers freed %u, entries %zu->%zu, "
+                    "footprint %llu->%llu MiB (delta %lld MiB)\n",
+                    (unsigned long long)gate.rounds, unsigned(idle.size()), before_entries,
+                    entries.size(), (unsigned long long)(before / MiB),
+                    (unsigned long long)(after / MiB),
+                    (long long)((std::int64_t(after) - std::int64_t(before)) /
+                                std::int64_t(MiB)));
+    }
     std::fflush(stdout);
 }
 
