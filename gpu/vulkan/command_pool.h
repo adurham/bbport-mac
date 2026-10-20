@@ -28,6 +28,12 @@ private:
     };
     void Grow();
 
+    /// bbport (BB_KK_TRIM_POOL): free the buffers the GPU is done with and trim the pool, so
+    /// KosmicKrisp destroys the per-command-buffer MTL4CommandAllocators behind them. `done` is
+    /// the same GPU-completion tick this pool already trusts for reuse, so nothing in flight is
+    /// touched. Off unless the gate is set; see the .cpp for why trim alone is not enough.
+    void MaybeTrim(u64 done);
+
     const Instance& instance;
     Semaphore* timeline;
     vk::UniqueCommandPool pool;
