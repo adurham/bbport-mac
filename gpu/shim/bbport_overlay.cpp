@@ -646,8 +646,9 @@ void Menu() {
         "До 1 — резкость самого апскейлера (RCAS). Выше 1 добавляется ещё один проход RCAS. "
         "Ctrl+клик по ползунку — ввести точное значение."));
     ImGui::EndDisabled();
-    // Frame generation: hidden until its artifacts are fixed (BB_FRAME_GEN=1 for tests).
-    if (std::getenv("BB_FRAME_GEN")) {
+    // Frame generation: a normal setting (docs/FRAME_GEN_STAGE1.md measured the generator's output
+    // to be the identity on its input, so the earlier hide-until-fixed gate is gone).
+    {
         ImGui::BeginDisabled(!s.frame_generation_supported.load(std::memory_order_relaxed));
         Checkbox(BbSettings::MenuText("Frame generation (FSR 3)", "Генерация кадров (FSR 3)"),
                  s.frame_generation);

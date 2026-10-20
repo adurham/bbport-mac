@@ -362,9 +362,9 @@ void Load() {
         // BB_VSYNC first: BB_PRESENT_MODE (the launcher's, more specific) wins when both are set.
         {"BB_VSYNC", "vsync"},                     {"BB_PRESENT_MODE", "present_mode"},
     };
-    // Frame generation is hidden in the menu until its artifacts are fixed: only BB_FRAME_GEN turns
-    // it on, a saved setting does not.
-    v.frame_generation = false;
+    // Frame generation is a normal setting now: the ini key or BB_FRAME_GEN turns it on (the
+    // artefacts the menu gate was waiting for were measured away - the FI's output is the identity
+    // on its input, see docs/FRAME_GEN_STAGE1.md).
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env)) {
             Set(v, key, value);
