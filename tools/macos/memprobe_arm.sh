@@ -29,6 +29,17 @@ sandbox=$PWD/out/memprobe-data
 warm_user=$PWD/out/warm_user
 log=$PWD/out/last-run.log
 
+# wired and compressor, MiB: what the reserve formula reads (vm_stat's own pages).
+machine_mem() {
+    vm_stat | awk '
+        /page size of/ { ps = $8 }
+        /^Pages wired down/ { gsub(/\./, "", $4); w = $4 }
+        /^Pages occupied by compressor/ { gsub(/\./, "", $5); c = $5 }
+        /^Pages free/ { gsub(/\./, "", $3); f = $3 }
+        /^Pages inactive/ { gsub(/\./, "", $3); i = $3 }
+        END { printf "wired %.0f MiB, compressor %.0f MiB, free+inactive %.0f MiB", w*ps/1048576, c*ps/1048576, (f+i)*ps/1048576 }'
+}
+
 free_gib() {
     vm_stat | awk '
         /page size of/ { ps = $8 }
@@ -47,13 +58,14 @@ free_before=$(free_gib)
     printf 'seconds:   %s\n' "$secs"
     printf 'watchdog:  footprint > %s MiB or free+inactive < %s MiB\n' \
         "${BB_WATCH_FOOTPRINT_MIB:-19456}" "${BB_WATCH_FREE_MIB:-2048}"
-    printf 'gates:     BB_KK_TRIM_POOL=%s BB_KK_TRIM_LOADONLY=%s BB_MEM_BUDGET_RESERVE=%s\n' \
+    printf 'gates:     BB_KK_TRIM_POOL=%s BB_KK_TRIM_LOADONLY=%s BB_MEM_BUDGET_RESERVE=%s BB_RENDERER_SHARE_CAP=%s BB_CONFIG=%s\n' \
         "${BB_KK_TRIM_POOL:-<unset>}" "${BB_KK_TRIM_LOADONLY:-<unset>}" \
-        "${BB_MEM_BUDGET_RESERVE:-<unset>}"
+        "${BB_MEM_BUDGET_RESERVE:-<unset>}" "${BB_RENDERER_SHARE_CAP:-<unset>}" "${BB_CONFIG:-<unset>}"
     printf 'vram cap:  BB_VRAM_LIMIT_MB=%s (must be unset in this batch)\n' \
         "${BB_VRAM_LIMIT_MB:-<unset>}"
     printf 'extra env: %s\n' "$*"
     printf 'free+inactive before: %s GiB\n' "$free_before"
+    printf 'machine before: %s\n' "$(machine_mem)"
 } | tee "$out/$tag-meta.txt"
 
 csv=$out/$tag-samples.csv
@@ -89,6 +101,7 @@ free_after=$(free_gib)
 {
     printf 'run end: %s status %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$status"
     printf 'free+inactive after: %s GiB\n' "$free_after"
+    printf 'machine after: %s\n' "$(machine_mem)"
 } | tee -a "$out/$tag-meta.txt"
 
 python3 tools/macos/memprobe_arm_report.py "$tag"

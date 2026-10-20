@@ -44,6 +44,16 @@ RE_RESERVE = re.compile(
     r"the port's own budget (\d+) MiB"
 )
 RE_TRIM = re.compile(r"PROBE TRIM (\d+): .*delta (-?\d+) MiB")
+RE_GOV = re.compile(
+    r"GPU: memory governor: budget (\d+) MiB, target (\d+) MiB, bound (\w+); renderer's share "
+    r"(\d+) MiB, driver's own (\d+) MiB; images (\d+) MiB, referenced in the last 3 frames (\d+) "
+    r"MiB \((\d+) images\), floor (\d+) MiB; evicted while referenced in the last 2 frames (\d+) "
+    r"\(refused (\d+), evicted (\d+)\); machine wired (\d+) MiB, compressor (\d+) MiB, "
+    r"free\+inactive (\d+) MiB, reserve bound (\d+) MiB"
+)
+RE_GOV_BUDGET = re.compile(r"GPU: memory budget (\d+) MiB \(governor: ([^;]+);")
+RE_KK_HEAPS = re.compile(r"KosmicKrisp: heaps \d+ live, \d+ MiB \(created (\d+),")
+RE_DUMP = re.compile(r"KosmicKrisp allocator dump.*")
 
 
 def median(values):
@@ -189,6 +199,54 @@ def main():
         metrics["trim_delta_min_mib"] = min(deltas)
     metrics["loadonly_lines"] = sum(1 for line in lines if "not play: last frame" in line)
 
+    # Memory governor (renderer_share_cap / BB_MEM_BUDGET_RESERVE): one status line per 10 s.
+    gov = [m.groups() for m in RE_GOV.finditer(log)]
+    if gov:
+        g = [(int(a), int(b), c, *map(int, rest)) for a, b, c, *rest in gov]
+        renderer = [x[3] for x in g]
+        n = len(g)
+        bounds = {}
+        for x in g:
+            bounds[x[2]] = bounds.get(x[2], 0) + 1
+        metrics["governor"] = {
+            "lines": n,
+            "budget_first_mib": g[0][0],
+            "budget_last_mib": g[-1][0],
+            "budget_min_mib": min(x[0] for x in g),
+            "budget_max_mib": max(x[0] for x in g),
+            "bound_counts": bounds,
+            "renderer_share_median_mib": median(renderer),
+            "renderer_share_max_mib": max(renderer),
+            "driver_share_median_mib": median([x[4] for x in g]),
+            "driver_share_last_mib": g[-1][4],
+            "referenced_mib_median": median([x[6] for x in g]),
+            "referenced_mib_max": max(x[6] for x in g),
+            "floor_mib_max": max(x[8] for x in g),
+            "evicted_referenced_last": g[-1][9],
+            "refused_referenced_last": g[-1][10],
+            "evicted_total_last": g[-1][11],
+            "machine_start": {"wired": g[0][12], "compressor": g[0][13], "free_inactive": g[0][14]},
+            "machine_mid": {"wired": g[n // 2][12], "compressor": g[n // 2][13],
+                            "free_inactive": g[n // 2][14]},
+            "machine_end": {"wired": g[-1][12], "compressor": g[-1][13],
+                            "free_inactive": g[-1][14]},
+            "reserve_bound_min_mib": min(x[15] for x in g),
+            "reserve_bound_max_mib": max(x[15] for x in g),
+        }
+        metrics["governor_binding_lines"] = [m.group(2) for m in RE_GOV_BUDGET.finditer(log)]
+        metrics["floor_warnings"] = [l.strip() for l in lines if "budget at floor" in l]
+    heaps = [int(x) for x in RE_KK_HEAPS.findall(log)]
+    if len(heaps) >= 2:
+        # Heaps created per second over the run (10 s stats cadence).
+        metrics["kk_heaps_created_per_s"] = round((heaps[-1] - heaps[0]) / (10.0 * (len(heaps) - 1)), 2)
+    images_all = [int(m) for m in re.findall(r"images (\d+), image views", log)]
+    if images_all:
+        metrics["images_live_min"] = min(images_all[6:] or images_all)
+        metrics["images_live_max"] = max(images_all)
+    if fps:
+        metrics["fps_last30_median"] = median(fps[-30:])
+    metrics["alloc_dump"] = RE_DUMP.findall(log)[:40]
+
     path = OUT / f"{tag}-metrics.json"
     path.write_text(json.dumps(metrics, indent=2) + "\n")
 
@@ -232,6 +290,17 @@ def main():
         f"{get('images_settled_max')}, swing median {get('image_swing_median_pct')}% max "
         f"{get('image_swing_max_pct')}%; free+inactive min {get('free_inactive_min_mib')} MiB"
     )
+    if "governor" in metrics:
+        g = metrics["governor"]
+        print(
+            f"governor: budget {g['budget_first_mib']}->{g['budget_last_mib']} (min {g['budget_min_mib']}),"
+            f" bounds {g['bound_counts']}; renderer's share median {g['renderer_share_median_mib']} max"
+            f" {g['renderer_share_max_mib']}; driver's {g['driver_share_median_mib']}; referenced"
+            f" {g['referenced_mib_median']} MiB median; evicted-while-referenced"
+            f" {g['evicted_referenced_last']} (refused {g['refused_referenced_last']}, evicted"
+            f" {g['evicted_total_last']}); floor warnings {len(metrics['floor_warnings'])}"
+        )
+    print(f"heaps created/s {get('kk_heaps_created_per_s')}, fps last-30 {get('fps_last30_median')}")
     print(f"metrics -> {path}")
 
 
