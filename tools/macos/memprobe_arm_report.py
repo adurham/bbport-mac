@@ -199,6 +199,23 @@ def main():
         metrics["trim_delta_min_mib"] = min(deltas)
     metrics["loadonly_lines"] = sum(1 for line in lines if "not play: last frame" in line)
 
+    # The renderer's share TIME-WEIGHTED: the last value any budget/governor line reported, carried
+    # into each 5 s Frame stats window. The budget lines only print on a 1 GiB move, so a median over
+    # the lines themselves over-weights the load (the 2026-10-20 arm B "4431 median" was that).
+    cur, tw = None, []
+    for line in lines:
+        m = re.search(r"of it (\d+) MiB the renderer's", line) or re.search(
+            r"renderer's share (\d+) MiB", line)
+        if m:
+            cur = int(m.group(1))
+        if "Frame stats:" in line and cur is not None:
+            tw.append(cur)
+    if tw:
+        metrics["renderer_share_tw_median_mib"] = median(tw)
+        metrics["renderer_share_tw_median_120_300_mib"] = median(tw[24:60]) if len(tw) > 24 else None
+        metrics["renderer_share_tw_max_mib"] = max(tw)
+    evict_copies = re.findall(r"vram idle (\d+)", log)
+
     # Memory governor (renderer_share_cap / BB_MEM_BUDGET_RESERVE): one status line per 10 s.
     gov = [m.groups() for m in RE_GOV.finditer(log)]
     if gov:
@@ -300,7 +317,9 @@ def main():
             f" {g['evicted_referenced_last']} (refused {g['refused_referenced_last']}, evicted"
             f" {g['evicted_total_last']}); floor warnings {len(metrics['floor_warnings'])}"
         )
-    print(f"heaps created/s {get('kk_heaps_created_per_s')}, fps last-30 {get('fps_last30_median')}")
+    print(f"heaps created/s {get('kk_heaps_created_per_s')}, fps last-30 {get('fps_last30_median')}, "
+          f"renderer's share time-weighted median {get('renderer_share_tw_median_mib')} "
+          f"(120-300 s {get('renderer_share_tw_median_120_300_mib')}, max {get('renderer_share_tw_max_mib')})")
     print(f"metrics -> {path}")
 
 

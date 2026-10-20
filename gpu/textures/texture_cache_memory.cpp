@@ -202,7 +202,13 @@ void TextureCache::GarbageCollectImages() {
     const u64 second = SteadySeconds();
     if (second != gc_second) {
         gc_second = second;
-        if (instance.CanReportMemoryUsage() && !instance.IsIntegrated()) {
+        // bbport (memory governor): on integrated GPUs too while a budget gate is on. Most of the
+        // renderer's share on the Mac is guest-memory copies (the buffer cache), not images, and
+        // only this path makes the buffer cache give idle copies back (ProcessIdleBlocks:
+        // VramShort -> EvictIdleCopies), so without it a cap only ever reaches the ~0.5 GiB of
+        // images. The images in use stay protected by the referenced-in-the-last-2-frames guard.
+        if (instance.CanReportMemoryUsage() &&
+            (!instance.IsIntegrated() || Vulkan::MemoryGovernor::On())) {
             const u64 budget = instance.GetDeviceMemoryBudgetNow();
             if (budget != 0 && total_used_memory >= budget / 100 * 92 &&
                 vram_short_until.load(std::memory_order_relaxed) < second + 2) {
