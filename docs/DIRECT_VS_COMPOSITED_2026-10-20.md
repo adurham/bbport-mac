@@ -1,70 +1,57 @@
-# Direct vs composited on the AW3425DW: measured, and why it stays composited (2026-10-20)
+# Direct vs composited on the AW3425DW — attempt 1 is VOID (2026-10-20)
 
-## The question
+## Result of attempt 1: both arms were composited
 
-The owner's desktop runs the AW3425DW through **BetterDisplay's colour filter** (brightness 1.25,
-gamma -0.25, saturation 0.95, temperature -0.02 — `~/bin/display-hdr-desktop`, the approved
-"gold" look). BetterDisplay implements those values as a full-screen compositor pass, its window
-`BetterDisplay Compositor Filter Overlay for Display 3` at level 2147483629, alpha 1.00, covering
-3440x1440. While that overlay exists, WindowServer composites every frame of everything on that
-display, so the port's Metal layer can never take the direct scan-out path (Metal HUD: **Composited**).
+The owner watched the Metal HUD during both runs: **run 2 was not Direct either.** The two arms
+therefore measured the same path, and the 0.33 ms p50 difference between them is run-to-run noise,
+not the cost of compositing. Nothing about compositing is established by attempt 1.
 
-So: what does composited actually cost, and is it worth dropping the filter for?
+Keep the raw data (`out/direct-ab/frames-ab1.csv`, `frames-ab2.csv`, `run-ab1.out`, `run-ab2.out`)
+only as a matched-pair noise floor: two identical runs of the same spot agree to 0.4 ms p50, 0.4 ms
+p99 and 0.5 ms worst frame. That is the resolution any future A/B has to beat.
 
-## What was measured, and how
+## Why run 2 was still composited: the harness, not the display path
 
-Two identical visible, fullscreen runs of the port, driven by a scripted pad (`BB_PAD_FILE`, the
-same mechanism `tools/macos/warm_route.sh` uses): press the title's Continue until the run's log
-shows the area, then stand still 60 s at the lamp with no input. Same settings both runs:
-3440x1440 output, `window_mode=fullscreen`, `fullscreen_mode=exclusive` (panel on mode 727,
-1x 3440x1440 @120, 1:1 scanout), upscaler **off** and frame generation **off** (so the signal is
-the compositing path and not the FSR stack; 1,483 draws/frame, GPU-bound at ~26.5 fps).
+The A/B was driven directly through `tools/macos/run.sh`, which reads the **checkout's** `bbport.ini`,
+while the owner launches through the app, which reads
+`~/Library/Application Support/bbport/bbport.ini`. Those two files drift — the documented pitfall —
+and the key that matters here is `layer_opaque`: the app's ini has `layer_opaque=1`, the checkout's
+does not.
 
-Only variable: the BetterDisplay filter.
+The consequence is in the logs, plainly:
 
-| | composited (filter on) | direct (filter neutralised) | delta |
-|---|---|---|---|
-| frame_ms p50 | 37.79 | 37.46 | **-0.33** |
-| frame_ms mean | 37.78 | 37.49 | -0.29 |
-| frame_ms p90 | 38.60 | 38.22 | -0.38 |
-| frame_ms p99 | 39.41 | 39.04 | -0.37 |
-| frame_ms max | 40.45 | 39.94 | -0.51 |
-| present_wait p50 | 21.00 | 21.00 | 0.00 |
-| gpu_idle p50 | 0.07 | 0.06 | -0.01 |
-| draws/frame p50 | 1484 | 1483 | matched |
+| | boot layer dump | `Layer check (+4 s)` |
+|---|---|---|
+| attempt-1 runs (run.sh, checkout ini) | `opaque 1` (override applied at boot) | **`opaque 0`** |
+| owner's app run 15:17 (app ini) | `opaque 1` | `opaque 1 (as overridden)` |
 
-Frames: 1,800 per arm, taken from the standing window (the last 1,800 frames with >=500 draws/frame
-in each run). Raw data: `out/direct-ab/frames-ab1.csv`, `frames-ab2.csv`, runs `run-ab1.out`,
-`run-ab2.out`.
+A non-opaque layer cannot be scanned out directly; WindowServer must composite it. So both attempt-1
+arms were composited by configuration, and the BetterDisplay filter was not the variable under test
+at all.
 
-## Verdict
+## What attempt 1 does prove
 
-**The compositing pass costs under half a millisecond of frame time** — 0.33 ms at p50, 0.37 ms at
-p99 — and it is systematic (every percentile and the worst frame move the same way), not noise: the
-two runs otherwise agree to 0.4 ms across 1,800 frames.
+- **The layer dump's `fullscreen` field is not the SDL fullscreen flag.** All four runs logged
+  `Window: fullscreen flag 1` at entry and after the switch, and every layer dump read
+  `fullscreen 0`. Whatever that field reports, it does not discriminate the paths — stop using it as
+  the Direct/Composited tell.
+- **The Metal HUD is the only reliable tell.** It disagreed with the logs twice today.
+- The composited baseline is stable to ~0.4 ms across 1,800 frames per run, at 1,483 draws/frame,
+  `window_mode=fullscreen`, `fullscreen_mode=exclusive`, panel on mode 727 (1x 3440x1440 @120,
+  1:1 scanout), upscaler and frame generation off, 26.5 fps.
 
-That is below the 1 ms line the owner set for "worth doing anything about". So the colour filter
-stays on and the game stays composited for now.
+## Attempt 2 — the harness fix
 
-## Caveats, stated so a later reader does not over-read this
+Before any further comparison:
 
-- **This measures throughput, not latency.** The frame is paced by a 21 ms vblank wait, so one extra
-  compositing stage is largely hidden inside it. Direct scan-out still removes a stage from the
-  input-to-photon path; nothing in this tree measures that, so the latency claim is unmeasured here,
-  not disproven.
-- **The layer dump's `fullscreen` field is not the SDL fullscreen flag.** Both runs logged
-  `Window: fullscreen flag 1` at entry and after the switch, and both layer dumps read
-  `fullscreen 0`. Whatever that field reports, it does not discriminate the two paths — the overlay
-  did. Do not use it as the Direct/Composited tell; the Metal HUD is the tell.
-- The FSR stack was off for both arms. With the upscaler and frame generation on the frame is
-  ~16 ms instead of ~38 ms, so the compositing share per second roughly halves; if it is 0.33 ms at
-  26.5 fps it is not going to grow at 60.
-- Both arms are the same single spot in the same area, standing still. Combat, streaming and
-  cutscenes were not sampled.
+1. Drive the runs with the **app's** settings, not the checkout's: copy
+   `~/Library/Application Support/bbport/bbport.ini` over the checkout's copy (or export
+   `BB_LAYER_OPAQUE=1` and every other key the app sets) and assert `opaque 1` at the `Layer check`
+   line before trusting the run.
+2. Verify **per run, from the HUD**, that the intended path was reached: Composited for arm A,
+   Direct for arm B. A run that does not reach its arm is discarded, not averaged.
+3. Only then compare; anything under the 0.4 ms matched-pair floor is noise.
 
-## What would change the answer
-
-A game-side equivalent of the filter: the same brightness/gamma/saturation in the port's present
-shader, so the BetterDisplay filter can stay off permanently and the desktop look lives somewhere
-that does not own the compositor. That is real work for ~0.4 ms unless the latency matters more than
-this measurement says.
+The BetterDisplay question (does its compositor filter force compositing?) is still open and still
+plausible — it was simply not isolated, because layer opacity already forced compositing in both
+arms.
