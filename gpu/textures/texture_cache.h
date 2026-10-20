@@ -359,6 +359,16 @@ private:
     u64 gc_second = 0;
     std::array<u64, 64> gc_tick_at_second{}; ///< gc_tick at each of the last 64 seconds
     u64 gc_evictions = 0, gc_downloads = 0;  ///< since the last pressure report
+    /// bbport (memory governor guards): gc_tick at the first collection of each of the last frames
+    /// ([0] the current one), from BbStats::gpu_frames. An image touched at or after frame_ticks[1]
+    /// was referenced in the last two frames; at or after frame_ticks[2], in the last three.
+    std::array<u64, 3> frame_ticks{};
+    u64 frame_seen = 0;
+    u64 referenced_second = 0; ///< when the referenced set was last published
+    bool ReferencedInLastFrames(const Image& image, u32 frames) const {
+        return image.lru_touched_tick != ~0ull && image.lru_touched_tick >= frame_ticks[frames - 1];
+    }
+    void PublishReferencedImages();
     std::chrono::steady_clock::time_point gc_report_time{};
     static inline std::atomic<u64> vram_short_until{0}; ///< steady seconds
 

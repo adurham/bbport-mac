@@ -13,6 +13,7 @@
 #include "core/memory.h"
 #include "buffers/buffer_cache.h"
 #include "vulkan/instance.h"
+#include "vulkan/memory_governor.h"
 #include "render/runtime.h"
 #include "render/scheduler.h"
 
@@ -185,6 +186,13 @@ void TextureCache::GarbageCollectImages() {
             }
         }
     }
+    // bbport (memory governor): the frame boundaries in collector ticks, for the in-use guards.
+    if (const u64 frame = BbStats::gpu_frames.load(std::memory_order_relaxed); frame != frame_seen) {
+        frame_seen = frame;
+        frame_ticks[2] = frame_ticks[1];
+        frame_ticks[1] = frame_ticks[0];
+        frame_ticks[0] = gc_tick;
+    }
     BbStats::gc_used_bytes.store(total_used_memory, std::memory_order_relaxed);
     BbStats::gc_trigger_bytes.store(trigger_gc_memory, std::memory_order_relaxed);
     BbStats::gc_critical_bytes.store(critical_gc_memory, std::memory_order_relaxed);
@@ -202,6 +210,10 @@ void TextureCache::GarbageCollectImages() {
             }
         }
         BbStats::coarse_second.store(u32(second), std::memory_order_relaxed);
+        if (Vulkan::MemoryGovernor::On() && second != referenced_second) {
+            referenced_second = second;
+            PublishReferencedImages();
+        }
         gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
     }
     if (BbToggle::Disabled(BbToggle::TextureCollector) || total_used_memory < trigger_gc_memory) {
@@ -246,6 +258,15 @@ void TextureCache::GarbageCollectImages() {
             return true;
         }
         Image& image = slot_images[image_id];
+        // bbport (memory governor): an image referenced in the last two frames is in use; with a
+        // budget gate on it is never evicted, whatever the marks say (and it does not use up the
+        // deletions: the walk moves on to an older one).
+        const bool referenced = ReferencedInLastFrames(image, 2);
+        if (referenced && Vulkan::MemoryGovernor::On()) {
+            lru_cache.Touch(image.lru_id, gc_tick);
+            Vulkan::MemoryGovernor::refused_referenced.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
         const bool write_back = image.SafeToDownload();
         // Images that cannot go now (tiled GPU-written ones cannot be written back; GPU-written
         // ones only under pressure) neither use up the deletions nor stay first in line: the
@@ -264,6 +285,10 @@ void TextureCache::GarbageCollectImages() {
         }
         ++gc_evictions;
         BbStats::gc_freed_images.fetch_add(1, std::memory_order_relaxed);
+        Vulkan::MemoryGovernor::evicted_total.fetch_add(1, std::memory_order_relaxed);
+        if (referenced) {
+            Vulkan::MemoryGovernor::evicted_referenced.fetch_add(1, std::memory_order_relaxed);
+        }
         FreeImage(image_id);
         if (total_used_memory < critical_gc_memory) {
             if (aggressive) {
@@ -304,6 +329,32 @@ void TextureCache::GarbageCollectImages() {
             gc_evictions = gc_downloads = 0;
         }
     }
+}
+
+/// bbport (memory governor): the bytes of the images the last three frames referenced, and of all
+/// registered images, for the budget's floor (vulkan/instance.cpp GovernedBudget). Host sizes of the
+/// images' VkImage allocations; once a second, ~1000 images walked under the cache's lock.
+void TextureCache::PublishReferencedImages() {
+    std::scoped_lock lock{mutex};
+    u64 all = 0, referenced = 0, count = 0;
+    for (const Image& image : slot_images) {
+        if (False(image.flags & ImageFlagBits::Registered)) {
+            continue;
+        }
+        u64 bytes = 0;
+        for (const auto& backing : image.backing_images) {
+            bytes += backing.image.size_bytes;
+        }
+        all += bytes;
+        if (ReferencedInLastFrames(image, 3)) {
+            referenced += bytes;
+            ++count;
+        }
+    }
+    Vulkan::MemoryGovernor::image_bytes.store(all, std::memory_order_relaxed);
+    Vulkan::MemoryGovernor::referenced_image_bytes.store(referenced, std::memory_order_relaxed);
+    Vulkan::MemoryGovernor::referenced_images.store(count, std::memory_order_relaxed);
+    Vulkan::MemoryGovernor::referenced_published.store(true, std::memory_order_relaxed);
 }
 
 void TextureCache::GarbageCollectSamplers() {

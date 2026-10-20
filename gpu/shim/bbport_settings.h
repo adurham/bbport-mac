@@ -150,6 +150,11 @@ struct Values {
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};
     std::atomic<int> model_lod{0}; ///< -2 highest .. 2 lowest, 0 the game's
+    /// bbport (macOS memory governor, vulkan/instance.cpp): an upper bound, in MiB, on the GPU memory
+    /// budget the texture collector works to, i.e. on the renderer's own share of graphics memory
+    /// (0 = off, the default). Read once when the GPU device is created; bbport.ini only (the
+    /// menu does not write it), BB_RENDERER_SHARE_CAP overrides.
+    std::atomic<int> renderer_share_cap{0};
     std::atomic<int> aspect{AspectAuto};
     /// The chosen output resolution (PackSize; CurrentOutput fits it to the aspect ratio).
     std::atomic<std::uint32_t> output_res{PackSize(OutputDefault)};

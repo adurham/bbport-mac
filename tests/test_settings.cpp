@@ -124,7 +124,25 @@ int main() {
     assert(SizeIs(BbSettings::CurrentOutput(), 3440, 1440));
     assert(BbSettings::Outputs(s.aspect).IndexOf(BbSettings::CurrentOutput()) >= 0);
 
+    // renderer_share_cap (the memory governor's cap, MiB): off unless bbport.ini or
+    // BB_RENDERER_SHARE_CAP sets it, and the menu's Save never writes it.
+    assert(s.renderer_share_cap == 0);
+    {
+        FILE* f = std::fopen(path, "a");
+        assert(f);
+        std::fputs("renderer_share_cap=5120\n", f);
+        std::fclose(f);
+    }
+    BbSettings::Load();
+    assert(s.renderer_share_cap == 5120);
+    setenv("BB_RENDERER_SHARE_CAP", "6144", 1);
+    BbSettings::Load();
+    assert(s.renderer_share_cap == 6144);
+    unsetenv("BB_RENDERER_SHARE_CAP");
+    BbSettings::Save();
+    assert(Read(path).find("renderer_share_cap=5120\n") != std::string::npos); // kept, not rewritten
+
     unlink(path);
     std::puts("PASS: settings save keeps other keys, menu position, menu language, fullscreen_mode, "
-              "aspect-to-output");
+              "aspect-to-output, renderer_share_cap");
 }

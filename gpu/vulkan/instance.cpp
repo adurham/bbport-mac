@@ -11,16 +11,19 @@
 #ifdef __APPLE__
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <mach/vm_statistics.h>
 #include <sys/sysctl.h>
 #endif
 
+#include "bbport_settings.h"
 #include "bbport_toggles.h"
 #include "render/gcn_to_vk.h"
 #include "sdl_window.h"
 #include "upscale/vk_dlss.h"
+#include "vulkan/memory_governor.h"
 
 namespace Vulkan {
 
@@ -642,14 +645,15 @@ u64 Instance::GetDeviceMemoryUsage() const {
 }
 
 #ifdef __APPLE__
-/// bbport (BB_MEM_BUDGET_RESERVE): whether the budget is the reserve-aware ceiling below.
+/// bbport (BB_MEM_BUDGET_RESERVE): whether the reserve bound below is one of the governor's bounds.
 bool BudgetReserveOn() {
     static const bool on = [] {
         const char* env = std::getenv("BB_MEM_BUDGET_RESERVE");
         const bool set = env != nullptr && *env != '\0' && !(env[0] == '0' && env[1] == '\0');
         if (set) {
-            std::printf("GPU: memory budget reserve on (BB_MEM_BUDGET_RESERVE): hw.memsize less "
-                        "wired and compressor pages, less a 6 GiB reserve, floored at 4 GiB\n");
+            std::printf("GPU: memory budget reserve on (BB_MEM_BUDGET_RESERVE): hw.memsize less the "
+                        "wired and compressor pages that are not this process's own graphics "
+                        "memory, less a 6 GiB reserve\n");
             std::fflush(stdout);
         }
         return set;
@@ -657,10 +661,27 @@ bool BudgetReserveOn() {
     return on;
 }
 
+/// bbport (renderer_share_cap in bbport.ini, MiB; BB_RENDERER_SHARE_CAP): a hard upper bound on the
+/// budget, i.e. on the renderer's own share of graphics memory. 0 = off (the shipped default).
+u64 RendererShareCap() {
+    static const u64 cap = [] {
+        const int mib = BbSettings::Get().renderer_share_cap.load(std::memory_order_relaxed);
+        if (mib > 0) {
+            std::printf("GPU: renderer share cap %d MiB (renderer_share_cap): the GPU memory "
+                        "budget never exceeds it\n",
+                        mib);
+            std::fflush(stdout);
+        }
+        return mib > 0 ? u64(mib) << 20 : 0;
+    }();
+    return cap;
+}
+
 struct MachineMemory {
     u64 total = 0;      ///< hw.memsize
     u64 wired = 0;      ///< wire_count * page size
     u64 compressor = 0; ///< compressor_page_count * page size
+    u64 free_inactive = 0;
     bool ok = false;
 };
 
@@ -687,45 +708,226 @@ MachineMemory ReadMachineMemory() {
     m.total = memsize;
     m.wired = u64(stats.wire_count) * u64(page);
     m.compressor = u64(stats.compressor_page_count) * u64(page);
+    m.free_inactive = (u64(stats.free_count) + u64(stats.inactive_count)) * u64(page);
     m.ok = true;
     return m;
 }
 
-/// The reserve-aware GPU budget: what the Mac can still hand out once a 6 GiB reserve is kept for
-/// the system (WindowServer, the guest, the compressor growing), floored at 4 GiB so the texture
-/// cache never collapses to a size that evicts images in use, and never above the port's own
-/// budget — this only ever takes budget away. Metal's limit is ~75% of the machine whatever else
-/// is running; this is the same question asked of the machine as it is now.
-u64 ReserveAwareBudget(u64 current) {
-    constexpr u64 Reserve = u64{6} << 30;
-    constexpr u64 Floor = u64{4} << 30;
-    const MachineMemory m = ReadMachineMemory();
-    if (!m.ok) {
-        return current;
+/// This process's graphics ledger (task_info ledger_tag_graphics_footprint + its compressed part),
+/// as UnifiedMemoryBudget last sampled it.
+std::atomic<u64> own_graphics_bytes{0};
+
+s64 SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+/// The memory governor (on with renderer_share_cap > 0 or BB_MEM_BUDGET_RESERVE=1).
+///
+/// target = min(the port's own budget, renderer_share_cap, the reserve bound), never under the
+/// floor, where
+///   reserve bound = hw.memsize - (wired + compressor - own graphics ledger) - 6 GiB.
+/// The first version of the reserve (2026-10-20 arm B) left out the own-graphics term: this
+/// process's ~14 GB of IOAccelerator memory is itself wired, so the bound counted our own usage
+/// against us and collapsed to its 4 GiB floor (grow -> wired grows -> budget shrinks). Taking the
+/// ledger back out leaves what everything ELSE on the Mac wires or compresses. The bound is the
+/// whole process's graphics allowance applied to the renderer's share, so it is a loose bound (by the
+/// driver's own share) that only binds under real pressure from other apps; the cap is the one meant
+/// to do the work.
+///
+/// floor = max(4 GiB, (the renderer's non-image allocations + the images referenced in the last
+/// three frames) / 0.85): the texture collector's pressure mark is 85% of the budget
+/// (texture_cache_memory.cpp, integrated GPUs), so holding only what the last frames used plus the
+/// buffers keeps the collector below its pressure mark — it cannot need to free an image in use.
+/// The collector also refuses outright to evict an image touched in the last two frames (the
+/// structural guard) and counts it.
+///
+/// Hysteresis: the system is sampled once a second (not per collector tick); the budget falls at
+/// most 256 MiB/s, and rises to the target only after 25 s of continuous slack — except to the
+/// floor, which it takes at once.
+u64 GovernedBudget(u64 port_budget, u64 gpu_usage) {
+    constexpr u64 MiB = u64{1} << 20;
+    constexpr u64 GiB = u64{1} << 30;
+    constexpr u64 Reserve = 6 * GiB;
+    constexpr u64 MinFloor = 4 * GiB;
+    constexpr u64 FallPerSecond = 256 * MiB;
+    constexpr s64 RaiseAfterNs = 25'000'000'000;
+    constexpr s64 SampleNs = 1'000'000'000;
+    static std::atomic<u64> cached{0};
+    static std::atomic<s64> next_sample_ns{0};
+    const s64 now = SteadyNs();
+    const u64 cached_budget = cached.load(std::memory_order_relaxed);
+    if (cached_budget != 0 && now < next_sample_ns.load(std::memory_order_relaxed)) {
+        return cached_budget;
     }
-    const u64 used = m.wired + m.compressor;
-    const u64 available = m.total > used + Reserve ? m.total - used - Reserve : 0;
-    const u64 ceiling = std::max(available, Floor);
-    const u64 budget = std::min(current, ceiling);
-    // One line when the result moves by 1 GiB or more, the same way the budget line above is
-    // rate-limited, with every input on it: which of the two numbers is binding is the first thing
-    // to ask of a run.
-    static std::atomic<u64> printed{0};
-    const auto moved = [](u64 a, u64 b) { return (a > b ? a - b : b - a) >= (u64{1} << 30); };
-    u64 last = printed.load(std::memory_order_relaxed);
-    if (moved(last, budget) &&
-        printed.compare_exchange_strong(last, budget, std::memory_order_relaxed)) {
-        std::printf("GPU: memory budget %llu MiB (reserve: hw.memsize %llu MiB, less %llu MiB "
-                    "wired and %llu MiB compressor, less %llu MiB reserve = %llu MiB, floor "
-                    "%llu MiB; the port's own budget %llu MiB, so %s)\n",
-                    (unsigned long long)(budget >> 20), (unsigned long long)(m.total >> 20),
-                    (unsigned long long)(m.wired >> 20), (unsigned long long)(m.compressor >> 20),
-                    (unsigned long long)(Reserve >> 20), (unsigned long long)(available >> 20),
-                    (unsigned long long)(Floor >> 20), (unsigned long long)(current >> 20),
-                    budget < current ? "the reserve is the binding one" : "the port's budget is");
+    static std::mutex mutex;
+    std::unique_lock lock{mutex, std::try_to_lock};
+    if (!lock.owns_lock()) {
+        if (cached_budget != 0) {
+            return cached_budget;
+        }
+        lock.lock();
+    }
+    if (cached.load(std::memory_order_relaxed) != 0 &&
+        now < next_sample_ns.load(std::memory_order_relaxed)) {
+        return cached.load(std::memory_order_relaxed);
+    }
+    next_sample_ns.store(now + SampleNs, std::memory_order_relaxed);
+
+    enum Bound : int { BoundPort, BoundCap, BoundReserve, BoundFloor };
+    static const char* const BoundNames[] = {"port", "cap", "reserve", "floor"};
+    static u64 current = 0;
+    static s64 last_ns = -1;
+    static s64 slack_since = -1;
+    static s64 floor_since = -1;
+    static bool floor_warned = false;
+    static u64 printed = 0;
+    static int printed_bound = -1;
+    static s64 printed_ns = 0;
+    static s64 status_ns = 0;
+
+    const u64 cap = RendererShareCap();
+    const bool reserve_on = BudgetReserveOn();
+    const MachineMemory m = ReadMachineMemory();
+    const u64 own = own_graphics_bytes.load(std::memory_order_relaxed);
+    const u64 machine_used = m.wired + m.compressor;
+    const u64 others = machine_used > own ? machine_used - own : 0;
+    const u64 reserve_bound =
+        m.ok ? (m.total > others + Reserve ? m.total - others - Reserve : 0) : port_budget;
+
+    u64 target = port_budget;
+    int bound = BoundPort;
+    if (reserve_on && m.ok && reserve_bound < target) {
+        target = reserve_bound;
+        bound = BoundReserve;
+    }
+    if (cap != 0 && cap < target) {
+        target = cap;
+        bound = BoundCap;
+    }
+    // The floor: what the last frames used, so the collector never has to touch it.
+    const u64 images = MemoryGovernor::image_bytes.load(std::memory_order_relaxed);
+    const u64 referenced = MemoryGovernor::referenced_image_bytes.load(std::memory_order_relaxed);
+    const u64 referenced_count = MemoryGovernor::referenced_images.load(std::memory_order_relaxed);
+    const u64 non_image = gpu_usage > images ? gpu_usage - images : 0;
+    const u64 in_use_floor = (non_image + referenced) / 85 * 100;
+    const u64 floor = std::max(MinFloor, in_use_floor);
+    const int below_floor_bound = bound; // what would bind if the floor did not
+    if (floor > target) {
+        target = floor;
+        bound = BoundFloor;
+    }
+
+    // Hysteresis.
+    if (current == 0) {
+        current = target;
+    } else if (target < current) {
+        const double dt = std::clamp(double(now - last_ns) / 1e9, 0.0, 5.0);
+        const u64 step = u64(double(FallPerSecond) * dt);
+        current = current > target + step ? current - step : target;
+        slack_since = -1;
+    } else if (target > current) {
+        if (floor > current) {
+            current = floor; // the in-use set is never waited for
+        }
+        if (target > current) {
+            if (slack_since < 0) {
+                slack_since = now;
+            } else if (now - slack_since >= RaiseAfterNs) {
+                current = target;
+                slack_since = -1;
+            }
+        }
+    } else {
+        slack_since = -1;
+    }
+    last_ns = now;
+    cached.store(current, std::memory_order_relaxed);
+
+    // At the floor for over 10 s: say whose pressure it is, once per episode.
+    const bool at_floor = bound == BoundFloor && current <= floor + 64 * MiB;
+    if (at_floor) {
+        if (floor_since < 0) {
+            floor_since = now;
+        } else if (!floor_warned && now - floor_since > 10'000'000'000) {
+            floor_warned = true;
+            if (below_floor_bound == BoundReserve) {
+                std::printf("GPU: memory pressure is from other apps (budget at floor %llu MiB)\n",
+                            (unsigned long long)(floor / MiB));
+            } else {
+                std::printf("GPU: memory governor: the images in use need more than the %s bound "
+                            "(budget at floor %llu MiB)\n",
+                            BoundNames[below_floor_bound], (unsigned long long)(floor / MiB));
+            }
+            std::fflush(stdout);
+        }
+    } else {
+        floor_since = -1;
+        floor_warned = false;
+    }
+
+    // One line per 1 GiB move (or a change of the binding bound, at most every 5 s), naming the
+    // bound: the same shape as the budget lines below.
+    const auto moved = [](u64 a, u64 b) { return (a > b ? a - b : b - a) >= GiB; };
+    if (moved(printed, current) || (bound != printed_bound && now - printed_ns >= 5'000'000'000)) {
+        char cap_text[32], reserve_text[160];
+        std::snprintf(cap_text, sizeof(cap_text), cap ? "%llu MiB" : "off",
+                      (unsigned long long)(cap / MiB));
+        if (reserve_on && m.ok) {
+            std::snprintf(reserve_text, sizeof(reserve_text),
+                          "hw.memsize %llu MiB less %llu MiB wired and %llu MiB compressor net of "
+                          "our own %llu MiB graphics, less %llu MiB = %llu MiB",
+                          (unsigned long long)(m.total / MiB), (unsigned long long)(m.wired / MiB),
+                          (unsigned long long)(m.compressor / MiB),
+                          (unsigned long long)(own / MiB), (unsigned long long)(Reserve / MiB),
+                          (unsigned long long)(reserve_bound / MiB));
+        } else {
+            std::snprintf(reserve_text, sizeof(reserve_text), "off");
+        }
+        const char* which = bound == BoundCap       ? "renderer_share_cap is the binding one"
+                            : bound == BoundReserve ? "the reserve is the binding one"
+                            : bound == BoundFloor   ? "the floor is the binding one"
+                                                    : "neither binds, the port's own budget does";
+        std::printf("GPU: memory budget %llu MiB (governor: %s; target %llu MiB; cap %s; reserve "
+                    "%s; the port's own budget %llu MiB; floor %llu MiB = max(4096, %llu MiB "
+                    "non-image + %llu MiB in %llu images referenced in the last 3 frames, over "
+                    "85%%))\n",
+                    (unsigned long long)(current / MiB), which,
+                    (unsigned long long)(target / MiB), cap_text, reserve_text,
+                    (unsigned long long)(port_budget / MiB), (unsigned long long)(floor / MiB),
+                    (unsigned long long)(non_image / MiB), (unsigned long long)(referenced / MiB),
+                    (unsigned long long)referenced_count);
+        std::fflush(stdout);
+        printed = current;
+        printed_bound = bound;
+        printed_ns = now;
+    }
+    // A status line every 10 s for the arms (bound, shares, the in-use set, the eviction guard).
+    if (now - status_ns >= 10'000'000'000) {
+        status_ns = now;
+        std::printf("GPU: memory governor: budget %llu MiB, target %llu MiB, bound %s; renderer's "
+                    "share %llu MiB, driver's own %llu MiB; images %llu MiB, referenced in the last "
+                    "3 frames %llu MiB (%llu images), floor %llu MiB; evicted while referenced in "
+                    "the last 2 frames %llu (refused %llu, evicted %llu); machine wired %llu MiB, "
+                    "compressor %llu MiB, free+inactive %llu MiB, reserve bound %llu MiB\n",
+                    (unsigned long long)(current / MiB), (unsigned long long)(target / MiB),
+                    BoundNames[bound], (unsigned long long)(gpu_usage / MiB),
+                    (unsigned long long)((own > gpu_usage ? own - gpu_usage : 0) / MiB),
+                    (unsigned long long)(images / MiB), (unsigned long long)(referenced / MiB),
+                    (unsigned long long)referenced_count, (unsigned long long)(floor / MiB),
+                    (unsigned long long)MemoryGovernor::evicted_referenced.load(
+                        std::memory_order_relaxed),
+                    (unsigned long long)MemoryGovernor::refused_referenced.load(
+                        std::memory_order_relaxed),
+                    (unsigned long long)MemoryGovernor::evicted_total.load(
+                        std::memory_order_relaxed),
+                    (unsigned long long)(m.wired / MiB), (unsigned long long)(m.compressor / MiB),
+                    (unsigned long long)(m.free_inactive / MiB),
+                    (unsigned long long)(reserve_bound / MiB));
         std::fflush(stdout);
     }
-    return budget;
+    return current;
 }
 
 /// bbport (macOS): the Mac's memory is shared by the CPU and the GPU, and Metal's limit (the
@@ -760,6 +962,7 @@ static u64 UnifiedMemoryBudget(u64 limit, u64 gpu_usage) {
         other_cached.store(footprint > graphics ? footprint - graphics : 0,
                            std::memory_order_relaxed);
         graphics_cached.store(graphics, std::memory_order_relaxed);
+        own_graphics_bytes.store(graphics, std::memory_order_relaxed);
         sampled_ns.store(now, std::memory_order_relaxed);
     }
     const u64 other = other_cached.load(std::memory_order_relaxed);
@@ -809,8 +1012,8 @@ u64 Instance::GetDeviceMemoryBudgetNow() const {
         gpu_usage += budget.heapUsage[heap];
     }
     total = UnifiedMemoryBudget(total, gpu_usage);
-    if (BudgetReserveOn()) {
-        total = ReserveAwareBudget(total);
+    if (MemoryGovernor::On()) {
+        total = GovernedBudget(total, gpu_usage);
     }
 #else
     for (const u32 heap : counted_heaps) {
@@ -881,6 +1084,15 @@ vk::FormatFeatureFlags2 Instance::FormatFeatures(vk::Format format) const {
     vk::FormatProperties2 props2{.pNext = &props3};
     physical_device.getFormatProperties2(format, &props2);
     return props3.optimalTilingFeatures | props3.bufferFeatures;
+}
+
+bool MemoryGovernor::On() {
+#ifdef __APPLE__
+    static const bool on = RendererShareCap() != 0 || BudgetReserveOn();
+    return on;
+#else
+    return false;
+#endif
 }
 
 bool Instance::IsFormatSupported(vk::Format format, vk::FormatFeatureFlags2 flags) const {

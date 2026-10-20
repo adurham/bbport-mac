@@ -99,6 +99,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.fsr4_invert_jitter = i != 0;
     } else if (key == "model_lod") {
         v.model_lod = std::clamp(i, -2, 2);
+    } else if (key == "renderer_share_cap") {
+        v.renderer_share_cap = std::clamp(i, 0, 1 << 20);
     } else if (key == "frame_generation") {
         v.frame_generation = i != 0;
     } else if (key == "live_resolution") {
@@ -358,6 +360,7 @@ void Load() {
         {"BB_FPS", "fps_mode"},                     {"BB_FPS_LIMIT", "fps_limit"},
         {"BB_METAL_HUD", "metal_hud"},
         {"BB_FRAME_GEN", "frame_generation"},
+        {"BB_RENDERER_SHARE_CAP", "renderer_share_cap"},
         {"BB_LAYER_OPAQUE", "layer_opaque"},       {"BB_LAYER_COLORSPACE", "layer_colorspace"},
         // BB_VSYNC first: BB_PRESENT_MODE (the launcher's, more specific) wins when both are set.
         {"BB_VSYNC", "vsync"},                     {"BB_PRESENT_MODE", "present_mode"},
