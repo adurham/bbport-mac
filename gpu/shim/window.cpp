@@ -570,7 +570,7 @@ void apply_display_mode(SDL_Window* window, const char* why) {
     // A display mode may only be set from the constructor, before SDL_Metal_CreateView makes a layer
     // the WindowServer could scan. Every later request is logged and dropped: setting one under a
     // live swapchain is what took the display coprocessor down (DCPEXT1 axi_rd_err, 2026-10-18).
-    const bool may_set = boot_mode_phase;
+    const bool may_set = boot_mode_phase || !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN);
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
     const BbSettings::OutputSize output = BbSettings::CurrentOutput();
     mode_output = BbSettings::PackSize(output);
@@ -706,12 +706,23 @@ void follow_display_mode(SDL_Window* window, int applied_mode) {
         }
     }
     if (output_changed && !fill && display_changed == false && BbSettings::FullscreenMovesDisplay()) {
-        // Exclusive: the new output is a display mode. It is not set here — see the comment above.
-        std::printf("Display mode: output %s needs a restart (fullscreen_mode=exclusive sets the "
-                    "display mode at startup only; the display is never switched under a running "
-                    "swapchain)\n",
+        // Exclusive: the new output is a display mode, and the panel follows the game live — that
+        // is the point of exclusive fullscreen (the owner, 2026-10-20). The window leaves
+        // fullscreen FIRST, so no drawable of ours is fullscreen-scanned while the mode moves, then
+        // the mode is set and fullscreen is entered again: SDL builds the new drawable inside the
+        // new mode.
+        std::printf("Display mode: output %s: the panel follows the game (exclusive, live)\n",
                     BbSettings::SizeText(BbSettings::CurrentOutput()).c_str());
         mode_output = BbSettings::PackSize(BbSettings::CurrentOutput());
+        SDL_SetWindowFullscreen(window, false);
+        apply_display_mode(window, "output resolution changed (live)");
+        SDL_SetWindowFullscreen(window, true);
+#ifdef __APPLE__
+        if (!WarmRun()) {
+            SDL_SyncWindow(window);
+            bb_log_display_mode(CocoaWindow(window), "live mode change");
+        }
+#endif
     }
 }
 
