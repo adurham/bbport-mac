@@ -45,6 +45,13 @@ matching `run-*.out`.
 3. + `SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES=1` (logged; SDL still took the borderless path).
 4. + `SDL_RaiseWindow`, so the game is frontmost with Game Mode On (the earlier scripted runs logged
    `frontmost app com.tinyspeck.slackmacgap`, a harness fault worth removing anyway).
+5. + **born fullscreen** (`BB_BOOT_FULLSCREEN=1`, the pre-2026-10-18 creation path, safe to try because
+   the picker no longer lands a width-changing set on the DSC link). The window starts at level 0,
+   but SDL's fullscreen entry puts it back at level 25 and `presentationOptions` returns to 0x0; the
+   HUD still reads Composited. The gate was reverted — it buys nothing.
+
+Five variants, five Composited. The macOS Space is not reachable through SDL's Cocoa fullscreen entry
+in this window, however it is created.
 
 ## What compositing costs — bounded, not measured
 
