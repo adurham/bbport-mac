@@ -121,13 +121,16 @@ vk::CommandBuffer CommandPool::Commit() {
     };
     // bbport (BB_KK_TRIM_POOL): the tick read here is this pool's GPU-caught-up point, so the trim
     // happens on a frame boundary and only over entries the reuse search would itself accept.
-    const u64 done = timeline->KnownGpuTick();
-    MaybeTrim(done);
+    // `done` is used for the trim only: the search below re-reads the tick exactly as it did
+    // before this gate existed, so a run with the gate unset behaves identically.
+    MaybeTrim(timeline->KnownGpuTick());
     // From where the last one was taken to the end, again after asking the GPU, then from the
     // start; else a new one.
+    u64 done = timeline->KnownGpuTick();
     for (int attempt = 0; attempt < 2 && !entries.empty(); ++attempt) {
         if (attempt == 1) {
             timeline->Refresh();
+            done = timeline->KnownGpuTick();
         }
         for (size_t i = next; i < entries.size(); ++i) {
             if (entries[i].tick <= done) {
@@ -135,6 +138,7 @@ vk::CommandBuffer CommandPool::Commit() {
             }
         }
     }
+    done = timeline->KnownGpuTick();
     for (size_t i = 0; i < next && i < entries.size(); ++i) {
         if (entries[i].tick <= done) {
             return take(i);
