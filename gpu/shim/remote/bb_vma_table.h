@@ -137,6 +137,9 @@ public:
         return 1;
     }
     int Covered(std::uintptr_t address, std::uint64_t size) const {
+        if (size > UINT64_MAX - address) {
+            return 0; // wraps past the top of the address space
+        }
         if (Cached(address, size)) {
             return 1;
         }

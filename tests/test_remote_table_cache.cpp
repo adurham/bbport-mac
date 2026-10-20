@@ -20,10 +20,16 @@ int main() {
     std::thread([&] { t.Unmap(0x1000, 0x2000); }).join(); // another thread changes it
     assert(t.Covered(0x1100, 0x100) == 0);   // the cache is stale now
     assert(t.Region(0x1800, &s, &en, &m) == 0 || m == 0);
-    VmaTable other;                          // another table: no hit from this one's cache
+    // Another table at the same generation with other contents: no hit from this one's cache.
+    VmaTable other;
+    for (int i = 0; i < 3; ++i) {            // t has had three writes (map, unmap, map below)
+        other.Map(0x5000, 0x6000, e);
+    }
     t.Map(0x1000, 0x2000, e);
-    assert(t.Covered(0x1100, 0x10) == 1);
+    assert(*t.Generation() == *other.Generation());
+    assert(t.Covered(0x1100, 0x10) == 1);    // fills this thread's cache from t
     assert(other.Covered(0x1100, 0x10) == 0);
+    assert(t.Covered(0xfffffffffffff000ull, 0x2000) == 0); // wraps: refused
     // Readers on several threads while one thread maps and unmaps: never a crash or a hit
     // on a range unmapped before the reader started (checked loosely: the final state).
     std::atomic<bool> stop{false};
