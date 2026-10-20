@@ -16,6 +16,7 @@
 
 #include "bbport_guest_hooks.h"
 #include "game_profile.h"
+#include "bbport_memprobe.h"
 #include "bbport_settings.h"
 #include "bbport_toggles.h"
 #include "ffx_vk_portable.h"
@@ -356,6 +357,11 @@ bool TemporalUpscaler::RasterScaling() const {
 }
 
 bool TemporalUpscaler::OnFrameStart() {
+    // bbport (macOS): BB_PROBE_CYCLE — the live-setting churn probe (shim/bbport_memprobe):
+    // stores the aspect/preset/upscaler the menu stores, on a fixed clock, and prints one
+    // PROBE CYCLE line per state. Off unless the environment asks (BB_PROBE_CYCLE), so a normal
+    // run does not even pay for the ledger read.
+    if (BbMemProbe::Enabled()) BbMemProbe::Tick(instance.GetDeviceMemoryUsage());
     // bbport: BB_PRESET_FILE=<file> holding "preset [output [upscaler [aspect]]]" numbers, read about
     // once a second: switches them like the menu does (scripted tests of live changes).
     static const char* preset_file = std::getenv("BB_PRESET_FILE");
