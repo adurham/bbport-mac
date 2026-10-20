@@ -261,6 +261,11 @@ KosmicKrisp its own shader cache.
   constructor, which runs in bb-gpu here: the game process installs them in `bbgpu_init`
   instead, and bb-gpu skips them. The output's aspect ratio for the camera and HUD hooks comes
   from bb-gpu's upscaler (`MsgDisplayAspect`).
+- Lookups in bb-gpu's copy of the mapping table (`VmaTable::Covered`, `Region`) remember each
+  thread's last mapping for one generation of the table. The bytecode SRT walker checks every
+  guest read there; with four draw-preparation threads and the command thread, a third of their
+  time went to waiting on the table's lock (a `sample` of bb-gpu, 2026-10-21: 35-42 FPS where the
+  game process with the GPU library in it holds 60). `tests/test_remote_table_cache.cpp`.
 - Not split yet: the mouse as a pointer in the game's menus (`BbMenuPointer`: its game hook
   belongs here, its window part in bb-gpu). With the native GPU process the keyboard and
   gamepad drive the game's menus.

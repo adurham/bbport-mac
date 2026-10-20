@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <iterator>
 #include <map>
@@ -76,6 +77,12 @@ public:
 
     int Region(std::uintptr_t address, std::uintptr_t* start, std::uintptr_t* end,
                int* mapped) const {
+        if (const Last* hit = Cached(address, 1)) {
+            *start = hit->start;
+            *end = hit->end;
+            *mapped = 1;
+            return 1;
+        }
         std::shared_lock lock{mutex};
         auto next = map.upper_bound(address);
         if (next != map.begin()) {
@@ -84,6 +91,7 @@ public:
                 *start = prev->first;
                 *end = prev->second.end;
                 *mapped = 1;
+                Remember(prev->first, prev->second.end);
                 return 1;
             }
         }
@@ -129,9 +137,16 @@ public:
         return 1;
     }
     int Covered(std::uintptr_t address, std::uint64_t size) const {
+        if (Cached(address, size)) {
+            return 1;
+        }
         std::shared_lock lock{mutex};
+        const auto first = Containing(address);
+        if (first != map.end()) {
+            Remember(first->first, first->second.end);
+        }
         std::uint64_t at = address;
-        for (auto it = Containing(address); at < address + size; ++it) {
+        for (auto it = first; at < address + size; ++it) {
             if (it == map.end() || it->first > at) {
                 return 0;
             }
@@ -144,6 +159,38 @@ public:
     }
 
 private:
+    /// bbport (macOS native GPU process): the mapping each thread found last, for one even
+    /// generation. The bytecode SRT walker checks every guest read (Covered, from four
+    /// draw-preparation threads and the command thread, thousands of times a frame) and the
+    /// recorders look up regions: they all waited on the shared lock's own mutex (a third of
+    /// those threads' time). The table changes rarely, so most lookups take no lock. As before,
+    /// a mapping removed right after a check is the reader's fault recovery's business.
+    struct Last {
+        std::uint64_t table = 0, generation = 1; // odd: nothing remembered
+        std::uint64_t start = 0, end = 0;
+    };
+    static Last& LastFound() {
+        static thread_local Last last;
+        return last;
+    }
+    const Last* Cached(std::uintptr_t address, std::uint64_t size) const {
+        const Last& last = LastFound();
+        const std::uint64_t now = __atomic_load_n(&generation, __ATOMIC_ACQUIRE);
+        if ((now & 1) || last.table != id || last.generation != now || address < last.start ||
+            address >= last.end || size > last.end - address) {
+            return nullptr;
+        }
+        return &last;
+    }
+    /// With the shared lock held (the generation is even and stays so).
+    void Remember(std::uint64_t start, std::uint64_t end) const {
+        LastFound() = {id, __atomic_load_n(&generation, __ATOMIC_ACQUIRE), start, end};
+    }
+    static std::uint64_t NextId() {
+        static std::atomic<std::uint64_t> next{1};
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+
     /// Odd while changing: the GPU library's region caches hold for one even value.
     struct Writer {
         explicit Writer(VmaTable& table_) : table{table_}, lock{table_.mutex} {
@@ -186,6 +233,7 @@ private:
     mutable std::shared_mutex mutex;
     std::map<std::uint64_t, VmaEntry> map;
     alignas(8) std::uint64_t generation = 0;
+    const std::uint64_t id = NextId(); ///< tells tables apart in the per-thread cache
 };
 
 } // namespace BbRemote
