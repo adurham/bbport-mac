@@ -90,7 +90,54 @@ bool GateOn() {
     gate.read = true;
     return gate.on;
 }
+bool PoolStatsOn() {
+    static const bool on = [] {
+        const char* value = std::getenv("BB_KK_STATS");
+        return value != nullptr && *value != '\0' && !(value[0] == '0' && value[1] == '\0');
+    }();
+    return on;
+}
+u32 next_stats_id = 0;
 } // namespace
+
+void CommandPool::NoteInFlight(u64 done) {
+    u32 busy = 0;
+    for (const Entry& entry : entries) {
+        busy += entry.tick > done ? 1 : 0;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (window_commits == 0 && window_start == std::chrono::steady_clock::time_point{}) {
+        window_start = now;
+    }
+    ++window_commits;
+    window_busy_sum += busy;
+    window_busy_max = std::max(window_busy_max, busy);
+    ++window_busy_hist[std::min<u32>(busy, u32(window_busy_hist.size() - 1))];
+    if (now - window_start < std::chrono::seconds(10)) {
+        return;
+    }
+    // p99 of the in-flight count at a Commit over the window.
+    u64 seen = 0;
+    u32 p99 = 0, p50 = 0;
+    for (u32 i = 0; i < window_busy_hist.size(); ++i) {
+        seen += window_busy_hist[i];
+        if (p50 == 0 && seen * 2 >= window_commits) p50 = i;
+        if (seen * 100 >= window_commits * 99) {
+            p99 = i;
+            break;
+        }
+    }
+    std::printf("Command pool %u: %zu buffers; at a Commit in flight median %u, p99 %u, max %u "
+                "(mean %.2f over %llu commits/10 s); grew %llu times\n",
+                stats_id, entries.size(), p50, p99, window_busy_max,
+                double(window_busy_sum) / double(window_commits),
+                (unsigned long long)window_commits, (unsigned long long)window_grows);
+    std::fflush(stdout);
+    window_start = now;
+    window_commits = window_busy_sum = window_grows = 0;
+    window_busy_max = 0;
+    window_busy_hist.fill(0);
+}
 
 CommandPool::CommandPool(const Instance& instance_, Semaphore* timeline_)
     : instance{instance_}, timeline{timeline_} {
@@ -103,6 +150,7 @@ CommandPool::CommandPool(const Instance& instance_, Semaphore* timeline_)
     ASSERT_MSG(result == vk::Result::eSuccess, "command pool: {}", vk::to_string(result));
     pool = std::move(created);
     SetObjectName(device, *pool, "CommandPool");
+    stats_id = ++next_stats_id;
 }
 
 CommandPool::~CommandPool() = default;
@@ -133,6 +181,9 @@ vk::CommandBuffer CommandPool::Commit() {
     // `done` is used for the trim only: the search below re-reads the tick exactly as it did
     // before this gate existed, so a run with the gate unset behaves identically.
     MaybeTrim(timeline->KnownGpuTick());
+    if (PoolStatsOn()) {
+        NoteInFlight(timeline->KnownGpuTick());
+    }
     // From where the last one was taken to the end, again after asking the GPU, then from the
     // start; else a new one.
     u64 done = timeline->KnownGpuTick();
@@ -154,6 +205,7 @@ vk::CommandBuffer CommandPool::Commit() {
         }
     }
     const size_t first_new = entries.size();
+    ++window_grows;
     Grow();
     return take(first_new);
 }

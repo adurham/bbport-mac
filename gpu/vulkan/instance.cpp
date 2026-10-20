@@ -736,10 +736,9 @@ s64 SteadyNs() {
 /// driver's own share) that only binds under real pressure from other apps; the cap is the one meant
 /// to do the work.
 ///
-/// floor = max(4 GiB, (the renderer's non-image allocations + the images referenced in the last
-/// three frames) / 0.85): the texture collector's pressure mark is 85% of the budget
-/// (texture_cache_memory.cpp, integrated GPUs), so holding only what the last frames used plus the
-/// buffers keeps the collector below its pressure mark — it cannot need to free an image in use.
+/// floor = max(4 GiB, the images referenced in the last three frames / 0.85): the texture
+/// collector's pressure mark is 85% of the budget (texture_cache_memory.cpp, integrated GPUs), so the
+/// in-use set alone always fits under it. Buffers are deliberately not in it (see below).
 /// The collector also refuses outright to evict an image touched in the last two frames (the
 /// structural guard) and counts it.
 ///
@@ -811,7 +810,11 @@ u64 GovernedBudget(u64 port_budget, u64 gpu_usage) {
     const u64 referenced = MemoryGovernor::referenced_image_bytes.load(std::memory_order_relaxed);
     const u64 referenced_count = MemoryGovernor::referenced_images.load(std::memory_order_relaxed);
     const u64 non_image = gpu_usage > images ? gpu_usage - images : 0;
-    const u64 in_use_floor = (non_image + referenced) / 85 * 100;
+    // Only the images in use, not the renderer's buffers: the buffer cache promotes guest-memory
+    // copies until the usage passes 90% of this very budget (buffer_cache.cpp, VRAM promotion),
+    // so a floor that counted them would rise with them — the first arm measured exactly that
+    // (floor 7.1 GiB = 5.5 GiB of copies over 85%, the cap never bound).
+    const u64 in_use_floor = referenced / 85 * 100;
     const u64 floor = std::max(MinFloor, in_use_floor);
     const int below_floor_bound = bound; // what would bind if the floor did not
     if (floor > target) {
@@ -890,14 +893,13 @@ u64 GovernedBudget(u64 port_budget, u64 gpu_usage) {
                             : bound == BoundFloor   ? "the floor is the binding one"
                                                     : "neither binds, the port's own budget does";
         std::printf("GPU: memory budget %llu MiB (governor: %s; target %llu MiB; cap %s; reserve "
-                    "%s; the port's own budget %llu MiB; floor %llu MiB = max(4096, %llu MiB "
-                    "non-image + %llu MiB in %llu images referenced in the last 3 frames, over "
-                    "85%%))\n",
+                    "%s; the port's own budget %llu MiB; floor %llu MiB = max(4096, %llu MiB in "
+                    "%llu images referenced in the last 3 frames, over 85%%); %llu MiB non-image)\n",
                     (unsigned long long)(current / MiB), which,
                     (unsigned long long)(target / MiB), cap_text, reserve_text,
                     (unsigned long long)(port_budget / MiB), (unsigned long long)(floor / MiB),
-                    (unsigned long long)(non_image / MiB), (unsigned long long)(referenced / MiB),
-                    (unsigned long long)referenced_count);
+                    (unsigned long long)(referenced / MiB), (unsigned long long)referenced_count,
+                    (unsigned long long)(non_image / MiB));
         std::fflush(stdout);
         printed = current;
         printed_bound = bound;
