@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "upscale/vk_frame_generation.h"
+#include "upscale/vk_temporal_upscaler.h" // DumpPresented
 #include "bbport_toggles.h"
 
 #include <atomic>
@@ -413,8 +414,33 @@ void FrameGeneration::Interpolate(vk::Image color, VAddr display) {
         dispatch.hudlessColor.image != VK_NULL_HANDLE ? dispatch.hudlessColor : dispatch.currentColor;
 
     scheduler.EndRendering();
+    // BB_SEQUENCE_DUMP_AT=<frame> (the presenter's FI-output dump arms on the same counter) or
+    // BB_FG_INPUT_TRIGGER=<file>: the FI's own INPUT — the game's display buffer, as the frame
+    // generator reads it. Paired with the presenter's `fi` dump this places the colour wash on one
+    // side of the pass: input already washed = upstream (the upscaler's UI image); input clean and
+    // output washed = this pass or its output view/format.
+    static const char* fgin_trigger = std::getenv("BB_FG_INPUT_TRIGGER");
+    static long fgin_at = [] {
+        const char* at = std::getenv("BB_SEQUENCE_DUMP_AT");
+        return at && *at ? std::strtol(at, nullptr, 10) : -1;
+    }();
+    static bool fgin_armed = false;
+    static int fgin_left = 0, fgin_index = 0;
+    if (!fgin_armed &&
+        ((fgin_at >= 0 &&
+          long(BbStats::frame_number.load(std::memory_order_relaxed)) >= fgin_at) ||
+         (fgin_trigger && std::remove(fgin_trigger) == 0))) {
+        fgin_armed = true;
+        fgin_left = 16;
+        fgin_index = 0;
+    }
+    const bool fgin_dump = fgin_left > 0;
+    const int fgin_id = fgin_dump ? fgin_index++ : 0;
+    if (fgin_dump) --fgin_left;
+    const u32 fgin_w = scene.width, fgin_h = scene.height;
+    const vk::Format fgin_format = scene.color_format;
     scheduler.Record([this, prepare, source, dispatch, color, out = vk::Image(target->image),
-                      target](vk::CommandBuffer cmdbuf) mutable {
+                      target, fgin_dump, fgin_id, fgin_w, fgin_h, fgin_format](vk::CommandBuffer cmdbuf) mutable {
         const auto all = vk::PipelineStageFlagBits2::eAllCommands;
         // The UI drew into it; the display pass reads it after.
         ImageBarrier(cmdbuf, color, all, vk::AccessFlagBits2::eMemoryWrite,
@@ -422,6 +448,10 @@ void FrameGeneration::Interpolate(vk::Image color, VAddr display) {
         ImageBarrier(cmdbuf, out, all, vk::AccessFlagBits2::eMemoryRead,
                      vk::PipelineStageFlagBits2::eComputeShader,
                      vk::AccessFlagBits2::eShaderStorageWrite, vk::ImageLayout::eUndefined);
+        if (fgin_dump) {
+            DumpPresented(instance, scheduler, cmdbuf, color, fgin_w, fgin_h, fgin_format, fgin_id,
+                          "fgin");
+        }
         prepare.commandBuffer = cmdbuf;
         dispatch.commandBuffer = cmdbuf;
         const auto prepared = ffxVkPortableFrameGenerationContextPrepare(context, &prepare, &source);
