@@ -222,7 +222,7 @@ The rule is enforceable because the trigger is always a `CGDisplaySetDisplayMode
 
 | issuer | status |
 |---|---|
-| `bbport` (any fullscreen mode) | gated: `fullscreen_mode` is clamped to `desktop` in the parser and again at the set call site; `BB_ALLOW_DISPLAY_MODE_SET=1` is the only override. Leave it. |
+| `bbport` (any fullscreen mode) | **selectable again (2026-10-19, owner's call).** The ordering fix in `WindowSDL`'s constructor sets and confirms the mode before `SDL_Metal_CreateView` exists, so the port never holds a swapchain across the set; `boot_mode_phase` still refuses every later set. The rule above is the one that applies: `fill`/`exclusive` from a 2x desktop take the panel to a 1x mode, so they are only safe while the link is not the 240 Hz 10-bit HDR10 (DSC) one. |
 | BetterDisplay "HiDPI off" (the panic-3 trigger) | do not use on this display. It is a 2x -> 1x set with a UI affordance that looks harmless. |
 | BetterDisplay "protect refresh rate" | currently points at a stale mode id — see §8. |
 | Any game/Whisky/D3D exclusive-fullscreen set on the AW | a crash button. Run games windowed/borderless on the HiDPI desktop (`fullscreen_mode=desktop` + `retina=1` gives a Direct-capable fullscreen with no set). |

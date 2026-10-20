@@ -413,6 +413,12 @@ if ((do_run)); then
             else
                 echo "route $name: the run never reached gameplay (highest ${max_draws} draws/frame; the title screen draws ~24); re-running it once, it walked nothing"
             fi
+            # Keep the dead attempt's log: the retry overwrites it and its crash line is the only
+            # evidence of what died. Kept next to the route's log, printed into the wrapper.
+            if [[ -f $state/$name.log ]]; then
+                cp "$state/$name.log" "$state/$name.dead-${retries}.log"
+                grep -m4 -E 'Bad PM4 packet|Unreachable code|^STOP:|assert_fail|assert' "$state/$name.dead-${retries}.log" 2>/dev/null | sed "s/^/  dead attempt: /"
+            fi
             route_run "$name" "$secs" "$title" "$load" "$pad"
             took=$((took + route_secs_taken))
             read -r max_draws reached crashed <<<"$(verdict "$state/$name.log")"

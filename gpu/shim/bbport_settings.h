@@ -48,13 +48,6 @@ enum FullscreenMode : int {
 };
 /// bbport.ini value ("desktop", "fill", "exclusive").
 const char* FullscreenModeKey(int mode);
-
-/// Whether this build may move the panel at all. False unless `BB_ALLOW_DISPLAY_MODE_SET=1`: on
-/// macOS 27.2 (26B5112a) the 2x-HiDPI -> native transition faults the display coprocessor
-/// (`DCPEXT1 axi_rd_err`) on every attempt — from this port, and from BetterDisplay alone with no
-/// app running (2026-10-18, three panics) — so `fill` and `exclusive` are clamped to `desktop`
-/// here and refused again where the mode is set. See docs/DISPLAY_MODE_2026-10-18.md.
-bool DisplayModeSetsAllowed();
 /// The game's frame rate (bbport_frame_rate): the game's own 30, or the port's hooks at 60/90 with
 /// no cap beyond the pacer's safety maximum.
 enum FpsMode : int { Fps30 = 0, Fps60, Fps90, FpsUncapped, FpsModeCount };

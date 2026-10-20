@@ -72,31 +72,24 @@ int main() {
     BbSettings::Load();
     assert(s.menu_language == BbSettings::MenuLanguage::Russian && s.menu_language_chosen);
 
-    // fullscreen_mode: desktop (the default) never sets a display mode. fill and exclusive move the
-    // panel, and moving it faults this machine's display coprocessor on macOS 27.2 (three panics on
-    // 2026-10-18, the last one from BetterDisplay with no app running), so this build refuses them:
-    // a file or env value of fill/exclusive reads back as desktop. BB_ALLOW_DISPLAY_MODE_SET=1 is
-    // the escape hatch (for a test, or for the day Apple fixes the DCP firmware).
+    // fullscreen_mode: desktop (the default) never sets a display mode; fill and exclusive move the
+    // panel and are selectable (the ordering fix sets and confirms the mode before the Metal layer
+    // exists). This test pins the parse/save round trip for all three values.
     assert(s.fullscreen_mode == BbSettings::FullscreenDesktop && BbSettings::FullscreenFills());
     assert(BbSettings::FullscreenKeepsDesktopMode() && !BbSettings::FullscreenMovesDisplay());
     s.fullscreen_mode = BbSettings::FullscreenExclusive;
     BbSettings::Save();
     assert(Read(path).find("fullscreen_mode=exclusive\n") != std::string::npos);
     BbSettings::Load();
-    assert(s.fullscreen_mode == BbSettings::FullscreenDesktop && BbSettings::FullscreenFills());
-    assert(BbSettings::FullscreenKeepsDesktopMode() && !BbSettings::FullscreenMovesDisplay());
+    assert(s.fullscreen_mode == BbSettings::FullscreenExclusive && !BbSettings::FullscreenFills());
+    assert(!BbSettings::FullscreenKeepsDesktopMode() && BbSettings::FullscreenMovesDisplay());
     setenv("BB_FULLSCREEN_MODE", "fill", 1);
-    BbSettings::Load();
-    assert(s.fullscreen_mode == BbSettings::FullscreenDesktop);
-    setenv("BB_ALLOW_DISPLAY_MODE_SET", "1", 1);
     BbSettings::Load();
     assert(s.fullscreen_mode == BbSettings::FullscreenFill);
     assert(BbSettings::FullscreenFills() && BbSettings::FullscreenMovesDisplay());
     setenv("BB_FULLSCREEN_MODE", "exclusive", 1);
     BbSettings::Load();
     assert(s.fullscreen_mode == BbSettings::FullscreenExclusive && !BbSettings::FullscreenFills());
-    assert(!BbSettings::FullscreenKeepsDesktopMode() && BbSettings::FullscreenMovesDisplay());
-    unsetenv("BB_ALLOW_DISPLAY_MODE_SET");
     setenv("BB_FULLSCREEN_MODE", "desktop", 1);
     BbSettings::Load();
     assert(s.fullscreen_mode == BbSettings::FullscreenDesktop);

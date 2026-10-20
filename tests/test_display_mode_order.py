@@ -8,9 +8,9 @@ presenter.
 
 These checks are source-level on purpose: the behaviour they protect cannot be exercised without
 moving a real panel, and moving it is what took the machine down. They fail if the ordering is
-reverted, if the boot mode is queued again, if a set path loses its `boot_mode_phase` guard, or if
-the fill/exclusive refusal (the panel is never moved at all unless BB_ALLOW_DISPLAY_MODE_SET=1) is
-removed.
+reverted, if the boot mode is queued again, or if a set path loses its `boot_mode_phase` guard.
+`fill` and `exclusive` are selectable again (the owner's call, 2026-10-19); what stays pinned here
+is that the panel-moving set can only happen inside the constructor, before the Metal layer exists.
 """
 from paths import ROOT
 import re
@@ -104,26 +104,28 @@ class DisplayModeOrder(unittest.TestCase):
                             f'un-gated SDL_SetWindowFullscreenMode(nullptr) at line {line_no + 1} '
                             f'of apply_display_mode: {line.strip()}')
 
-    def test_a_panel_moving_mode_is_refused_without_the_override(self):
+    def test_a_panel_moving_mode_is_selectable_but_gated_to_boot(self):
         body = display_mode_body()
-        self.assertIn('BbSettings::DisplayModeSetsAllowed()', body,
-                      'apply_display_mode no longer consults DisplayModeSetsAllowed: fill/exclusive '
-                      'could reach CGDisplaySetDisplayMode again, which panics this machine')
-        lock_at = body.index('const bool panel_locked')
-        branch_at = body.index('FullscreenKeepsDesktopMode() || panel_locked')
-        self.assertLess(lock_at, branch_at,
-                        'the refusal must be decided before the desktop branch is chosen')
+        self.assertNotIn('DisplayModeSetsAllowed', body,
+                         'the panel lock is back: a chosen fill/exclusive would be rewritten to '
+                         'desktop instead of being applied')
+        self.assertIn('FullscreenKeepsDesktopMode()', body,
+                      'the desktop branch (the only mode that never issues a set) disappeared')
+        self.assertIn('if (!dry_run && !may_set) {', body,
+                      'the runtime refusal (a set after boot logs "needs a restart" and moves '
+                      'nothing) disappeared')
 
-    def test_the_parser_clamps_fill_and_exclusive(self):
+    def test_the_parser_accepts_all_three_modes(self):
         src = (ROOT / 'gpu/shim/bbport_settings.cpp').read_text()
         start = src.index('} else if (key == "fullscreen_mode") {')
         end = src.index('} else if (key == "confirm_native_mode")', start)
         body = src[start:end]
-        self.assertIn('DisplayModeSetsAllowed()', body,
-                      'the ini/env value is stored unclamped: a file saying exclusive puts the '
-                      'panel move back on the table on the next launch')
-        self.assertIn('v.fullscreen_mode = FullscreenDesktop;', body,
-                      'the clamp no longer rewrites the value to desktop')
+        self.assertNotIn('DisplayModeSetsAllowed', body,
+                         'the clamp is back in the parser')
+        self.assertNotIn('v.fullscreen_mode = FullscreenDesktop;', body,
+                         'the parser rewrites a chosen fill/exclusive to desktop')
+        self.assertIn('v.fullscreen_mode = m;', body,
+                      'the parser no longer stores the mode the file/env names')
 
 
 if __name__ == '__main__':

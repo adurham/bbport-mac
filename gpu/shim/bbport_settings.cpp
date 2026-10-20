@@ -69,20 +69,11 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "fullscreen_mode") {
         for (int m = 0; m < FullscreenModeCount; ++m) {
             if (value != FullscreenModeKey(m)) continue;
-            if (m == FullscreenDesktop || DisplayModeSetsAllowed()) {
-                v.fullscreen_mode = m;
-            } else {
-                // The panel is never moved by this build: the 2x-HiDPI -> native transition faults
-                // the display coprocessor on macOS 27.2 every time it is tried, by this port or by
-                // any other process (docs/DISPLAY_MODE_2026-10-18.md). The stored value reads back
-                // as desktop, and window.cpp refuses a set again at the call site.
-                std::printf("Display mode: fullscreen_mode=%s is refused (moving the panel panics "
-                            "this machine's display coprocessor on macOS 27.2); fullscreen_mode="
-                            "desktop. BB_ALLOW_DISPLAY_MODE_SET=1 re-opens fill/exclusive for "
-                            "testing.\n",
-                            FullscreenModeKey(m));
-                v.fullscreen_mode = FullscreenDesktop;
-            }
+            // The panel-moving modes are selectable again: the ordering fix (the mode is set and
+            // confirmed before SDL_Metal_CreateView exists, window.cpp) removes the port's own
+            // contribution to the 2026-10-18 display-coprocessor panics, so the choice is the
+            // owner's. desktop stays the default and never issues a set.
+            v.fullscreen_mode = m;
         }
     } else if (key == "confirm_native_mode") {
         v.confirm_native_mode = i != 0;
@@ -206,13 +197,6 @@ const char* FullscreenModeKey(int mode) {
     default:
         return "desktop";
     }
-}
-
-bool DisplayModeSetsAllowed() {
-    // Read each call (a few ns): it is consulted at parse time and again at the call site that
-    // would issue the set, and caching it made the setting untestable in-process.
-    const char* v = std::getenv("BB_ALLOW_DISPLAY_MODE_SET");
-    return v && v[0] == '1';
 }
 
 OutputSize Monitor() {
