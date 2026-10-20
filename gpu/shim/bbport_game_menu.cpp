@@ -857,6 +857,24 @@ bool Poll() {
     if (std::memcmp(now_values, applied, sizeof(now_values)) == 0) {
         return false;
     }
+    // The list rows are chosen with a second Cross (the game's own options): while the player moves
+    // through the highlighted values nothing is applied, and the confirmation modal that follows a
+    // panel-moving change asks once, after the choice has settled — not over every highlighted
+    // entry. Only the rows that move the panel or re-create targets wait; the rest apply at once.
+    const bool moves = now_values[Aspect] != applied[Aspect] || now_values[OutputRes] != applied[OutputRes] ||
+                       now_values[WindowMode] != applied[WindowMode];
+    if (moves) {
+        static Clock::time_point last_change{};
+        static int settled[FieldCount] = {};
+        if (std::memcmp(settled, now_values, sizeof(settled)) != 0) {
+            std::memcpy(settled, now_values, sizeof(settled));
+            last_change = now;
+            return false;
+        }
+        if (now - last_change < std::chrono::milliseconds(1000)) {
+            return false;
+        }
+    }
     auto& s = BbSettings::Get();
     if (now_values[Aspect] != applied[Aspect]) {
         // Another aspect ratio: the resolution row's height is kept and both settings move
