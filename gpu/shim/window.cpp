@@ -529,9 +529,10 @@ int mode_setting = -1;            ///< BbSettings::FullscreenMode value it was p
 /// The display mode for an output of `wanted` pixels: compared in pixels (SDL lists macOS modes
 /// in points with a density: "looks like 3440x1440" is 3440x1440 at 2.0 = 6880x2880 pixels),
 /// 1x modes first — a 2x mode's backing is twice the drawable of a retina=0 window, so the
-/// WindowServer would scale every frame (Composited) — then the closest size, then the
-/// highest refresh rate.
-const SDL_DisplayMode* pick_display_mode(SDL_DisplayMode** listed, int count, BbSettings::OutputSize wanted) {
+/// WindowServer would scale every frame (Composited) — then the closest size, then the highest
+/// refresh rate at or below `refresh_cap` (0 = no cap; see apply_display_mode's source-width rule).
+const SDL_DisplayMode* pick_display_mode(SDL_DisplayMode** listed, int count, BbSettings::OutputSize wanted,
+                                         float refresh_cap = 0.0f) {
     const SDL_DisplayMode* chosen = nullptr;
     long best_distance = 0;
     bool best_1x = false;
@@ -540,8 +541,13 @@ const SDL_DisplayMode* pick_display_mode(SDL_DisplayMode** listed, int count, Bb
         const BbSettings::OutputSize px = ModePixels(*mode);
         const long distance = std::labs(long(px.width) - wanted.width) + std::labs(long(px.height) - wanted.height);
         const bool is_1x = mode->pixel_density <= 1.0f;
+        // Under a cap the mode at or below it wins over one above it, whatever their refresh order:
+        // the cap exists to keep a panel move off a link the move must not land on.
+        const bool under_cap = refresh_cap > 0.0f && mode->refresh_rate <= refresh_cap + 0.5f;
+        const bool best_under_cap = refresh_cap > 0.0f && chosen && chosen->refresh_rate <= refresh_cap + 0.5f;
         const bool better = !chosen || (is_1x != best_1x ? is_1x
                                         : distance != best_distance ? distance < best_distance
+                                        : under_cap != best_under_cap ? under_cap
                                                                     : mode->refresh_rate > chosen->refresh_rate);
         if (better) {
             chosen = mode;
@@ -605,6 +611,42 @@ void apply_display_mode(SDL_Window* window, const char* why) {
     int count = 0;
     SDL_DisplayMode** listed = SDL_GetFullscreenDisplayModes(display, &count);
     const SDL_DisplayMode* chosen = pick_display_mode(listed, count, wanted);
+    // A set that changes the pipe's SOURCE WIDTH — 2x (6880x2880 backing) to 1x (3440x1440) or back
+    // — must not land on the 240 Hz 10-bit HDR (DSC) link in the same set. Measured 2026-10-20
+    // 09:57:53: a launch's exclusive fullscreen asked for 772 -> 724, WindowServer re-piped the
+    // display and then took the link to 239 Hz RGB_PQ_10bit; within 1.3 s the reconfigure handshake
+    // broke ("AppleDisplayManagerReconfigComplete missing", "swap aborted", and
+    // kCGSDisplayDidReconfigure2 timing out for every client), the compositor's main thread never
+    // ran again, the watchdog killed it, and its restart hung in IOMobileFramebuffer — both panels
+    // stayed black until the machine was rebooted. The display log's rule: a source-width change is
+    // survivable while the link is NOT the 240 Hz 10-bit one, so keep the refresh at or below
+    // 120 Hz for that set (this panel's 120 Hz 10-bit link took ten such sets on 2026-10-16 and has
+    // taken every one since; the three 2026-10-18 DCPEXT1 panics were the same change with the DSC
+    // link up). The owner's standing config is 120 Hz DSC-free, so this picks what he wants anyway.
+    if (chosen) {
+        const SDL_DisplayMode* now_mode = SDL_GetDesktopDisplayMode(display);
+        const bool source_width_changes =
+            now_mode && ModePixels(*chosen).width != ModePixels(*now_mode).width;
+        if (source_width_changes && chosen->refresh_rate > 120.5f) {
+            const float cap = now_mode->refresh_rate < 120.0f ? now_mode->refresh_rate : 120.0f;
+            const SDL_DisplayMode* safe = pick_display_mode(listed, count, wanted, cap);
+            if (safe && safe->refresh_rate <= 120.5f &&
+                ModePixels(*safe).width == ModePixels(*chosen).width) {
+                std::printf("Display mode: %dx%d at %.0f Hz would change the pipe source width onto "
+                            "the 240 Hz 10-bit HDR link; %.0f Hz picked instead (%s)\n",
+                            ModePixels(*chosen).width, ModePixels(*chosen).height,
+                            chosen->refresh_rate, safe->refresh_rate, why);
+                chosen = safe;
+            } else {
+                std::printf("Display mode: %dx%d at %.0f Hz changes the pipe source width onto the "
+                            "240 Hz 10-bit HDR link and this display lists no mode of that size at or "
+                            "below 120 Hz: the desktop's mode is kept (%s)\n",
+                            ModePixels(*chosen).width, ModePixels(*chosen).height,
+                            chosen->refresh_rate, why);
+                chosen = nullptr;
+            }
+        }
+    }
     if (fill && chosen && ModePixels(*chosen) != native) {
         // Nothing on this display is its own pixel size at 1x (a scaled desktop may list it at 2x
         // only): the desktop's mode already fills the panel and the renderer scales into it. The
