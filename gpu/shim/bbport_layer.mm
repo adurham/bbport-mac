@@ -488,3 +488,47 @@ extern "C" int bb_display_wait_mode_change(void* nswindow, int old_width, int ol
         return 2;
     }
 }
+
+// Taking the display for Direct scan-out. WindowServer only hands a window the direct path when the
+// app owns the display: the menu bar and the Dock hidden, the window the only thing there. The
+// 2026-10-16 run that reached Direct logged app presentationOptions 0x40a (hideMenuBar 1 hideDock 1
+// fullScreen 1) with the window at level 0; the 2026-10-20 runs log 0x0, the window at level 25, the
+// menu bar strip still on the display, and composite — SDL reported the window fullscreen in both,
+// so its own flag does not tell the two apart.
+extern "C" int bb_window_take_display(void* nswindow) {
+    @autoreleasepool {
+        NSWindow* window = (__bridge NSWindow*)nswindow;
+        if (!window) {
+            return 0;
+        }
+        const NSApplicationPresentationOptions want =
+            NSApplicationPresentationHideMenuBar | NSApplicationPresentationHideDock;
+        const NSApplicationPresentationOptions before = NSApp.presentationOptions;
+        if ((before & want) != want) {
+            @try {
+                [NSApp setPresentationOptions:want];
+            } @catch (NSException* e) {
+                std::printf("Window: presentation options refused (%s)\n", [[e reason] UTF8String]);
+                return 0;
+            }
+        }
+        const NSApplicationPresentationOptions after = NSApp.presentationOptions;
+        const int took = (after & want) == want;
+        std::printf("Window: %s the display: presentationOptions 0x%lx (was 0x%lx), window level %ld\n",
+                    took ? "took" : "did NOT take", (unsigned long)after, (unsigned long)before,
+                    (long)window.level);
+        return took;
+    }
+}
+
+extern "C" void bb_window_release_display(void) {
+    @autoreleasepool {
+        if (NSApp.presentationOptions != NSApplicationPresentationDefault) {
+            @try {
+                [NSApp setPresentationOptions:NSApplicationPresentationDefault];
+            } @catch (NSException* e) {
+                std::printf("Window: presentation options not restored (%s)\n", [[e reason] UTF8String]);
+            }
+        }
+    }
+}

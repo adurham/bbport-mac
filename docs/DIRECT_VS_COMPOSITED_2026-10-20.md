@@ -1,57 +1,77 @@
-# Direct vs composited on the AW3425DW — attempt 1 is VOID (2026-10-20)
+# Direct vs composited on the AW3425DW (2026-10-20)
 
-## Result of attempt 1: both arms were composited
+## Bottom line
 
-The owner watched the Metal HUD during both runs: **run 2 was not Direct either.** The two arms
-therefore measured the same path, and the 0.33 ms p50 difference between them is run-to-run noise,
-not the cost of compositing. Nothing about compositing is established by attempt 1.
+**The port cannot reach Direct on the current window construction, and compositing costs less than
+the instrument can resolve.** Four variants were tried with the BetterDisplay colour filter off, the
+layer opaque and the drawable matching the display mode's pixels; the Metal HUD read *Composited* in
+every one — read from the agent's own screenshots (`/tmp/hud-now.png` and the ab3–ab5 captures), not
+from the logs.
 
-Keep the raw data (`out/direct-ab/frames-ab1.csv`, `frames-ab2.csv`, `run-ab1.out`, `run-ab2.out`)
-only as a matched-pair noise floor: two identical runs of the same spot agree to 0.4 ms p50, 0.4 ms
-p99 and 0.5 ms worst frame. That is the resolution any future A/B has to beat.
+The reason is in the window state, not in the renderer:
 
-## Why run 2 was still composited: the harness, not the display path
-
-The A/B was driven directly through `tools/macos/run.sh`, which reads the **checkout's** `bbport.ini`,
-while the owner launches through the app, which reads
-`~/Library/Application Support/bbport/bbport.ini`. Those two files drift — the documented pitfall —
-and the key that matters here is `layer_opaque`: the app's ini has `layer_opaque=1`, the checkout's
-does not.
-
-The consequence is in the logs, plainly:
-
-| | boot layer dump | `Layer check (+4 s)` |
+| | 2026-10-16 (Direct era, `bbport-async-build/out/last-run.log:48`) | every 2026-10-20 run |
 |---|---|---|
-| attempt-1 runs (run.sh, checkout ini) | `opaque 1` (override applied at boot) | **`opaque 0`** |
-| owner's app run 15:17 (app ini) | `opaque 1` | `opaque 1 (as overridden)` |
+| layer dump window | `fullscreen 1`, level **0**, hasShadow 0 | `fullscreen 0`, level **25**, hasShadow 0 |
+| presentationOptions | **0x40a** — hideMenuBar 1, hideDock 1, **fullScreen 1** | **0x0** (0xa after our explicit set; AppKit resets it) |
+| window rect | 3440x1440 at 0,0 | 3440x1440 at 0,0 |
+| layer | opaque 1, drawable == mode pixels | opaque 1, drawable == mode pixels |
+| HUD | Direct | Composited |
 
-A non-opaque layer cannot be scanned out directly; WindowServer must composite it. So both attempt-1
-arms were composited by configuration, and the BetterDisplay filter was not the variable under test
-at all.
+Direct needs the window to be a **macOS fullscreen Space** (the `fullScreen` bit in the presentation
+options, window level 0). The port produces a borderless window on the desktop instead — level 25, no
+Space, no fullScreen bit. That changed with the 2026-10-18 anti-panic ordering fix: the window is now
+created plain and moved to its mode and fullscreen later, which is what keeps a display-mode set from
+happening under a live swapchain, and which apparently also costs the Space.
 
-## What attempt 1 does prove
+## The A/B attempts, and why they are void
 
-- **The layer dump's `fullscreen` field is not the SDL fullscreen flag.** All four runs logged
-  `Window: fullscreen flag 1` at entry and after the switch, and every layer dump read
-  `fullscreen 0`. Whatever that field reports, it does not discriminate the paths — stop using it as
-  the Direct/Composited tell.
-- **The Metal HUD is the only reliable tell.** It disagreed with the logs twice today.
-- The composited baseline is stable to ~0.4 ms across 1,800 frames per run, at 1,483 draws/frame,
-  `window_mode=fullscreen`, `fullscreen_mode=exclusive`, panel on mode 727 (1x 3440x1440 @120,
-  1:1 scanout), upscaler and frame generation off, 26.5 fps.
+Attempt 1 (two scripted runs, filter on/off) measured a 0.33 ms p50 difference — but the harness drove
+`tools/macos/run.sh`, which reads the **checkout's** `bbport.ini`, where `layer_opaque` is absent. Both
+arms logged `opaque 0` at the `Layer check` line, so both were composited by configuration. Attempt 2
+fixed the opacity (`opaque 1`) and still had both arms composited — run B never reached Direct either,
+confirmed on the HUD.
 
-## Attempt 2 — the harness fix
+What survives from the attempts: a **matched-pair noise floor of 0.4 ms** (p50/p99, 1,800 frames per
+run, 1,483 draws/frame, 37.8 ms frames). Raw data: `out/direct-ab/frames-ab{1,2,1b,2b}.csv` and the
+matching `run-*.out`.
 
-Before any further comparison:
+## What was tried, and what the HUD said (all Composited)
 
-1. Drive the runs with the **app's** settings, not the checkout's: copy
-   `~/Library/Application Support/bbport/bbport.ini` over the checkout's copy (or export
-   `BB_LAYER_OPAQUE=1` and every other key the app sets) and assert `opaque 1` at the `Layer check`
-   line before trusting the run.
-2. Verify **per run, from the HUD**, that the intended path was reached: Composited for arm A,
-   Direct for arm B. A run that does not reach its arm is discarded, not averaged.
-3. Only then compare; anything under the 0.4 ms matched-pair floor is noise.
+1. BetterDisplay compositor filter off (its overlay window gone), layer opaque 1, drawable == mode
+   pixels, 1:1 scanout.
+2. + explicit `NSApp.presentationOptions = HideMenuBar | HideDock` (`took the display:
+   presentationOptions 0xa … window level 25`; AppKit reset it to 0x0 on later checks).
+3. + `SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES=1` (logged; SDL still took the borderless path).
+4. + `SDL_RaiseWindow`, so the game is frontmost with Game Mode On (the earlier scripted runs logged
+   `frontmost app com.tinyspeck.slackmacgap`, a harness fault worth removing anyway).
 
-The BetterDisplay question (does its compositor filter force compositing?) is still open and still
-plausible — it was simply not isolated, because layer opacity already forced compositing in both
-arms.
+## What compositing costs — bounded, not measured
+
+- **The matched-pair noise floor is 0.4 ms.** Nothing below that is a result on this instrument.
+- **A composite of 3440x1440 BGRA is ~40 MB of read+write traffic per frame**, which on this M4 Max
+  (≈500 GB/s) is ~0.1 ms of bandwidth plus one pass launch — under the noise floor and well under the
+  1 ms line the owner set.
+
+So: not worth chasing for frame time. The only argument left for Direct is latency (one stage removed
+from input-to-photon), which nothing in this tree measures.
+
+## What would actually get Direct back (not done)
+
+Create the window **fullscreen at creation** when the panel is already on the target mode — the old
+creation path, which produced the Space, gated so it never issues a display-mode set (the panic was a
+mode set with a live swapchain, not fullscreen creation itself). Concretely: keep the plain-window path
+when `fullscreen_mode` moves the panel to a *different* mode, and use fullscreen-at-creation when the
+mode is already current (an exclusive launch from an already-1x desktop, or `fullscreen_mode=desktop`).
+Verify with the HUD from a screenshot, never from the layer dump — its `fullscreen` field disagreed
+with SDL's flag in all four runs (SDL flag 1, dump 0).
+
+## Harness notes (learned the hard way today)
+
+- Drive visible runs through the **app's** settings: `tools/macos/run.sh` reads the checkout's
+  `bbport.ini`, where `layer_opaque` is absent; without `BB_LAYER_OPAQUE=1` the layer logs `opaque 0`
+  and every arm is composited by configuration.
+- A scripted run can leave another app frontmost (`frontmost app com.tinyspeck.slackmacgap`), which
+  turns Game Mode off; call `SDL_RaiseWindow` after entering fullscreen.
+- Read the HUD from a `screencapture -x` crop of the top-right corner. It is the only reliable tell:
+  the layer dump and SDL's fullscreen flag both disagreed with it today.

@@ -34,6 +34,8 @@ extern "C" int bb_display_native_pixels(void* nswindow, int* width, int* height)
 // applied the mode — the drawable must not be created until it has.
 extern "C" int bb_display_current_pixels(void* nswindow, int* width, int* height);
 extern "C" int bb_display_wait_mode_change(void* nswindow, int old_width, int old_height, int timeout_ms);
+extern "C" int bb_window_take_display(void* nswindow);
+extern "C" void bb_window_release_display(void);
 #endif
 
 
@@ -817,6 +819,9 @@ void apply_window_mode(SDL_Window* window, int mode) {
     }
     switch (mode) {
     case BbSettings::WindowBorderless: {
+#ifdef __APPLE__
+        bb_window_release_display();
+#endif
         SDL_SetWindowFullscreen(window, false);
         SDL_SetWindowFullscreenMode(window, nullptr); // back to the desktop's own mode
         SDL_SetWindowBordered(window, false);
@@ -843,6 +848,17 @@ void apply_window_mode(SDL_Window* window, int mode) {
         SDL_SetWindowBordered(window, true);
         SDL_SetWindowFullscreen(window, true);
         EnsureFullscreenFlag(window, "after entering fullscreen");
+        // Raising matters for Direct: the 2026-10-20 scripted runs logged "frontmost app
+        // com.tinyspeck.slackmacgap (another process)" with the game's window on screen but not
+        // frontmost, and the HUD read Composited; the Direct era had the game as the frontmost app,
+        // with presentationOptions 0x40a and window level 0. A window that does not own the front
+        // does not get the display.
+        SDL_RaiseWindow(window);
+#ifdef __APPLE__
+        if (!WarmRun()) {
+            bb_window_take_display(CocoaWindow(window)); // hide menu bar + Dock: the app owns the display
+        }
+#endif
 #ifdef __APPLE__
         if (!WarmRun()) {
             SDL_SyncWindow(window); // the switch has happened: what CoreGraphics reports now
@@ -854,6 +870,9 @@ void apply_window_mode(SDL_Window* window, int mode) {
     }
     case BbSettings::WindowWindowed:
     default:
+#ifdef __APPLE__
+        bb_window_release_display();
+#endif
         SDL_SetWindowFullscreen(window, false);
         SDL_SetWindowFullscreenMode(window, nullptr); // back to the desktop's own mode
         SDL_SetWindowBordered(window, true);
