@@ -9,9 +9,13 @@
 // frames while the GPU is behind), so it is also when the most is reclaimable.
 //
 // The signal is the port's own frame statistics, not a new one (OnFlipStats already has the frame
-// time and the draw count): a frame is *play* when it was not a long frame and it drew a gameplay
-// number of draws. Both thresholds are ones the port already uses — 40 ms is the frame stats' own
-// "long frame" line, 200 draws is the warm route's gameplay threshold (the title draws ~24).
+// time and the draw count): a frame is *play* when it was not already a long frame and it drew a
+// gameplay number of draws, 200 being the warm route's gameplay threshold (the title draws ~24).
+// The long-frame threshold is 100 ms, the line the arms count hitches at: a trim that lands on such
+// a frame cannot turn a good window into a hitchy one, whatever it costs. Measured at 40 ms — the
+// frame stats' own "long frame" reporting line, a mild stutter at this game's 22 ms median frame —
+// the trim fired on 42-45 ms frames and put 37 of 82 windows over 100 ms, exactly what the fixed
+// 5 s clock cost. The line has to be one where nobody is playing.
 //
 // Only published when a gate asks for it (Enabled()), so with every gate off the hot path is one
 // cached env read per flip and nothing else: no default behaviour changes.
@@ -26,8 +30,8 @@
 namespace Vulkan::PlayState {
 
 namespace detail {
-/// A frame at or over this many ms is a stall, not play (the frame stats' own long-frame line).
-inline constexpr double LongFrameMs = 40.0;
+/// A frame at or over this many ms is already a hitch, not play: the same 100 ms the arms count.
+inline constexpr double LongFrameMs = 100.0;
 /// At or above this many draws a frame the engine is drawing gameplay (the title draws ~24).
 inline constexpr u64 PlayDraws = 200;
 inline constexpr u64 Unpublished = ~u64{0};
