@@ -1,0 +1,312 @@
+kosmickrisp: BB_KK_ALLOC_DUMP, a one-shot per-pool dump of the command allocators (docs/MEMORY_GOVERNOR_2026-10-20.md)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index ad0e081..40da93a 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -91,6 +91,7 @@ kk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
+    if (cmd->drawable)
+       mtl_release(cmd->drawable);
+ 
++   kk_bb_cmd_buffer_unregister(cmd);
+    mtl_release(cmd->argument_table);
+    kk_destroy_encoder_state(&cmd->cmp[0]);
+    kk_destroy_encoder_state(&cmd->cmp[1]);
+@@ -170,6 +171,7 @@ kk_create_cmd_buffer(struct vk_command_pool *vk_pool,
+       &cmd->state.gfx._dynamic_sl;
+ 
+    list_inithead(&cmd->uploader.bos);
++   kk_bb_cmd_buffer_register(cmd);
+ 
+    *cmd_buffer_out = &cmd->vk;
+ 
+@@ -247,6 +249,19 @@ kk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+ 
++   /* bbport (BB_KK_STATS): how many buffers of one pool record at once. */
++   if (kk_bbstats_enabled() &&
++       cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_RECORDING) {
++      struct kk_cmd_pool *bb_pool = kk_cmd_buffer_pool(cmd);
++      const int32_t now = p_atomic_inc_return(&bb_pool->bb_recording);
++      int32_t max = p_atomic_read(&bb_pool->bb_recording_max);
++      while (now > max) {
++         const int32_t seen = p_atomic_cmpxchg(&bb_pool->bb_recording_max, max, now);
++         if (seen == max)
++            break;
++         max = seen;
++      }
++   }
+    kk_reset_cmd_buffer(&cmd->vk, 0u);
+    vk_command_buffer_begin(&cmd->vk, pBeginInfo);
+    /* bbport (BB_KK_BARRIER=lite): Metal 4 adds no synchronisation between
+@@ -267,6 +282,9 @@ kk_EndCommandBuffer(VkCommandBuffer commandBuffer)
+    cs_end(cmd);
+    cs_end(cmd);
+ 
++   if (kk_bbstats_enabled() &&
++       cmd->vk.state == MESA_VK_COMMAND_BUFFER_STATE_RECORDING)
++      p_atomic_dec(&kk_cmd_buffer_pool(cmd)->bb_recording);
+    return vk_command_buffer_end(&cmd->vk);
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index b5f8bdd..498fdd0 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -277,6 +277,9 @@ struct kk_cmd_buffer {
+     * cs_start_render opens a new Vulkan render pass (else it restarts one). */
+    uint32_t bb_pending_before;
+    bool bb_new_pass;
++   /* bbport (BB_KK_STATS): link in the driver-wide list the allocator dump walks. */
++   struct list_head bb_link;
++   bool bb_registered;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(kk_cmd_buffer, vk.base, VkCommandBuffer,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_pool.c b/src/kosmickrisp/vulkan/kk_cmd_pool.c
+index 66ae3ed..eabe124 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_pool.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_pool.c
+@@ -107,6 +107,13 @@ kk_CreateCommandPool(VkDevice _device,
+    }
+ 
+    list_inithead(&pool->free_bos);
++   /* bbport (BB_KK_STATS): recording counters for the allocator dump (kk_device.c). */
++   {
++      static uint32_t bb_next_pool_id;
++      pool->bb_recording = 0;
++      pool->bb_recording_max = 0;
++      pool->bb_id = p_atomic_inc_return(&bb_next_pool_id);
++   }
+    /* bbport (issue #6): upstream never initialises num_free_bos (vk_alloc2 is not zeroed). A
+     * junk value above KK_CMD_POOL_BO_MAX makes every upload block be destroyed after use and a
+     * new Metal heap made for the next one. Counted always; fixed with BB_KK_POOL_FIX=1. */
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_pool.h b/src/kosmickrisp/vulkan/kk_cmd_pool.h
+index 3616c67..fd86120 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_pool.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_pool.h
+@@ -29,6 +29,12 @@ struct kk_cmd_pool {
+    /** List of kk_cmd_bo */
+    struct list_head free_bos;
+    uint32_t num_free_bos;
++
++   /* bbport (BB_KK_STATS): command buffers of this pool between vkBeginCommandBuffer and
++    * vkEndCommandBuffer right now, and the most there ever were at once. */
++   int32_t bb_recording;
++   int32_t bb_recording_max;
++   uint32_t bb_id;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_cmd_pool, vk.base, VkCommandPool,
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 446cf53..bc22e4c 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -31,8 +31,14 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <time.h>
+ 
++#include "kk_cmd_pool.h"
++#include "util/list.h"
++#include "util/simple_mtx.h"
++
+ #include "util/os_time.h"
+ #include "util/u_debug.h"
+ 
+@@ -64,6 +70,165 @@ kk_bb_pool_fix(void)
+    return kk_bb_env_flag(&enabled, "BB_KK_POOL_FIX");
+ }
+ 
++/* bbport (BB_KK_STATS): every live kk_cmd_buffer, for the one-shot allocator dump. */
++static struct list_head bb_cmd_buffers = {&bb_cmd_buffers, &bb_cmd_buffers};
++static simple_mtx_t bb_cmd_buffers_lock = SIMPLE_MTX_INITIALIZER;
++
++void
++kk_bb_cmd_buffer_register(struct kk_cmd_buffer *cmd)
++{
++   cmd->bb_registered = false;
++   if (!kk_bbstats_enabled())
++      return;
++   simple_mtx_lock(&bb_cmd_buffers_lock);
++   list_addtail(&cmd->bb_link, &bb_cmd_buffers);
++   cmd->bb_registered = true;
++   simple_mtx_unlock(&bb_cmd_buffers_lock);
++}
++
++void
++kk_bb_cmd_buffer_unregister(struct kk_cmd_buffer *cmd)
++{
++   if (!cmd->bb_registered)
++      return;
++   simple_mtx_lock(&bb_cmd_buffers_lock);
++   list_del(&cmd->bb_link);
++   cmd->bb_registered = false;
++   simple_mtx_unlock(&bb_cmd_buffers_lock);
++}
++
++struct bb_pool_row {
++   struct kk_cmd_pool *pool;
++   unsigned buffers, recording, executable, pending, initial;
++   uint64_t bytes, max_B, per_state_B[3];
++};
++
++static int
++bb_cmp_u64_desc(const void *a, const void *b)
++{
++   const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
++   return x < y ? 1 : x > y ? -1 : 0;
++}
++
++static void
++kk_bb_alloc_dump(double at_s)
++{
++   enum { MaxPools = 32, MaxBuffers = 8192 };
++   static struct bb_pool_row rows[MaxPools];
++   static uint64_t sizes[MaxPools][MaxBuffers];
++   unsigned npools = 0, overflow = 0;
++   memset(rows, 0, sizeof(rows));
++
++   simple_mtx_lock(&bb_cmd_buffers_lock);
++   list_for_each_entry(struct kk_cmd_buffer, cmd, &bb_cmd_buffers, bb_link) {
++      struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
++      unsigned r = 0;
++      while (r < npools && rows[r].pool != pool)
++         r++;
++      if (r == npools) {
++         if (npools == MaxPools) {
++            overflow++;
++            continue;
++         }
++         rows[npools++].pool = pool;
++      }
++      struct bb_pool_row *row = &rows[r];
++      /* allocatedSize as of each allocator's last reset (the same numbers the running total in
++       * "command allocators N holding M MiB" adds up): no Metal call from this thread. */
++      const uint64_t pre = cmd->pre_gfx->bb_allocated_B, gfx = cmd->gfx.bb_allocated_B,
++                     post = cmd->post_gfx->bb_allocated_B;
++      const uint64_t total = pre + gfx + post;
++      if (row->buffers < MaxBuffers)
++         sizes[r][row->buffers] = total;
++      row->buffers++;
++      row->bytes += total;
++      row->per_state_B[0] += pre;
++      row->per_state_B[1] += gfx;
++      row->per_state_B[2] += post;
++      if (total > row->max_B)
++         row->max_B = total;
++      switch (cmd->vk.state) {
++      case MESA_VK_COMMAND_BUFFER_STATE_RECORDING: row->recording++; break;
++      case MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE: row->executable++; break;
++      case MESA_VK_COMMAND_BUFFER_STATE_PENDING: row->pending++; break;
++      default: row->initial++; break;
++      }
++   }
++   simple_mtx_unlock(&bb_cmd_buffers_lock);
++
++   uint64_t all = 0;
++   unsigned nbufs = 0;
++   for (unsigned r = 0; r < npools; r++) {
++      all += rows[r].bytes;
++      nbufs += rows[r].buffers;
++   }
++   fprintf(stderr,
++           "KosmicKrisp allocator dump at %.0f s: %u command buffers (%u allocators) in %u pools "
++           "hold %llu MiB%s\n",
++           at_s, nbufs, nbufs * 3u, npools, (unsigned long long)(all >> 20),
++           overflow ? " (pools beyond 32 not shown)" : "");
++   for (unsigned r = 0; r < npools; r++) {
++      struct bb_pool_row *row = &rows[r];
++      const unsigned n = row->buffers < MaxBuffers ? row->buffers : MaxBuffers;
++      qsort(sizes[r], n, sizeof(uint64_t), bb_cmp_u64_desc);
++      uint64_t top4 = 0;
++      for (unsigned i = 0; i < n && i < 4; i++)
++         top4 += sizes[r][i];
++      const uint64_t median = n ? sizes[r][n / 2] : 0;
++      fprintf(stderr,
++              "KosmicKrisp allocator dump: pool %u: %u buffers, %llu MiB (pre_gfx %llu, gfx %llu, "
++              "post_gfx %llu); per buffer max %.1f / median %.1f MiB, top 4 hold %llu MiB; "
++              "states now: %u recording, %u executable, %u pending, %u initial; most recording "
++              "at once %d\n",
++              row->pool->bb_id, row->buffers, (unsigned long long)(row->bytes >> 20),
++              (unsigned long long)(row->per_state_B[0] >> 20),
++              (unsigned long long)(row->per_state_B[1] >> 20),
++              (unsigned long long)(row->per_state_B[2] >> 20), row->max_B / 1048576.0,
++              median / 1048576.0, (unsigned long long)(top4 >> 20), row->recording,
++              row->executable, row->pending, row->initial,
++              p_atomic_read(&row->pool->bb_recording_max));
++      /* Every buffer's MiB, largest first, so the shape of the hold is in the log. */
++      char line[4096];
++      int used = 0;
++      for (unsigned i = 0; i < n && used < (int)sizeof(line) - 16; i++)
++         used += snprintf(line + used, sizeof(line) - used, "%s%.1f", i ? " " : "",
++                          sizes[r][i] / 1048576.0);
++      fprintf(stderr, "KosmicKrisp allocator dump: pool %u sizes MiB: %s\n", row->pool->bb_id,
++              line);
++   }
++}
++
++void
++kk_bb_alloc_dump_maybe(void)
++{
++   static int64_t start_ns = 0;
++   static int done_mask = 0;
++   static double at[2] = {-1.0, -1.0};
++   static int parsed = 0;
++   if (!kk_bbstats_enabled())
++      return;
++   if (!p_atomic_read(&parsed)) {
++      const char *v = getenv("BB_KK_ALLOC_DUMP");
++      if (v && *v) {
++         char *end = NULL;
++         at[0] = strtod(v, &end);
++         if (end && *end == ',')
++            at[1] = strtod(end + 1, NULL);
++      }
++      p_atomic_set(&start_ns, os_time_get_nano());
++      p_atomic_set(&parsed, 1);
++   }
++   const double t = (os_time_get_nano() - p_atomic_read(&start_ns)) / 1e9;
++   for (int i = 0; i < 2; i++) {
++      if (at[i] < 0.0 || t < at[i] || (p_atomic_read(&done_mask) & (1 << i)))
++         continue;
++      const int seen = p_atomic_read(&done_mask);
++      if (p_atomic_cmpxchg(&done_mask, seen, seen | (1 << i)) != seen)
++         continue;
++      kk_bb_alloc_dump(t);
++   }
++}
++
+ enum kk_bb_barrier_mode
+ kk_bb_barrier_mode(void)
+ {
+@@ -101,6 +266,7 @@ kk_bbstats_maybe_print(void)
+       return;
+    if (p_atomic_cmpxchg(&next_ns, next, now + 10ll * 1000000000ll) != next)
+       return; /* another thread prints this one */
++   kk_bb_alloc_dump_maybe();
+ 
+    long long s[KK_BBSTAT_COUNT];
+    for (unsigned i = 0; i < KK_BBSTAT_COUNT; i++)
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index 2d0e78c..93965e1 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -180,6 +180,13 @@ bool kk_bbstats_enabled(void);
+ /* bbport (issue #6): BB_KK_POOL_FIX=1 starts each command pool's count of spare upload blocks
+  * at zero (upstream leaves it uninitialised). */
+ bool kk_bb_pool_fix(void);
++/* bbport (BB_KK_STATS + BB_KK_ALLOC_DUMP=<s>[,<s>]): a one-shot dump, at those seconds after the
++ * first stats line, of every live command buffer's three MTL4CommandAllocators (allocatedSize as of
++ * their last reset), grouped by pool, with each pool's peak of buffers recording at once. */
++struct kk_cmd_buffer;
++void kk_bb_cmd_buffer_register(struct kk_cmd_buffer *cmd);
++void kk_bb_cmd_buffer_unregister(struct kk_cmd_buffer *cmd);
++void kk_bb_alloc_dump_maybe(void);
+ /* bbport (BB_KK_BARRIER): end-of-encoder barrier policy.
+  *   legacy (default)  every encoder ends with barrierAfterStages(ALL, ALL)
+  *   lite              render encoders end with barrierAfterStages(ALL, ALL & ~vertex):
