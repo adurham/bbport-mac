@@ -132,10 +132,11 @@ def analyze(tag):
     if footp.exists():
         s = [ln.split() for ln in footp.read_text().splitlines() if ln.strip()]
         feet = [(t, int(a.split("=")[1]), int(b.split("=")[1])) for t, a, b in s if t.isdigit()]
-        if feet:
-            last = feet[-6:] or feet
+        live = [f for f in feet if f[1] > 0]  # 0 = the process was already gone at that sample
+        if live:
+            last = live[-6:] or live
             row["footprint_steady_mib"] = round(statistics.median(f[1] for f in last), 0)
-            row["footprint_max_mib"] = max(f[1] for f in feet)
+            row["footprint_max_mib"] = max(f[1] for f in live)
             row["freepages_min_mib"] = min(f[2] for f in feet)
     return row
 
