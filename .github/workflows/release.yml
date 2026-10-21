@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version, e.g. 0.4-v2 (empty: a test build, nothing published)'
+        description: 'Release version, e.g. 0.4-v2, or 0.6-v1-pre1 for a pre-release (empty: a test build, nothing published)'
         required: false
         default: ''
 
@@ -110,7 +110,7 @@ jobs:
           key: ${{ steps.deps.outputs.cache-primary-key }}
 
       # The native GPU process branches (docs/macos-native-gpu.md): the same libraries for arm64,
-      # kept the same way, and bb-gpu built against them (not packaged: a build check).
+      # kept the same way, and bb-gpu built against them (packaged with them: tools/macos/package.sh).
       - name: Restore arm64 dependencies
         id: deps_arm64
         if: hashFiles('tools/macos/build_gpu_native.sh') != ''
