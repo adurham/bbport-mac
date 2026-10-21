@@ -12,7 +12,7 @@
 #   trace2560-N : trace-N at BB_UPSCALER=fsr3 BB_UPSCALE_PRESET=4 with OUT_RES=2560x1440
 #
 # Env: SECS (420), SKIP_VS (the vertex shader hashes, comma separated), TRACE_S (4), TRACE_AFTER (30),
-# RES (3440x1440), PASS_FRAMES (240), BB_WARM_USER (out/curve3440/user).
+# RES (3440x1440), PASS_FRAMES (400), BB_WARM_USER (out/curve3440/user).
 # Outputs: out/frames-TAG.csv, out/run-TAG.log, out/pass-TAG.txt, out/vertex/{attempts.jsonl,
 # wrapper-*,foot-*}; report: python3 tools/macos/null_render_report.py TAG...
 set -uo pipefail
@@ -57,7 +57,8 @@ watchdog() {
 trigger_watch() {
     local trig=$1 tdir=$here/out/mtl-$tag.trace
     while kill -0 "$route" 2>/dev/null; do
-        if [[ -d $tdir ]] || pgrep -f "xctrace record" >/dev/null 2>&1; then
+        # Exact output path: another session's xctrace must not arm this run's window.
+        if [[ -d $tdir ]] || pgrep -f "output out/mtl-$tag.trace" >/dev/null 2>&1; then
             : > "$trig"
             echo "vertex_ceiling: pass-trace trigger touched $(date +%T)" >> "$res/wrapper-$tag-$attempt.txt"
             return
@@ -71,6 +72,8 @@ for tag in "$@"; do
     case $tag in
         ctrl-*)   arm=() ;;
         skip-*)   arm=(BB_SKIP_VS="${SKIP_VS:?SKIP_VS not set}") ;;
+        skiptrace-*) arm=(BB_SKIP_VS="${SKIP_VS:?SKIP_VS not set}")
+                  trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-3} TRACE_AFTER=${TRACE_AFTER:-200}) ;;
         trace-*)  trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-4} TRACE_AFTER=${TRACE_AFTER:-30}) ;;
         trace2560-*) trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-4} TRACE_AFTER=${TRACE_AFTER:-30}); outres=2560x1440 ;;
         *) echo "unknown tag $tag"; continue ;;
@@ -79,7 +82,7 @@ for tag in "$@"; do
         ptrigger=$here/out/passtrace_trigger
         rm -f "$ptrigger"
         traceenv=(BB_PASS_TRACE="$here/out/pass-$tag.txt" BB_PASS_TRACE_TRIGGER="$ptrigger" \
-                  BB_PASS_TRACE_FRAMES="${PASS_FRAMES:-240}")
+                  BB_PASS_TRACE_FRAMES="${PASS_FRAMES:-400}")
         rm -f "$here/out/pass-$tag.txt"
     fi
     [[ -f $res/$tag.done ]] && { echo "$tag done - skip"; continue; }

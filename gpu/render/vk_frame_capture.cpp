@@ -150,6 +150,8 @@ struct PassLine {
 bool pass_trace_enabled = false;
 std::string pass_trace_path, pass_trace_trigger;
 u64 pass_trace_frames = 200;
+u64 pass_trace_min_draws = 400;   ///< the trigger only arms on a frame that draws the game
+u64 pass_trace_draws_at_flip = 0;
 bool pass_trace_armed = false;   ///< the trigger fired; the next encoder opens the file
 bool pass_trace_open = false;
 FILE* pass_trace_file = nullptr;
@@ -281,11 +283,20 @@ void FrameCapture::PassTraceFlip() {
     if (!std::filesystem::exists(pass_trace_trigger)) {
         return;
     }
+    // Only a frame that actually draws the game arms the window: the trigger can land while the
+    // title still owns the screen (a boot frame has 4 encoders, a gameplay frame ~190).
+    const u64 draws = BbStats::draws.load(std::memory_order_relaxed);
+    const u64 since = draws - pass_trace_draws_at_flip;
+    pass_trace_draws_at_flip = draws;
+    if (since < pass_trace_min_draws) {
+        return;
+    }
     std::error_code ec;
     std::filesystem::remove(pass_trace_trigger, ec);
     pass_trace_armed = true;
     pass_trace_flips_at_arm.store(flip, std::memory_order_relaxed);
-    std::printf("Pass trace: armed at flip %llu\n", static_cast<unsigned long long>(flip));
+    std::printf("Pass trace: armed at flip %llu (%llu draws since the last flip)\n",
+                static_cast<unsigned long long>(flip), static_cast<unsigned long long>(since));
     std::fflush(stdout);
 }
 

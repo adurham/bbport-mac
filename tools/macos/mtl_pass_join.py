@@ -22,6 +22,7 @@ Two joins, in order:
 """
 import collections
 import json
+import math
 import os
 import statistics
 import sys
@@ -66,21 +67,24 @@ def trace_frames(path):
         return frames, 'frame-number'
 
     # No frame numbers: split on the sequence's own period. The standing route repeats its frame
-    # structure exactly, so the lag with the smallest mean |Δ vertex| is the encoders-per-frame.
-    vs = [e['V'] / 1e3 for e in render]
+    # structure exactly, so the lag whose segments agree best with each other (lowest mean
+    # within-position spread of log vertex time) is the encoders-per-frame.
+    vs = [math.log1p(e['V'] / 1e3) for e in render]
     best = None
-    for lag in range(120, 300):
-        if lag >= len(vs) // 2:
+    for lag in range(140, 260):
+        if lag * 3 > len(vs):
             break
-        diffs = [abs(vs[i] - vs[i + lag]) for i in range(len(vs) - lag)]
-        score = statistics.fmean(diffs)
-        if best is None or score < best[0]:
-            best = (score, lag)
+        nseg = len(vs) // lag
+        seg = [vs[k * lag:(k + 1) * lag] for k in range(nseg)]
+        spread = statistics.fmean(
+            statistics.pstdev([seg[k][i] for k in range(nseg)]) for i in range(lag))
+        if best is None or spread < best[0]:
+            best = (spread, lag)
     lag = best[1] if best else max(1, len(render))
     frames = collections.defaultdict(list)
     for i, e in enumerate(render):
         frames[i // lag].append(e)
-    return frames, f'period {lag} (mean |dvertex| {best[0]:.2f} us)'
+    return frames, f'period {lag} (mean within-position spread {best[0]:.3f})'
 
 
 # ---------------------------------------------------------------- port side
@@ -129,47 +133,49 @@ def spearman(xs, ys):
     return cov / (sx * sy) if sx and sy else 0.0
 
 
-def template(frames):
-    """The modal frame of a frame list (its encoder count is the frame's shape)."""
+def median_template(frames, attr):
+    """Median of a per-position attribute over the frames that share the modal encoder count.
+
+    Returns (count, [median value per position]).
+    """
     counts = collections.Counter(len(v) for v in frames.values() if isinstance(v, list))
     n = counts.most_common(1)[0][0]
-    best = min((v for v in frames.values() if isinstance(v, list) and len(v) == n),
-               key=lambda v: 0)
-    return n, best
+    segs = [v for v in frames.values() if isinstance(v, list) and len(v) == n]
+    out = []
+    for i in range(n):
+        vals = [attr(seg[i]) for seg in segs]
+        out.append(statistics.median(vals))
+    return n, out, len(segs)
 
 
 def align_dp(port, trace):
     """Order-preserving alignment of a port frame to a trace frame, on ranks of work.
 
-    port: list of pass records (indices = vertex work). trace: list of encoders (vertex us).
-    Returns [(port_index, trace_index)] for matched pairs.
+    Every port pass is matched (a port pass always produces an encoder); the trace may carry
+    encoders the port does not open, so skipping a trace position is cheap and skipping a port
+    position is impossible. Cost of a pair = |rank difference|, ranks taken over log work so a
+    handful of huge passes do not flatten the rest.
     """
-    pi = [float(r.get('idx', 0)) for r in port]
-    tv = [e['V'] / 1e3 for e in trace]
-    ra, rb = ranks(pi), ranks(tv)
+    pa = [math.log1p(float(r.get('idx', 0))) for r in port]
+    tv = [math.log1p(e['V'] / 1e3) for e in trace]
+    ra, rb = ranks(pa), ranks(tv)
     n, m = len(port), len(trace)
-    SKIP_PORT, SKIP_TRACE = 0.30, 0.04     # a trace-only encoder is expected; a port-only one is not
-    INF = 1e18
+    SKIP_TRACE = 0.02
+    INF = 1e9
     cost = [[0.0] * (m + 1) for _ in range(n + 1)]
     back = [[0] * (m + 1) for _ in range(n + 1)]
     for i in range(1, n + 1):
-        cost[i][0] = cost[i - 1][0] + SKIP_PORT
+        cost[i][0] = INF
         back[i][0] = 1
     for j in range(1, m + 1):
         cost[0][j] = cost[0][j - 1] + SKIP_TRACE
         back[0][j] = 2
     for i in range(1, n + 1):
-        ci = cost[i]
-        cp = cost[i - 1]
-        bi = back[i]
+        ci, cp, bi = cost[i], cost[i - 1], back[i]
         for j in range(1, m + 1):
-            match = cp[j - 1] + abs(ra[i - 1] - rb[j - 1])
-            skip_p = cp[j] + SKIP_PORT
-            skip_t = ci[j - 1] + SKIP_TRACE
-            best = match
+            best = cp[j - 1] + abs(ra[i - 1] - rb[j - 1])
             how = 0
-            if skip_p < best:
-                best, how = skip_p, 1
+            skip_t = ci[j - 1] + SKIP_TRACE
             if skip_t < best:
                 best, how = skip_t, 2
             ci[j] = best
@@ -231,14 +237,17 @@ def main():
                 rows.append(dict(rec=rec, v=e['V'] / 1e3, f=e['F'] / 1e3, how='ordinal', fi=fi))
         mode = 'frame ordinal'
     else:
-        # ---- 2. rank-sequence DP on one frame template
-        tn, tframe = template(tf)
-        pn, pframe = template(pf)
-        pairs = align_dp(pframe, tframe)
+        # ---- 2. rank-sequence DP on the frame templates (median per position)
+        pn, pidx, npf = median_template(pf, lambda r: float(r.get('idx', 0)))
+        tn, tv_ns, ntf = median_template(tf, lambda e: e['V'])
+        pframe = next(v for v in pf.values() if isinstance(v, list) and len(v) == pn)
+        ttempl = [dict(V=v, F=0.0) for v in tv_ns]
+        pairs = align_dp(pframe, ttempl)
         corr = spearman([float(pframe[i].get('idx', 0)) for i, _ in pairs],
-                        [tframe[j]['V'] / 1e3 for _, j in pairs])
-        print(f'rank-sequence join: port template {pn} encoders, trace template {tn} encoders, '
-              f'{len(pairs)} matched pairs, Spearman(indices, vertex) = {corr:.2f}')
+                        [tv_ns[j] / 1e3 for _, j in pairs])
+        print(f'rank-sequence join: port template {pn} encoders ({npf} frames), trace template '
+              f'{tn} encoders ({ntf} frames), {len(pairs)} matched pairs, '
+              f'Spearman(indices, vertex) = {corr:.2f}')
         if corr < 0.5:
             print('  the two sequences do not line up (correlation too low): no attribution')
             return 1
