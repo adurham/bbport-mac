@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "upscale/vk_metalfx.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -291,15 +292,34 @@ bool MetalFxUpscaler::EnsureResources(const Frame& frame) {
         .hdr = hdr,
     };
     std::string error;
+    // The first MetalFX frame of a session has taken about 14 s (2026-10-21, arm64, the GPU thread
+    // busy throughout): creation and the first encode are timed to tell which part it is.
+    const auto start = std::chrono::steady_clock::now();
     scaler = BbMetalFx::Scaler::Create(
         config, {staging[0].heap, staging[1].heap, staging[2].heap, staging[3].heap}, error);
     if (!scaler) {
         Fail(error, true);
         return false;
     }
-    std::printf("Upscaler: MetalFX %ux%u -> %ux%u (%s)\n", width, height, out_width, out_height,
-                hdr ? "HDR scene color" : "tonemapped frame");
+    std::printf("Upscaler: MetalFX %ux%u -> %ux%u (%s), created in %.0f ms\n", width, height,
+                out_width, out_height, hdr ? "HDR scene color" : "tonemapped frame",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count());
+    first_encode.store(true, std::memory_order_relaxed);
     return true;
+}
+
+bool MetalFxUpscaler::Encode(const BbMetalFx::Frame& metal, std::string& error) {
+    if (!first_encode.exchange(false, std::memory_order_relaxed)) {
+        return scaler->Encode(metal, error);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const bool ok = scaler->Encode(metal, error);
+    std::printf("Upscaler: MetalFX's first frame encoded in %.0f ms\n",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                    .count());
+    std::fflush(stdout);
+    return ok;
 }
 
 bool MetalFxUpscaler::Run(const Frame& frame) {
@@ -377,7 +397,7 @@ bool MetalFxUpscaler::Run(const Frame& frame) {
         // The GPU finishes everything first; MetalFX runs here and is waited for.
         scheduler.Finish();
         std::string error;
-        if (!scaler->Encode(metal, error)) {
+        if (!Encode(metal, error)) {
             Fail(error, true);
             return false;
         }
@@ -388,7 +408,7 @@ bool MetalFxUpscaler::Run(const Frame& frame) {
         metal.signal_event = done_event;
         metal.signal_value = done_value + 1;
         std::string error;
-        if (!scaler->Encode(metal, error)) {
+        if (!Encode(metal, error)) {
             Fail(error, true);
             return false;
         }
@@ -440,7 +460,7 @@ bool MetalFxUpscaler::Run(const Frame& frame) {
             [this, metal, copies_tick, work = scheduler.GetWorkSemaphore()] {
                 work->Wait(copies_tick);
                 std::string error;
-                if (!scaler->Encode(metal, error)) {
+                if (!Encode(metal, error)) {
                     std::scoped_lock lock{deferred_mutex};
                     deferred_error = error;
                 }

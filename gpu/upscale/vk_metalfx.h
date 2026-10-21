@@ -12,6 +12,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -21,6 +22,7 @@
 
 namespace BbMetalFx {
 class Scaler;
+struct Frame;
 }
 
 namespace Vulkan {
@@ -108,6 +110,9 @@ private:
     u64 done_value = 0;
     std::array<Staging, 4> staging{}; ///< color, depth, motion, output
     std::unique_ptr<BbMetalFx::Scaler> scaler;
+    /// scaler->Encode, timed for a new scaler's first frame (the log says how long it took).
+    bool Encode(const BbMetalFx::Frame& metal, std::string& error);
+    std::atomic<bool> first_encode{false};
     u32 width = 0, height = 0, out_width = 0, out_height = 0;
     vk::Format color_format = vk::Format::eUndefined;
     bool hdr = false;
