@@ -221,9 +221,10 @@ fi
 step "KosmicKrisp (Mesa Vulkan-on-Metal driver, $ARCH)"
 # The Vulkan driver upstream shadPS4 bundles on macOS; the vendored renderer already carries its
 # driver-specific workarounds. Built with shadPS4's wrapper (meson, cross-compiled to x86-64).
-# squidbus's first revision with the newer Mesa (shadPS4 #5138): its command buffer rework pools
-# Metal command buffers and allocators (issue #6); no geometry shaders yet.
-KK_REV=${KK_REV:-a82cadb14cb225eaeadf190d5c9d20ca8ec91744}
+# Test branch: squidbus's newest revision (2026-10-16), the one mainline shadPS4 bundles: Mesa
+# rebased again (b23137f), a sparse buffer fix, and geometry shaders (af7dd0a);
+# BB_GEOMETRY_SHADERS=0 hides them again for A/B runs.
+KK_REV=${KK_REV:-52d87b35f3a4fc8aff5acb4daaa548c8ff7870f1}
 # This port's Mesa patches (tools/macos/kosmickrisp-patches): a change rebuilds the driver.
 KK_PATCHES=$(cat "$REPO"/tools/macos/kosmickrisp-patches/*.patch 2>/dev/null | shasum | cut -c1-16)
 kk_stamp=$PREFIX/lib/kosmickrisp/.bbport-patches

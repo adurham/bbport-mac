@@ -192,6 +192,13 @@ void Instance::CreateDevice() {
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE,
         vk::PhysicalDeviceCooperativeMatrixFeaturesKHR, vk::PhysicalDeviceShaderFloat8FeaturesEXT>();
     features = query.get().features;
+    // bbport: BB_GEOMETRY_SHADERS=0 hides the geometry stage (its draws are skipped, as before
+    // KosmicKrisp had it), for A/B runs: KosmicKrisp emulates it with compute passes that end the
+    // render pass.
+    if (const char* gs = std::getenv("BB_GEOMETRY_SHADERS"); gs && gs[0] == '0') {
+        features.geometryShader = false;
+        std::printf("Vulkan: geometry shaders hidden (BB_GEOMETRY_SHADERS=0)\n");
+    }
     const auto& vk11 = query.get<vk::PhysicalDeviceVulkan11Features>();
     vk12_features = query.get<vk::PhysicalDeviceVulkan12Features>();
     vk13_features = query.get<vk::PhysicalDeviceVulkan13Features>();
