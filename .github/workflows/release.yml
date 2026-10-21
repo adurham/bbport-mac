@@ -5,6 +5,8 @@
 # - pushing a tag such as 0.4-v2;
 # - pushing a branch release/0.4-v2.
 # Versions: <upstream bbport version>-v<our build for it>, e.g. 0.4-v1, 0.4-v2, 0.4.1-v1, 0.5-v1.
+# A test release before it ends in -pre<n> (0.6-v1-pre1): published as a GitHub pre-release, so
+# the latest release stays the one most people should download.
 # A push to a ci-* branch, or "Run workflow" without a version, only builds the zip (kept as a
 # workflow artifact), to try a build without releasing it; such test builds reuse what an earlier
 # test build of the same branch compiled (ccache), releases never do. The ci-* branch is deleted again
@@ -71,10 +73,11 @@ jobs:
             version=$(git describe --tags --always)-ci
             publish=0
           fi
-          # A release is <upstream version>-v<build> (0.5-v1, 0.5.1-v2); a test build's describe
-          # output only needs to start with a letter or digit (never an option for gh or git).
+          # A release is <upstream version>-v<build> (0.5-v1, 0.5.1-v2), a pre-release that and
+          # -pre<n> (0.6-v1-pre1); a test build's describe output only needs to start with a
+          # letter or digit (never an option for gh or git).
           if (( publish )); then
-            [[ $version =~ ^[0-9]+(\.[0-9]+)*-v[0-9]+$ ]] || { echo "::error::version '$version': expected <upstream>-v<n>, e.g. 0.5-v1"; exit 1; }
+            [[ $version =~ ^[0-9]+(\.[0-9]+)*-v[0-9]+(-pre[0-9]+)?$ ]] || { echo "::error::version '$version': expected <upstream>-v<n>, e.g. 0.5-v1, or 0.6-v1-pre1"; exit 1; }
           else
             [[ $version =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "::error::version '$version': letters, digits, dot, dash or underscore only"; exit 1; }
           fi
@@ -252,12 +255,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.build.outputs.version }}
         run: |
-          [[ $TAG =~ ^[0-9]+(\.[0-9]+)*-v[0-9]+$ ]] || { echo "::error::version '$TAG'"; exit 1; }
+          [[ $TAG =~ ^[0-9]+(\.[0-9]+)*-v[0-9]+(-pre[0-9]+)?$ ]] || { echo "::error::version '$TAG'"; exit 1; }
           notes=docs/release/$TAG.md
           [[ -f $notes ]] || notes=docs/release/NEXT.md
           (cd dist && shasum -a 256 -c ./*.zip.sha256)
+          # A pre-release (-pre<n>) leaves the latest release as it is.
+          kind=--latest
+          [[ $TAG == *-pre* ]] && kind=--prerelease
           gh release create "$TAG" dist/*.zip dist/*.zip.sha256 \
-            --target "$GITHUB_SHA" --title "bbport-mac-$TAG" --notes-file "$notes" --latest
+            --target "$GITHUB_SHA" --title "bbport-mac-$TAG" --notes-file "$notes" "$kind"
 
   # Test builds: the ci-* branch was only pushed to start this run; it goes once the build has
   # finished, pass or fail (not when the run was cancelled). Like publish, it runs no build code:

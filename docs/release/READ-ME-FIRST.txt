@@ -30,7 +30,7 @@ launch compiles shaders: a black window for a few minutes is normal.
 In game, the settings menu is on F1, ` or § (L3+R3 on a controller).
 
 The full guide: Help > bbport User Guide in the app, or
-https://github.com/bmy/bbport-mac/blob/macos-0.4/docs/USER_GUIDE.md
+https://github.com/bmy/bbport-mac/blob/macos-native-0.6/docs/USER_GUIDE.md
 
 Problems: https://github.com/bmy/bbport-mac/issues
 (attach the log: Help > Show the Last Run's Log)

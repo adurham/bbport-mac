@@ -4,7 +4,7 @@ update.
 
 Download the zip below, open it and drag **bbport.app** into Applications, replacing the old
 one (your settings and saves are kept). New users: see the
-**[user guide](https://github.com/bmy/bbport-mac/blob/macos-0.4/docs/USER_GUIDE.md)**.
+**[user guide](https://github.com/bmy/bbport-mac/blob/macos-native-0.6/docs/USER_GUIDE.md)**.
 
 What changed: see the commits since the previous release.
 
