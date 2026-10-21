@@ -3,8 +3,9 @@
 Status: the default on the native branches (`macos-native-0.6`, 2026-10-21) wherever bb-gpu is
 built (`tools/macos/build_gpu_native.sh`, which needs `deps-arm64`): the GPU side runs in a native
 arm64 process. `BB_NATIVE_GPU=0`, or the app's "In-process GPU (Rosetta)", keeps the in-process
-x86-64 path; a release (which does not package bb-gpu yet) and a checkout without it use that path
-too. Known gap: the in-game menu pointer. MetalFX works here and not in-process: under Rosetta
+x86-64 path; a checkout without bb-gpu uses that path too. The release app ships bb-gpu
+(`Contents/Resources/bbport/bin/gpu-arm64`) with its own arm64 libraries and driver
+(`deps-arm64/lib` there, `tools/macos/package.sh`). Known gap: the in-game menu pointer. MetalFX works here and not in-process: under Rosetta
 its Neural Engine part fails to set up and its work hangs for about 4 s at a time until macOS
 stops it.
 

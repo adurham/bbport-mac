@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # tools/macos/package.sh: the release download. Puts the launcher, the game engine (bb-probe, the
 # GPU library, run.sh and its Python scripts), the x86-64 libraries they load and the KosmicKrisp
-# Vulkan driver into one self-contained bbport.app, and zips it with a short read-me:
+# Vulkan driver into one self-contained bbport.app, and zips it with a short read-me. On the
+# native branches also the native GPU process (bin/gpu-arm64: bb-gpu and its GPU library) with
+# its own arm64 libraries and driver (deps-arm64/lib), which the game then uses by default:
 #   bash tools/macos/setup_deps.sh && bash tools/macos/build.sh
 #   bash tools/macos/package.sh 0.4-v1           # dist/bbport-mac-0.4-v1.zip (+ .sha256)
 # Versions: <upstream bbport version>-v<our build for it>: 0.4-v1, 0.4-v2, 0.4.1-v1, 0.5-v1.
@@ -28,6 +30,17 @@ for file in out/bb-probe out/bb-gpu-capabilities out/gpu/libbbgpu.dylib \
             "$kk/libvulkan_kosmickrisp.dylib" "$kk/kosmickrisp_mesa_icd.json"; do
     [[ -f $file ]] || die "$file missing: run tools/macos/setup_deps.sh and tools/macos/build.sh first"
 done
+# The native GPU process: a branch that builds it ships it (the game's default where it is).
+native=
+if [[ -f tools/macos/build_gpu_native.sh ]]; then
+    native=yes
+    DEPS_ARM64=${BB_DEPS_ARM64:-$repo/deps-arm64}
+    kk_arm64=$DEPS_ARM64/lib/kosmickrisp
+    for file in out/gpu-arm64/bb-gpu out/gpu-arm64/libbbgpu.dylib "$DEPS_ARM64/lib/libvulkan.1.dylib" \
+                "$kk_arm64/libvulkan_kosmickrisp.dylib" "$kk_arm64/kosmickrisp_mesa_icd.json"; do
+        [[ -f $file ]] || die "$file missing: run BB_ARCH=arm64 tools/macos/setup_deps.sh and tools/macos/build_gpu_native.sh first"
+    done
+fi
 command -v python3 >/dev/null || die "python3 missing"
 
 name=bbport-mac-$version
@@ -51,7 +64,8 @@ cp out/bb-probe out/bb-gpu-capabilities "$engine/bin/"
 cp out/gpu/libbbgpu.dylib "$engine/bin/gpu/"
 cp "$kk/libvulkan_kosmickrisp.dylib" "$engine/lib/kosmickrisp/"
 # The driver manifest names the library next to it (a relative path is relative to the manifest).
-python3 - "$kk/kosmickrisp_mesa_icd.json" "$engine/lib/kosmickrisp/kosmickrisp_mesa_icd.json" <<'PY'
+manifest() {  # manifest <source json> <target json>
+    python3 - "$1" "$2" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1]))
 manifest["ICD"]["library_path"] = "./libvulkan_kosmickrisp.dylib"
@@ -59,6 +73,19 @@ with open(sys.argv[2], "w") as out:
     json.dump(manifest, out, indent=4)
     out.write("\n")
 PY
+}
+manifest "$kk/kosmickrisp_mesa_icd.json" "$engine/lib/kosmickrisp/kosmickrisp_mesa_icd.json"
+# The native GPU process, laid out as in a checkout around bb-probe: bin/gpu-arm64/bb-gpu, and
+# its libraries in deps-arm64/lib (remote_front.cpp looks there, and sets the Vulkan loader and
+# driver from it for bb-gpu).
+engine_arm64=$engine/deps-arm64/lib
+if [[ -n $native ]]; then
+    mkdir -p "$engine/bin/gpu-arm64" "$engine_arm64/kosmickrisp"
+    cp out/gpu-arm64/bb-gpu out/gpu-arm64/libbbgpu.dylib "$engine/bin/gpu-arm64/"
+    cp -L "$DEPS_ARM64/lib/libvulkan.1.dylib" "$engine_arm64/"
+    cp "$kk_arm64/libvulkan_kosmickrisp.dylib" "$engine_arm64/kosmickrisp/"
+    manifest "$kk_arm64/kosmickrisp_mesa_icd.json" "$engine_arm64/kosmickrisp/kosmickrisp_mesa_icd.json"
+fi
 touch "$engine/.packaged"
 echo "$version" > "$engine/.version"
 chmod -R u+w "$engine"
@@ -72,52 +99,67 @@ loads() {  # the libraries a Mach-O file loads
 rpaths() {
     otool -l "$1" | awk '/cmd LC_RPATH$/ { getline; getline; print $2 }'
 }
-search=("$DEPS/lib" "$repo/out/gpu" "$kk")
-find_library() {  # find_library <load command path>: the file to copy, or nothing
+find_library() {  # find_library <load command path> <search dir>...: the file to copy, or nothing
     local ref=$1 base dir
+    shift
     if [[ $ref == /* ]]; then
         [[ -f $ref ]] && { printf '%s\n' "$ref"; return; }
     fi
     base=${ref##*/}
-    for dir in "${search[@]}"; do
+    for dir in "$@"; do
         [[ -f $dir/$base ]] && { printf '%s\n' "$dir/$base"; return; }
     done
     return 0
 }
-queue=("$engine/bin/bb-probe" "$engine/bin/bb-gpu-capabilities" "$engine/bin/gpu/libbbgpu.dylib"
-       "$engine/lib/kosmickrisp/libvulkan_kosmickrisp.dylib")
-done_files=" "
-while (( ${#queue[@]} )); do
-    file=${queue[0]}
-    queue=("${queue[@]:1}")
-    [[ $done_files == *" $file "* ]] && continue
-    done_files+="$file "
-    while IFS= read -r ref; do
-        case $ref in
-            /usr/lib/*|/System/*) continue ;;
-        esac
-        base=${ref##*/}
-        if [[ $base == libbbgpu.dylib ]]; then
-            target=$engine/bin/gpu/libbbgpu.dylib
-        elif [[ $base == libvulkan_kosmickrisp.dylib ]]; then
-            target=$engine/lib/kosmickrisp/$base
-        else
-            target=$engine/lib/$base
-        fi
-        if [[ ! -f $target ]]; then
-            source_file=$(find_library "$ref")
-            [[ -n $source_file ]] || die "$(basename "$file") loads $ref, which was not found in ${search[*]}"
-            cp -L "$source_file" "$target"
-            chmod u+w "$target"
-            echo "  $base  ($source_file)"
-            queue+=("$target")
-        fi
-        if [[ $ref != "@rpath/$base" ]]; then
-            # (stderr: the "will invalidate the code signature" notice; signed again below)
-            install_name_tool -change "$ref" "@rpath/$base" "$file" 2>/dev/null
-        fi
-    done < <(loads "$file")
-done
+# bundle <lib dir> <GPU library dir> <search dirs, ':'-separated> <files...>: copies what the
+# files load (and what that loads) from the search dirs into the app, loaded through @rpath.
+bundle() {
+    local libdir=$1 gpudir=$2 file ref base target source_file done_files=" "
+    local -a search queue
+    IFS=: read -r -a search <<< "$3"
+    shift 3
+    queue=("$@")
+    while (( ${#queue[@]} )); do
+        file=${queue[0]}
+        queue=("${queue[@]:1}")
+        [[ $done_files == *" $file "* ]] && continue
+        done_files+="$file "
+        while IFS= read -r ref; do
+            case $ref in
+                /usr/lib/*|/System/*) continue ;;
+            esac
+            base=${ref##*/}
+            if [[ $base == libbbgpu.dylib ]]; then
+                target=$gpudir/libbbgpu.dylib
+            elif [[ $base == libvulkan_kosmickrisp.dylib ]]; then
+                target=$libdir/kosmickrisp/$base
+            else
+                target=$libdir/$base
+            fi
+            if [[ ! -f $target ]]; then
+                source_file=$(find_library "$ref" "${search[@]}")
+                [[ -n $source_file ]] || die "$(basename "$file") loads $ref, which was not found in ${search[*]}"
+                cp -L "$source_file" "$target"
+                chmod u+w "$target"
+                echo "  $base  ($source_file)"
+                queue+=("$target")
+            fi
+            if [[ $ref != "@rpath/$base" ]]; then
+                # (stderr: the "will invalidate the code signature" notice; signed again below)
+                install_name_tool -change "$ref" "@rpath/$base" "$file" 2>/dev/null
+            fi
+        done < <(loads "$file")
+    done
+}
+bundle "$engine/lib" "$engine/bin/gpu" "$DEPS/lib:$repo/out/gpu:$kk" \
+    "$engine/bin/bb-probe" "$engine/bin/bb-gpu-capabilities" "$engine/bin/gpu/libbbgpu.dylib" \
+    "$engine/lib/kosmickrisp/libvulkan_kosmickrisp.dylib"
+if [[ -n $native ]]; then
+    echo "  (arm64, for the native GPU process)"
+    bundle "$engine_arm64" "$engine/bin/gpu-arm64" "$DEPS_ARM64/lib:$repo/out/gpu-arm64:$kk_arm64" \
+        "$engine/bin/gpu-arm64/bb-gpu" "$engine/bin/gpu-arm64/libbbgpu.dylib" \
+        "$engine_arm64/libvulkan.1.dylib" "$engine_arm64/kosmickrisp/libvulkan_kosmickrisp.dylib"
+fi
 
 # Install names and search paths. Absolute search paths (the build machine's deps-x86_64) go.
 fix_rpaths() {  # fix_rpaths <file> <rpath to add>...
@@ -134,7 +176,8 @@ fix_rpaths() {  # fix_rpaths <file> <rpath to add>...
         fi
     done
 }
-for lib in "$engine"/lib/*.dylib "$engine"/lib/kosmickrisp/*.dylib "$engine"/bin/gpu/*.dylib; do
+for lib in "$engine"/lib/*.dylib "$engine"/lib/kosmickrisp/*.dylib "$engine"/bin/gpu/*.dylib \
+           "$engine_arm64"/*.dylib "$engine_arm64"/kosmickrisp/*.dylib "$engine"/bin/gpu-arm64/*.dylib; do
     if [[ -f $lib ]]; then
         install_name_tool -id "@rpath/$(basename "$lib")" "$lib" 2>/dev/null
     fi
@@ -148,11 +191,20 @@ for lib in "$engine"/lib/*.dylib; do
     fi
 done
 fix_rpaths "$engine/lib/kosmickrisp/libvulkan_kosmickrisp.dylib" @loader_path/..
+if [[ -n $native ]]; then
+    fix_rpaths "$engine/bin/gpu-arm64/bb-gpu" @loader_path @loader_path/../../deps-arm64/lib
+    fix_rpaths "$engine/bin/gpu-arm64/libbbgpu.dylib" @loader_path/../../deps-arm64/lib
+    for lib in "$engine_arm64"/*.dylib; do
+        fix_rpaths "$lib" @loader_path
+    done
+    fix_rpaths "$engine_arm64/kosmickrisp/libvulkan_kosmickrisp.dylib" @loader_path/..
+fi
 
 echo "=== Check"
 # tools/macos/run.sh names the Vulkan loader by path (BB_VULKAN_LIBRARY).
 [[ -f $engine/lib/libvulkan.1.dylib ]] || die "lib/libvulkan.1.dylib missing from the app: $(ls "$engine/lib")"
-# Every load resolves inside the app or to macOS, and the engine is x86-64 throughout.
+# Every load resolves inside the app or to macOS. The engine is x86-64, but for the native GPU
+# process and its libraries (arm64), which load only each other.
 bad=0
 machos=()
 while IFS= read -r -d '' file; do
@@ -162,8 +214,14 @@ while IFS= read -r -d '' file; do
 done < <(find "$engine" -type f -print0)
 for file in "${machos[@]}"; do
     archs=$(lipo -archs "$file")
-    if [[ $archs != *x86_64* ]]; then
-        echo "  not x86-64: ${file#"$app"/} ($archs)"
+    case $file in
+        "$engine"/bin/gpu-arm64/*|"$engine"/deps-arm64/*)
+            arch=arm64 dirs=("$engine_arm64" "$engine/bin/gpu-arm64" "$engine_arm64/kosmickrisp") ;;
+        *)
+            arch=x86_64 dirs=("$engine/lib" "$engine/bin/gpu" "$engine/lib/kosmickrisp") ;;
+    esac
+    if [[ " $archs " != *" $arch "* ]]; then
+        echo "  not $arch: ${file#"$app"/} ($archs)"
         bad=1
     fi
     while IFS= read -r ref; do
@@ -171,7 +229,7 @@ for file in "${machos[@]}"; do
             /usr/lib/*|/System/*) ;;
             @rpath/*)
                 base=${ref#@rpath/}
-                if [[ ! -f $engine/lib/$base && ! -f $engine/bin/gpu/$base && ! -f $engine/lib/kosmickrisp/$base ]]; then
+                if [[ ! -f ${dirs[0]}/$base && ! -f ${dirs[1]}/$base && ! -f ${dirs[2]}/$base ]]; then
                     echo "  ${file#"$app"/}: $ref is not in the app"
                     bad=1
                 fi ;;
@@ -202,6 +260,12 @@ run_bare() {  # run_bare <seconds> <command...>: no inherited environment, kille
 probe_output=$(run_bare 30 "$engine/bin/bb-probe" || true)
 printf '%s\n' "$probe_output" | head -5
 [[ $probe_output == *Usage:* ]] || die "bb-probe does not start from the app (above)"
+if [[ -n $native ]]; then
+    # bb-gpu says the game starts it once dyld has loaded everything it needs.
+    gpu_output=$(run_bare 30 "$engine/bin/gpu-arm64/bb-gpu" || true)
+    printf '%s\n' "$gpu_output" | head -3
+    [[ $gpu_output == *"the game process starts this"* ]] || die "bb-gpu does not start from the app (above)"
+fi
 # The Vulkan loader finds KosmicKrisp through the app's manifest. Informational: a build machine
 # may have no GPU the driver accepts.
 vulkan_output=$(run_bare 60 "$engine/bin/bb-probe" --vulkan-only || true)

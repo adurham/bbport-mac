@@ -112,12 +112,14 @@ final class LauncherModel: ObservableObject {
         return findRepository(above: Bundle.main.bundleURL) ?? embeddedRepoPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
-    /// The native GPU process is built here (the native branches with deps-arm64), and so the
-    /// default: the Developer toggle opts out (BB_NATIVE_GPU=0).
+    /// The native GPU process is built here (a checkout of the native branches with deps-arm64,
+    /// or a release that ships it), and so the default: the Developer toggle opts out
+    /// (BB_NATIVE_GPU=0).
     var nativeGpuAvailable: Bool {
         guard let repo = repoURL else { return false }
-        return FileManager.default.isExecutableFile(
-            atPath: repo.appendingPathComponent("out/gpu-arm64/bb-gpu").path)
+        return ["out/gpu-arm64/bb-gpu", "bin/gpu-arm64/bb-gpu"].contains {
+            FileManager.default.isExecutableFile(atPath: repo.appendingPathComponent($0).path)
+        }
     }
 
     /// Generated files, saves, bbport.ini, mods.json and patches.json live in the repository

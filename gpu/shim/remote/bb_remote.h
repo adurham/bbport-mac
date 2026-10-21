@@ -5,7 +5,8 @@
 // (Gnm, VideoOut, event queues) and forwards what reaches the GPU core to bb-gpu (arm64), which
 // runs that core: the command processor, the caches, the shader recompiler, the presenter and the
 // window.
-// In one process (BB_NATIVE_GPU=0, Linux, a release) both flags stay false and none of this runs.
+// In one process (BB_NATIVE_GPU=0, Linux, a build without bb-gpu) both flags stay false and none
+// of this runs.
 #pragma once
 
 #include <cstdint>

@@ -102,8 +102,8 @@ bool Requested() {
     if (back_active) {
         return false;
     }
-    // macOS: on by default where bb-gpu is built (the native branches with deps-arm64); a
-    // release, or a checkout without it, runs the GPU work in this process. BB_NATIVE_GPU=0: in
+    // macOS: on by default where bb-gpu is built (the native branches with deps-arm64, and
+    // their releases); a build without it runs the GPU work in this process. BB_NATIVE_GPU=0: in
     // this process anyway; BB_NATIVE_GPU=1: bb-gpu or nothing (a missing one stops the game).
     static const bool requested = [] {
         const char* env = std::getenv("BB_NATIVE_GPU");
@@ -550,9 +550,13 @@ bool Spawn() {
     std::vector<std::string> env_strings;
     for (char** e = environ; e && *e; ++e) {
         const std::string_view entry{*e};
+        // The game's Vulkan loader and driver are x86-64: bb-gpu gets its own (the release app
+        // names the loader by path, BB_VULKAN_LIBRARY, as DYLD_LIBRARY_PATH doesn't survive bash).
         if (own_deps && (entry.starts_with("DYLD_LIBRARY_PATH=") ||
                          entry.starts_with("VK_DRIVER_FILES=") ||
-                         entry.starts_with("VK_ICD_FILENAMES="))) {
+                         entry.starts_with("VK_ICD_FILENAMES=") ||
+                         entry.starts_with("BB_VULKAN_LIBRARY=") ||
+                         entry.starts_with("SDL_VULKAN_LIBRARY="))) {
             continue;
         }
         env_strings.emplace_back(entry);
@@ -561,6 +565,10 @@ bool Spawn() {
         env_strings.push_back("DYLD_LIBRARY_PATH=" + deps + "/lib");
         env_strings.push_back("VK_DRIVER_FILES=" + deps +
                               "/lib/kosmickrisp/kosmickrisp_mesa_icd.json");
+        if (const std::string loader = deps + "/lib/libvulkan.1.dylib"; Exists(loader)) {
+            env_strings.push_back("BB_VULKAN_LIBRARY=" + loader);
+            env_strings.push_back("SDL_VULKAN_LIBRARY=" + loader);
+        }
     }
     std::vector<char*> envp;
     for (auto& entry : env_strings) {
