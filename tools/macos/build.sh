@@ -92,7 +92,10 @@ echo "Built: $(lipo -archs out/bb-probe) out/bb-probe, $(lipo -archs "$gpu_lib")
 # The native GPU process (docs/macos-native-gpu.md, used by default once built), once its arm64
 # libraries exist (BB_ARCH=arm64 bash tools/macos/setup_deps.sh). A failure there does not stop
 # this build: the game still runs as before.
-if [[ -z ${BB_SKIP_GPU:-} && -f deps-arm64/env.sh ]]; then
+if [[ -z ${BB_SKIP_GPU:-} && ! -f deps-arm64/env.sh ]]; then
+    # Without its libraries an older bb-gpu would not run, or not match the game built here.
+    rm -f out/gpu-arm64/bb-gpu
+elif [[ -z ${BB_SKIP_GPU:-} ]]; then
     echo "=== Native GPU process (arm64)"
     # out/.bb-native-failed: update.sh then builds again next time (it records nothing).
     # A failed build leaves no bb-gpu: an older one would not match the game built here.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: the game process's side of the native GPU process split (docs/macos-native-gpu.md).
-// With the native GPU process (the macOS default where bb-gpu is built), bb-probe (x86-64 under Rosetta) starts bb-gpu (native arm64), shares the
+// With the native GPU process (macOS default where bb-gpu is built), bb-probe (x86-64 under Rosetta) starts bb-gpu (native arm64), shares the
 // guest's memory pool with it and forwards what reaches the GPU core: command buffer submissions,
 // the VideoOut driver's calls, page-tracking faults and the runtime's memory events. bb-gpu sends
 // back interrupts, flip and vblank status, retired frames and page protection changes.
@@ -521,6 +521,13 @@ bool Exists(const std::string& path) {
     return stat(path.c_str(), &info) == 0;
 }
 
+std::string DepsDir() {
+    if (const char* env = std::getenv("BB_GPU_DEPS")) {
+        return env;
+    }
+    return ExecutableDir() + "/../deps-arm64";
+}
+
 std::string Program() {
     if (const char* env = std::getenv("BB_GPU_PROCESS")) {
         return env;
@@ -538,10 +545,7 @@ bool Spawn() {
         return false;
     }
     // Its own libraries: the arm64 dependency prefix instead of the game process's x86-64 one.
-    std::string deps = dir + "/../deps-arm64";
-    if (const char* env = std::getenv("BB_GPU_DEPS")) {
-        deps = env;
-    }
+    const std::string deps = DepsDir();
     const bool own_deps = Exists(deps + "/lib");
     std::vector<std::string> env_strings;
     for (char** e = environ; e && *e; ++e) {
@@ -611,7 +615,9 @@ bool Spawn() {
 } // namespace
 
 bool Built() {
-    return Exists(Program());
+    // The default only where it can run: an executable bb-gpu and its arm64 libraries.
+    const std::string program = Program();
+    return Exists(program) && access(program.c_str(), X_OK) == 0 && Exists(DepsDir() + "/lib");
 }
 
 bool Init(const BbGpuConfig& config) {

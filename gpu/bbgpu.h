@@ -78,7 +78,7 @@ int bbgpu_free_camera(void);
 uint64_t bbgpu_camera_state(void);
 /* Patches the loaded image before the game runs (image still writable): libGnm entry hooks. */
 void bbgpu_patch_image(unsigned char *image, uint64_t size);
-/* bbport (native GPU process, BB_NATIVE_GPU=1): moves a page-aligned, mapped range of the game's
+/* bbport (native GPU process): moves a page-aligned, mapped range of the game's
  * memory into memory the GPU process shares, keeping its contents; prot is PROT_*. 0 on success
  * and when there is no GPU process. */
 int bbgpu_share_range(void *address, uint64_t size, int prot);

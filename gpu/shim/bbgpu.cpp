@@ -328,6 +328,8 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     // GPU core start in bb-gpu; here the HLE libraries register and forward to it.
     if (BbRemote::Requested()) {
         if (!BbRemote::Front::Init(*config)) {
+            std::fprintf(stderr, "GPU process: could not start; BB_NATIVE_GPU=0 (the app's "
+                                 "\"In-process GPU\") runs the game without it\n");
             return 1;
         }
         // The game's System menu pages (this process) offer MetalFX: bb-gpu checks the device

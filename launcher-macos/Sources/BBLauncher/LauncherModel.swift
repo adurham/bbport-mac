@@ -112,12 +112,12 @@ final class LauncherModel: ObservableObject {
         return findRepository(above: Bundle.main.bundleURL) ?? embeddedRepoPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
-    /// The checkout builds the native GPU process (the native branches), which is then the
+    /// The native GPU process is built here (the native branches with deps-arm64), and so the
     /// default: the Developer toggle opts out (BB_NATIVE_GPU=0).
     var nativeGpuAvailable: Bool {
         guard let repo = repoURL else { return false }
-        return FileManager.default.fileExists(
-            atPath: repo.appendingPathComponent("tools/macos/build_gpu_native.sh").path)
+        return FileManager.default.isExecutableFile(
+            atPath: repo.appendingPathComponent("out/gpu-arm64/bb-gpu").path)
     }
 
     /// Generated files, saves, bbport.ini, mods.json and patches.json live in the repository
@@ -437,6 +437,7 @@ final class LauncherModel: ObservableObject {
         if p.readbacks.isEmpty { env.removeValue(forKey: "BB_READBACKS") } else { env["BB_READBACKS"] = p.readbacks }
         if p.preupload.isEmpty { env.removeValue(forKey: "BB_PREUPLOAD") } else { env["BB_PREUPLOAD"] = p.preupload }
         // Set only when on: parts of the port test these for presence, not value ("0" is on).
+        // (BB_NATIVE_GPU, above, is the exception: its 0 is the opt-out.)
         if p.inProcessGpu && nativeGpuAvailable {
             env["BB_NATIVE_GPU"] = "0"
         } else {

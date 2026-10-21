@@ -228,6 +228,14 @@ const char* MenuText(const char* english, const char* russian) {
     return Get().menu_language == MenuLanguage::Russian ? russian : english;
 }
 
+namespace {
+/// The upscaler bbport.ini held when this process last read or wrote it: ReloadLive applies the
+/// file's only when it differs (someone chose another), so a fallback made here (MetalFX failed,
+/// FSR 3.1 took over) is not undone by a save of the other keys, such as the game's System menu
+/// in the game process, which does not see it (native GPU process).
+std::atomic<int> file_upscaler{-1};
+} // namespace
+
 void Load() {
     auto& v = Get();
     for (int e = 0; e < EffectCount; ++e) {
@@ -263,6 +271,7 @@ void Load() {
         std::fclose(file);
         std::printf("Settings: %s\n", Path());
     }
+    file_upscaler = v.upscaler.load();
     // Environment overrides (scripts, A/B tests).
     if (const char* env = std::getenv("BB_UPSCALER")) {
         v.upscaler = UpscalerOff;
@@ -377,7 +386,9 @@ void ReloadLive() {
     std::fclose(file);
     auto& v = Get();
     v.output_res = fresh.output_res.load();
-    v.upscaler = fresh.upscaler.load();
+    if (fresh.upscaler != file_upscaler.exchange(fresh.upscaler)) {
+        v.upscaler = fresh.upscaler.load();
+    }
     v.preset = fresh.preset.load();
     v.sharpen = fresh.sharpen.load();
     v.sharpness = fresh.sharpness.load();
@@ -406,6 +417,7 @@ void Save() {
         put("menu_language", v.menu_language == MenuLanguage::Russian ? "ru" : "en");
     }
     put("upscaler", UpscalerName(v.upscaler));
+    file_upscaler = v.upscaler.load();
     put("preset", std::to_string(v.preset.load()));
     put("sharpen", flag(v.sharpen));
     put("sharpness", fixed(v.sharpness, 2));

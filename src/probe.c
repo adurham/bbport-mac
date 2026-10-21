@@ -723,7 +723,7 @@ static int probe_main(int argc, char **argv) {
     }
 #endif
     if (!cpu_only) bbgpu_patch_image(image, size);
-    /* bbport (native GPU process, BB_NATIVE_GPU=1): the GPU reads some of the game's own data
+    /* bbport (native GPU process): the GPU reads some of the game's own data
      * (resource tables in its data segments), so those move into memory the GPU process shares.
      * Only segments whose 16 KiB pages hold nothing else; before the protection below (all of it
      * is still readable and writable here), which then applies to the shared pages. */

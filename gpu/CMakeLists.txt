@@ -268,7 +268,7 @@ if (WIN32)
 endif()
 
 # bbport: bb-gpu, the native GPU process (docs/macos-native-gpu.md): the GPU core for a game
-# process started with BB_NATIVE_GPU=1. It provides the library's runtime imports from its own
+# process, which starts it by default once built. It provides the library's runtime imports from its own
 # view of guest memory (shim/remote/remote_back.cpp). Built on demand
 # (tools/macos/build_gpu_native.sh).
 add_executable(bb-gpu EXCLUDE_FROM_ALL bb_gpu/bb_gpu_main.cpp)
