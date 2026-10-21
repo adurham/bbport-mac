@@ -112,8 +112,8 @@ final class LauncherModel: ObservableObject {
         return findRepository(above: Bundle.main.bundleURL) ?? embeddedRepoPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
-    /// The checkout builds the native GPU process (the native branches): the Developer toggle is
-    /// on offer, and BB_NATIVE_GPU is set only then.
+    /// The checkout builds the native GPU process (the native branches), which is then the
+    /// default: the Developer toggle opts out (BB_NATIVE_GPU=0).
     var nativeGpuAvailable: Bool {
         guard let repo = repoURL else { return false }
         return FileManager.default.fileExists(
@@ -437,8 +437,12 @@ final class LauncherModel: ObservableObject {
         if p.readbacks.isEmpty { env.removeValue(forKey: "BB_READBACKS") } else { env["BB_READBACKS"] = p.readbacks }
         if p.preupload.isEmpty { env.removeValue(forKey: "BB_PREUPLOAD") } else { env["BB_PREUPLOAD"] = p.preupload }
         // Set only when on: parts of the port test these for presence, not value ("0" is on).
-        for (key, on) in [("BB_NATIVE_GPU", p.nativeGpu && nativeGpuAvailable),
-                          ("BB_FRAME_STATS", p.frameStats), ("BB_GPU_PROFILE", p.gpuProfile),
+        if p.inProcessGpu && nativeGpuAvailable {
+            env["BB_NATIVE_GPU"] = "0"
+        } else {
+            env.removeValue(forKey: "BB_NATIVE_GPU")
+        }
+        for (key, on) in [("BB_FRAME_STATS", p.frameStats), ("BB_GPU_PROFILE", p.gpuProfile),
                           ("BB_VK_VALIDATION", p.vkValidation)] {
             if on { env[key] = "1" } else { env.removeValue(forKey: key) }
         }

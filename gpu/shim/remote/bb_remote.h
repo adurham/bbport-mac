@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: the native GPU process split (docs/macos-native-gpu.md), as the rest of the GPU library
-// sees it. With BB_NATIVE_GPU=1 the game process (bb-probe, x86-64) keeps the HLE libraries
+// sees it. With the native GPU process (macOS, where bb-gpu is built; BB_NATIVE_GPU=0: off) the
+// game process (bb-probe, x86-64) keeps the HLE libraries
 // (Gnm, VideoOut, event queues) and forwards what reaches the GPU core to bb-gpu (arm64), which
 // runs that core: the command processor, the caches, the shader recompiler, the presenter and the
 // window.
-// In-process (the default) both flags stay false and none of this runs.
+// In one process (BB_NATIVE_GPU=0, Linux, a release) both flags stay false and none of this runs.
 #pragma once
 
 #include <cstdint>
@@ -32,10 +33,13 @@ inline bool BackActive() {
     return back_active;
 }
 
-/// BB_NATIVE_GPU=1 in an x86-64 build: the game process should start bb-gpu.
+/// The game process should start bb-gpu: on macOS where it is built, unless BB_NATIVE_GPU=0;
+/// BB_NATIVE_GPU=1 anywhere.
 bool Requested();
 
 namespace Front {
+/// bb-gpu exists where this process would start it (BB_GPU_PROCESS, else next to bb-probe).
+bool Built();
 /// Starts bb-gpu and initializes the GPU core there. False (reason printed) on failure.
 bool Init(const BbGpuConfig& config);
 

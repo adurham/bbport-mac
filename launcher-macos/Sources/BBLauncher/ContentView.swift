@@ -552,12 +552,13 @@ struct DeveloperSection: View {
 
     var body: some View {
         Section {
-            // Shown off where it is not on offer, whatever was saved on a native branch.
-            Toggle(isOn: model.nativeGpuAvailable ? $model.prefs.nativeGpu : .constant(false)) {
-                Text("Native GPU process")
+            // The native GPU process is the default where the checkout builds it; elsewhere the
+            // in-process path is the only one (shown on).
+            Toggle(isOn: model.nativeGpuAvailable ? $model.prefs.inProcessGpu : .constant(true)) {
+                Text("In-process GPU (Rosetta)")
                 Text(model.nativeGpuAvailable
-                     ? "Experimental: the GPU work runs as native Apple Silicon code (BB_NATIVE_GPU)"
-                     : "Only on the native branches (macos-native-…)")
+                     ? "The GPU work in the game's x86-64 process instead of the native GPU process (BB_NATIVE_GPU=0). MetalFX does not work reliably there."
+                     : "The only GPU path on this branch")
             }
             .disabled(!model.nativeGpuAvailable)
             Toggle(isOn: $model.prefs.frameStats) {

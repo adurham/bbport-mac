@@ -1,8 +1,12 @@
 # Native Apple Silicon GPU process (macOS): design
 
-Status: first working version (branch `macos-native`): `BB_NATIVE_GPU=1` runs the GPU side in a
-native arm64 process. The in-process x86-64 path stays the default until the native one is faster
-and stable.
+Status: the default on the native branches (`macos-native-0.6`, 2026-10-21) wherever bb-gpu is
+built (`tools/macos/build_gpu_native.sh`, which needs `deps-arm64`): the GPU side runs in a native
+arm64 process. `BB_NATIVE_GPU=0`, or the app's "In-process GPU (Rosetta)", keeps the in-process
+x86-64 path; a release (which does not package bb-gpu yet) and a checkout without it use that path
+too. Known gap: the in-game menu pointer. MetalFX works here and not in-process: under Rosetta
+its Neural Engine part fails to set up and its work hangs for about 4 s at a time until macOS
+stops it.
 
 ## Why
 
@@ -130,7 +134,8 @@ Waits use `os_sync_wait_on_address` with `OS_SYNC_WAIT_ON_ADDRESS_SHARED` on the
 5. **Window, input, overlay, settings** in bb-gpu; pad state to bb-probe.
 6. **Correctness and speed**: TSan, release/acquire at the guest boundary, thread priorities (QoS),
    MetalFX native, compare against the in-process path in the same spots.
-7. **Default** once faster and stable; `BB_NATIVE_GPU=0` keeps the in-process path.
+7. **Default** (done, 2026-10-21): as fast as in-process with FSR 3.1 after the mapping-table fix,
+   and the only path where MetalFX runs; `BB_NATIVE_GPU=0` keeps the in-process path.
 
 ## Status (2026-10-08)
 

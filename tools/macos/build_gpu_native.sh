@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/macos/build_gpu_native.sh: builds the native GPU process for Apple Silicon (arm64):
 # out/gpu-arm64/bb-gpu and its libbbgpu.dylib (docs/macos-native-gpu.md). The game runs with it
-# when BB_NATIVE_GPU=1 is set; the x86-64 build is unaffected.
+# by default once it is built (BB_NATIVE_GPU=0: in one process); the x86-64 build is unaffected.
 #   BB_ARCH=arm64 bash tools/macos/setup_deps.sh     # once: native libraries into deps-arm64
 #   bash tools/macos/build_gpu_native.sh             # out/gpu-arm64/bb-gpu
 set -euo pipefail

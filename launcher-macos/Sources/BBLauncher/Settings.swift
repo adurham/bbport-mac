@@ -178,7 +178,7 @@ struct LauncherPrefs: Equatable {
     var drawPipe = ""
     var readbacks = ""
     var preupload = ""
-    var nativeGpu = false
+    var inProcessGpu = false ///< the native GPU process is the default (BB_NATIVE_GPU=0)
     var frameStats = false
     var gpuProfile = false
     var vkValidation = false
@@ -207,7 +207,7 @@ struct LauncherPrefs: Equatable {
         static let drawPipe = "drawPipe"
         static let readbacks = "readbacks"
         static let preupload = "preupload"
-        static let nativeGpu = "nativeGpu"
+        static let inProcessGpu = "inProcessGpu" // not nativeGpu: that one was the opt-in
         static let frameStats = "frameStats"
         static let gpuProfile = "gpuProfile"
         static let vkValidation = "vkValidation"
@@ -237,7 +237,7 @@ struct LauncherPrefs: Equatable {
         p.drawPipe = text(Key.drawPipe, p.drawPipe)
         p.readbacks = text(Key.readbacks, p.readbacks)
         p.preupload = text(Key.preupload, p.preupload)
-        p.nativeGpu = flag(Key.nativeGpu, p.nativeGpu)
+        p.inProcessGpu = flag(Key.inProcessGpu, p.inProcessGpu)
         p.frameStats = flag(Key.frameStats, p.frameStats)
         p.gpuProfile = flag(Key.gpuProfile, p.gpuProfile)
         p.vkValidation = flag(Key.vkValidation, p.vkValidation)
@@ -272,7 +272,7 @@ struct LauncherPrefs: Equatable {
         defaults.set(drawPipe, forKey: Key.drawPipe)
         defaults.set(readbacks, forKey: Key.readbacks)
         defaults.set(preupload, forKey: Key.preupload)
-        defaults.set(nativeGpu, forKey: Key.nativeGpu)
+        defaults.set(inProcessGpu, forKey: Key.inProcessGpu)
         defaults.set(frameStats, forKey: Key.frameStats)
         defaults.set(gpuProfile, forKey: Key.gpuProfile)
         defaults.set(vkValidation, forKey: Key.vkValidation)

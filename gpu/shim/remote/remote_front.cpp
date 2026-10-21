@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: the game process's side of the native GPU process split (docs/macos-native-gpu.md).
-// With BB_NATIVE_GPU=1, bb-probe (x86-64 under Rosetta) starts bb-gpu (native arm64), shares the
+// With the native GPU process (the macOS default where bb-gpu is built), bb-probe (x86-64 under Rosetta) starts bb-gpu (native arm64), shares the
 // guest's memory pool with it and forwards what reaches the GPU core: command buffer submissions,
 // the VideoOut driver's calls, page-tracking faults and the runtime's memory events. bb-gpu sends
 // back interrupts, flip and vblank status, retired frames and page protection changes.
@@ -99,11 +99,33 @@ static_assert(VO::MaxDisplayBuffers == MaxDisplayBuffers &&
               VO::MaxDisplayBufferGroups == MaxDisplayBufferGroups);
 
 bool Requested() {
+    if (back_active) {
+        return false;
+    }
+    // macOS: on by default where bb-gpu is built (the native branches with deps-arm64); a
+    // release, or a checkout without it, runs the GPU work in this process. BB_NATIVE_GPU=0: in
+    // this process anyway; BB_NATIVE_GPU=1: bb-gpu or nothing (a missing one stops the game).
     static const bool requested = [] {
         const char* env = std::getenv("BB_NATIVE_GPU");
-        return env && env[0] == '1';
+        if (env && env[0] == '1') {
+            return true;
+        }
+        if (env && env[0] == '0') {
+            std::printf("GPU process: off (BB_NATIVE_GPU=0): the GPU work runs in this process\n");
+            return false;
+        }
+#ifdef __APPLE__
+        if (!Front::Built()) {
+            std::printf("GPU process: not built here (tools/macos/build_gpu_native.sh): the GPU "
+                        "work runs in this process\n");
+            return false;
+        }
+        return true;
+#else
+        return false;
+#endif
     }();
-    return requested && !back_active;
+    return requested;
 }
 
 namespace Front {
@@ -499,12 +521,16 @@ bool Exists(const std::string& path) {
     return stat(path.c_str(), &info) == 0;
 }
 
+std::string Program() {
+    if (const char* env = std::getenv("BB_GPU_PROCESS")) {
+        return env;
+    }
+    return ExecutableDir() + "/gpu-arm64/bb-gpu";
+}
+
 bool Spawn() {
     const std::string dir = ExecutableDir();
-    std::string program = dir + "/gpu-arm64/bb-gpu";
-    if (const char* env = std::getenv("BB_GPU_PROCESS")) {
-        program = env;
-    }
+    std::string program = Program(); // argv wants it writable
     if (!Exists(program)) {
         std::fprintf(stderr,
                      "GPU process: %s missing (build it with tools/macos/build_gpu_native.sh)\n",
@@ -583,6 +609,10 @@ bool Spawn() {
 }
 
 } // namespace
+
+bool Built() {
+    return Exists(Program());
+}
 
 bool Init(const BbGpuConfig& config) {
     int fd = -1;

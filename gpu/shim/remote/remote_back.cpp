@@ -831,7 +831,7 @@ int Main(int argc, char** argv) {
     g.pool_bytes = ArgValue(argc, argv, "--pool-bytes", has_bytes);
     const u64 control_offset = ArgValue(argc, argv, "--control-offset", has_offset);
     if (!has_fd || !has_bytes || !has_offset) {
-        std::fprintf(stderr, "bb-gpu: the game process starts this (BB_NATIVE_GPU=1)\n");
+        std::fprintf(stderr, "bb-gpu: the game process starts this\n");
         return 2;
     }
     // The guest's ranges first, before anything else in this process can land in them. Of the

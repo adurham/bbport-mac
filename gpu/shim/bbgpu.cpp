@@ -324,7 +324,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     Common::ElfInfo::Instance().Set(config->serial ? config->serial : "UNKNOWN",
                                     config->title ? config->title : "", config->sdk_version,
                                     config->psf_attributes);
-    // bbport (BB_NATIVE_GPU=1, docs/macos-native-gpu.md): the window, the Vulkan device and the
+    // bbport (native GPU process, docs/macos-native-gpu.md): the window, the Vulkan device and the
     // GPU core start in bb-gpu; here the HLE libraries register and forward to it.
     if (BbRemote::Requested()) {
         if (!BbRemote::Front::Init(*config)) {
