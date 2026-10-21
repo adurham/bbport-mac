@@ -554,8 +554,11 @@ struct DeveloperSection: View {
         Section {
             Toggle(isOn: $model.prefs.nativeGpu) {
                 Text("Native GPU process")
-                Text("Experimental: the GPU work runs as native Apple Silicon code (BB_NATIVE_GPU)")
+                Text(model.nativeGpuAvailable
+                     ? "Experimental: the GPU work runs as native Apple Silicon code (BB_NATIVE_GPU)"
+                     : "Only on the native branches (macos-native-…)")
             }
+            .disabled(!model.nativeGpuAvailable)
             Toggle(isOn: $model.prefs.frameStats) {
                 Text("Frame statistics in the log")
                 Text("BB_FRAME_STATS")

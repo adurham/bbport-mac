@@ -27,7 +27,6 @@ else
     echo "Updated to: $(git log -1 --format='%h %s')"
     git log --format='  %h %s' "$old..$new" 2>/dev/null | head -20 || true
 fi
-changed() { [[ $old != "$new" ]] && ! git diff --quiet "$old" "$new" -- "$@" 2>/dev/null; }
 
 # The build applies gpu/patches/fsr-vulkan to the FSR library's files in place, and git keeps
 # those edits across a change of commit: another branch's versions of the patches would not
@@ -37,19 +36,41 @@ if [[ $old != "$new" && -e $fsr/.git ]]; then
     git -C "$fsr" checkout -q -- . && git -C "$fsr" clean -qfd
 fi
 
-# Dependencies only when their recipe changed (setup_deps.sh skips what is built, but it still
-# calls Homebrew, which can take a while).
-if [[ ! -f deps-x86_64/env.sh ]] || changed tools/macos/setup_deps.sh tools/macos/kosmickrisp-patches; then
+# Each part remembers what it was last built from (in deps-x86_64 and out/, which stay): a part
+# whose recipe matches is not rebuilt, whatever was checked out in between. A failed build
+# leaves no record, so the next update tries again.
+recorded() { [[ -f $1 ]] && cat "$1" || true; }
+
+# Dependencies: setup_deps.sh skips what is built, but it still calls Homebrew (slow).
+deps_recipe="$(git rev-parse HEAD:tools/macos/setup_deps.sh) $(git rev-parse HEAD:tools/macos/kosmickrisp-patches)"
+if [[ ! -f deps-x86_64/env.sh || $(recorded deps-x86_64/.bb-recipe) != "$deps_recipe" ]]; then
     echo "=== Dependencies"
+    rm -f deps-x86_64/.bb-recipe
     bash tools/macos/setup_deps.sh
+    printf '%s\n' "$deps_recipe" > deps-x86_64/.bb-recipe
 fi
 
-echo "=== Build"
-bash tools/macos/build.sh
+# The game: this commit's code (all of it), the dependencies, and whether the native GPU process
+# is built too (deps-arm64).
+build_recipe="$(git rev-parse 'HEAD^{tree}') $deps_recipe $([[ -f deps-arm64/env.sh ]] && echo arm64 || true)"
+if [[ -f out/bb-probe && -f out/gpu/libbbgpu.dylib && $(recorded out/.bb-built) == "$build_recipe" ]]; then
+    echo "=== Build: already built from this code"
+else
+    echo "=== Build"
+    rm -f out/.bb-built
+    bash tools/macos/build.sh
+    # A native GPU process that failed to build (build.sh goes on without it) is tried again.
+    if [[ ! -f out/.bb-native-failed || ! -f tools/macos/build_gpu_native.sh ]]; then
+        printf '%s\n' "$build_recipe" > out/.bb-built
+    fi
+fi
 
-if [[ ! -d out/bbport.app ]] || changed launcher-macos tools/macos/build_launcher.sh; then
+app_recipe="$(git rev-parse HEAD:launcher-macos) $(git rev-parse HEAD:tools/macos/build_launcher.sh)"
+if [[ ! -d out/bbport.app || $(recorded out/.bb-app) != "$app_recipe" ]]; then
     echo "=== Mac app"
+    rm -f out/.bb-app
     bash tools/macos/build_launcher.sh
+    printf '%s\n' "$app_recipe" > out/.bb-app
     echo "The Mac app was rebuilt: quit and reopen it to use the new version."
 fi
 echo "=== Done"

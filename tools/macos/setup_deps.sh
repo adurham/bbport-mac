@@ -39,7 +39,9 @@ BREW=$(command -v brew || true)
 [[ $("$BREW" --prefix) == /opt/homebrew ]] || echo "note: brew prefix is $("$BREW" --prefix), expected /opt/homebrew"
 
 step "Native build tools (Homebrew)"
-"$BREW" install cmake ninja pkgconf glslang spirv-tools python@3.13 nasm \
+# ccache: compiles of a file the build has seen before (another branch, an earlier commit) come
+# from its cache (tools/macos/build.sh).
+"$BREW" install cmake ninja pkgconf glslang spirv-tools python@3.13 nasm ccache \
     boost magic_enum robin-map   # header-only: architecture does not matter
 export PATH="$("$BREW" --prefix)/bin:$PATH"
 

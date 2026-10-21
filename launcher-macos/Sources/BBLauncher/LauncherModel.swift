@@ -112,6 +112,14 @@ final class LauncherModel: ObservableObject {
         return findRepository(above: Bundle.main.bundleURL) ?? embeddedRepoPath.map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
+    /// The checkout builds the native GPU process (the native branches): the Developer toggle is
+    /// on offer, and BB_NATIVE_GPU is set only then.
+    var nativeGpuAvailable: Bool {
+        guard let repo = repoURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: repo.appendingPathComponent("tools/macos/build_gpu_native.sh").path)
+    }
+
     /// Generated files, saves, bbport.ini, mods.json and patches.json live in the repository
     /// (run.sh's data directory when BB_DATA_DIR is unset). The release app keeps them in
     /// ~/Library/Application Support/bbport (BB_DATA_DIR): nothing is written into the app.
@@ -429,7 +437,7 @@ final class LauncherModel: ObservableObject {
         if p.readbacks.isEmpty { env.removeValue(forKey: "BB_READBACKS") } else { env["BB_READBACKS"] = p.readbacks }
         if p.preupload.isEmpty { env.removeValue(forKey: "BB_PREUPLOAD") } else { env["BB_PREUPLOAD"] = p.preupload }
         // Set only when on: parts of the port test these for presence, not value ("0" is on).
-        for (key, on) in [("BB_NATIVE_GPU", p.nativeGpu),
+        for (key, on) in [("BB_NATIVE_GPU", p.nativeGpu && nativeGpuAvailable),
                           ("BB_FRAME_STATS", p.frameStats), ("BB_GPU_PROFILE", p.gpuProfile),
                           ("BB_VK_VALIDATION", p.vkValidation)] {
             if on { env[key] = "1" } else { env.removeValue(forKey: key) }

@@ -14,6 +14,15 @@ BREW_PREFIX=$( (command -v brew >/dev/null && brew --prefix) || echo /opt/homebr
 export PATH="$BREW_PREFIX/bin:$PATH"
 JOBS=$(sysctl -n hw.ncpu)
 mkdir -p out
+# ccache (from setup_deps.sh): files compiled before, on any branch, come from its cache in
+# ~/Library/Caches/ccache, at most 10 GB (oldest out first). BB_CCACHE=0: off.
+LAUNCHER=()
+if [[ ${BB_CCACHE:-1} != 0 ]] && command -v ccache >/dev/null; then
+    export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-10G}
+    LAUNCHER=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+else
+    LAUNCHER=(-UCMAKE_C_COMPILER_LAUNCHER -UCMAKE_CXX_COMPILER_LAUNCHER)
+fi
 
 if [[ ! -f gpu/third_party/fsr-vulkan/CMakeLists.txt || ! -f gpu/third_party/imgui/imgui.h ]]; then
     git submodule update --init --recursive
@@ -28,7 +37,8 @@ echo "=== GPU library (arm64)"
 cmake -S gpu -B out/gpu-arm64 -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
-    -DCMAKE_PREFIX_PATH="$DEPS;$BREW_PREFIX" -DBB_LTO=OFF -DBB_PGO=off > out/gpu-arm64-configure.log 2>&1 ||
+    -DCMAKE_PREFIX_PATH="$DEPS;$BREW_PREFIX" -DBB_LTO=OFF -DBB_PGO=off "${LAUNCHER[@]}" \
+    > out/gpu-arm64-configure.log 2>&1 ||
     { tail -40 out/gpu-arm64-configure.log >&2; echo "STOP: configure failed (out/gpu-arm64-configure.log)" >&2; exit 1; }
 if ! ninja -C out/gpu-arm64 -k 0 -j "$JOBS" bbgpu bb-gpu > out/gpu-arm64-build.log 2>&1; then
     grep -A1 -E ': (fatal )?error:' out/gpu-arm64-build.log | grep -v '^--$' | awk '!seen[$0]++' > out/gpu-arm64-errors.txt
