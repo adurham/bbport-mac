@@ -1,0 +1,8 @@
+{"tag":"curve-p4","attempt":1,"status":"ok","max_draws":890,"note":"max draws/frame=890","t_end":"19:21:17"}
+{"tag":"curve-p3","attempt":1,"status":"ok","max_draws":893,"note":"max draws/frame=893","t_end":"19:26:51"}
+{"tag":"curve-p2","attempt":1,"status":"overlapped","max_draws":890,"note":"foreign bb-probe seen during the run","t_end":"19:32:24"}
+{"tag":"curve-p2","attempt":2,"status":"ok","max_draws":890,"note":"max draws/frame=890","t_end":"19:37:54"}
+{"tag":"curve-p1","attempt":1,"status":"ok","max_draws":894,"note":"max draws/frame=894","t_end":"19:43:24"}
+{"tag":"curve-off","attempt":1,"status":"assert","max_draws":886,"note":"Unknown data_format=6 and num_format=4 [gcn_to_vk.cpp:422]","t_end":"19:48:57"}
+{"tag":"curve-off","attempt":2,"status":"ok","max_draws":891,"note":"max draws/frame=891","t_end":"19:54:27"}
+{"tag":"curve-p4m0","attempt":1,"status":"ok","max_draws":823,"note":"max draws/frame=823","t_end":"19:59:57"}
