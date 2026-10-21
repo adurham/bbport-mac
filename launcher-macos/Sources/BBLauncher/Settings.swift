@@ -332,11 +332,12 @@ struct GameSettings: Equatable {
     var sharpness = 0.5
     var objectMotion = true
     var showFPS = true
-    /// Auto by default, as upstream: the display's shape. A saved choice is kept.
-    var aspect = "auto"
-    /// Any size: the launcher fits it to the aspect ratio's list (LauncherModel.fitOutput):
-    /// 2560x1440 (16:9), or 2560x1600 with a MacBook's Auto (16:10), the guide's recommendation.
-    var outputRes = "2560x1440"
+    /// New users start at the PS4's own 16:9 at 1080p: no resolution patch, no more than the PS4
+    /// asks of the GPU. Auto (the display's shape) and the rest are a choice away; a saved one is kept.
+    var aspect = "16:9"
+    /// Any size: the launcher fits it to the aspect ratio's list (LauncherModel.fitOutput).
+    /// 1920x1080 for new users, the PS4's own (see `aspect`).
+    var outputRes = "1920x1080"
     var modelLOD = "0"
     var liveResolution = "0"
     var effects: [EffectSetting] = Catalog.effects.map {

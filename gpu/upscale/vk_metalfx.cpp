@@ -197,7 +197,7 @@ void MetalFxUpscaler::WorkerLoop(std::stop_token stop) {
             std::fflush(stdout);
         }
         std::string error;
-        if (!scaler->Encode(job.frame, error)) {
+        if (!Encode(job.frame, error)) {
             // The copy back must not wait forever; earlier frames still on the GPU signal lower
             // values (a timeline never goes down), so they finish first.
             scaler->WaitIdle();

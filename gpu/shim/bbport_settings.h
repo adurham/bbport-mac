@@ -122,9 +122,14 @@ struct Values {
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};
     std::atomic<int> model_lod{0}; ///< -2 highest .. 2 lowest, 0 the game's
-    // bbport (macOS too since 0.6 final: the camera and HUD hooks install with either memory
-    // model, in the game process with the native GPU process).
+#ifdef __APPLE__
+    // bbport (macOS): new users start at the PS4's own 16:9 (and 1920x1080, OutputDefault): no
+    // resolution patch, no more than the PS4 asks of the GPU. Every aspect ratio works here since
+    // 0.6 final (the camera and HUD hooks install with either memory model), Auto included.
+    std::atomic<int> aspect{Aspect16x9};
+#else
     std::atomic<int> aspect{AspectAuto};
+#endif
     /// The chosen output resolution (PackSize; CurrentOutput fits it to the aspect ratio).
     std::atomic<std::uint32_t> output_res{PackSize(OutputDefault)};
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest

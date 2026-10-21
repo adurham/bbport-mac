@@ -87,12 +87,14 @@ place show up in the other.
 - *System language*: the game's language.
 
 **Display**
-- *Aspect ratio*: **Auto** follows your display (16:10 on a MacBook, so the picture fills the
-  screen), or choose 4:3, 16:10, 16:9, 21:9 or 32:9 (ultrawide). The game shows more at the sides
-  (or above and below) instead of stretching, and its HUD follows the screen's edges.
+- *Aspect ratio*: 16:9 to start with, the PS4's own. **Auto** follows your display (16:10 on a
+  MacBook, so the picture fills the screen), or choose 4:3, 16:10, 21:9 or 32:9 (ultrawide). The
+  game shows more at the sides (or above and below) instead of stretching, and its HUD follows the
+  screen's edges.
 - *Output resolution*: the size of the final image, from the chosen aspect ratio's list; Auto
-  also offers your display's own size. 2560×1440 (16:9) or 2560×1600 (16:10) is a good choice on
-  a MacBook Pro; 3840×2160 works too.
+  also offers your display's own size. It starts at 1920×1080, the PS4's own, which needs nothing
+  more of your Mac than the PS4 asked of its GPU. 2560×1440 (16:9) or 2560×1600 (16:10) looks
+  better on a MacBook Pro; 3840×2160 works too.
 - *Live resolution changes*: **Off** (recommended) renders everything at full resolution, and
   changes to resolution or upscaler preset apply after *Apply and restart game* in the in-game
   menu. **On** applies them instantly, but the game's post-processing then stays at 1080p.
