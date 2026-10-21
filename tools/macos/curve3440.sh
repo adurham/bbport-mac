@@ -58,27 +58,29 @@ watchdog() {  # $1 tag while the run is alive: sample bb-gpu footprint + vm_stat
     local tag=$1 samp foot vmstat free inactive pids cl out
     while kill -0 "$route" 2>/dev/null; do
         page=$(vm_stat | awk '/page size of/{gsub(/\(|\)/,""); for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/){print $i; exit}}')
-        free=$(vm_stat | awk '/Pages free:/{print $6}')
-        inactive=$(vm_stat | awk '/Pages inactive:/{print $6}')
+        free=$(vm_stat | awk '/Pages free:/{v=$3; gsub(/\./,"",v); print v}')
+        inactive=$(vm_stat | awk '/Pages inactive:/{v=$3; gsub(/\./,"",v); print v}')
         vmstat=$(( (free + inactive) * page / 1048576 ))
         foot=0; pids=$(pgrep -x bb-gpu 2>/dev/null || true)
         for p in $pids; do
             cl=$(ps -o command= -p "$p" 2>/dev/null)
             case "$cl" in *"$here"*)
-                foot=$(/usr/bin/footprint -p "$p" 2>/dev/null | awk '/Footprint:/{for(i=1;i<=NF;i++) if($i=="Footprint:"){v=$(i+1); u=$(i+2)}; if(u~/GB/){v*=1024} else if(u~/KB/){v/=1024} if(u~/MB/){} printf "%.0f", v; exit}')
+                foot=$(/usr/bin/footprint -p "$p" 2>/dev/null | awk '/Footprint:/{for(i=1;i<=NF;i++) if($i=="Footprint:"){v=$(i+1); u=$(i+2)}; if(u~/GB/){v*=1024} else if(u~/KB/){v/=1024} printf "%.0f", v; exit}')
                 break ;;
             esac
         done
         echo "$(date +%s) foot_mib=${foot:-0} freepages_mib=${vmstat}" >> "$res/foot-$tag.txt"
+        kill_ours() {
+            for g in $(pgrep -x bb-gpu); do ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null; done
+            for g in $(pgrep -x bb-probe); do ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null; done
+        }
         if [[ ${foot:-0} -gt 19456 ]]; then
             echo "$(date) WATCHDOG: bb-gpu footprint ${foot} MiB > 19456; killing the run" >> "$res/foot-$tag.warnings"
-            for g in $(pgrep -x bb-gpu); do ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null; done
-            for g in $(pgrep -x bb-probe); do ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null; done
+            kill_ours
         fi
-        if [[ $vmstat -lt 4096 ]]; then
-            echo "$(date) WATCHDOG: free+inactive ${vmstat} MiB < 4096; killing the run" >> "$res/foot-$tag.warnings"
-            for g in $(pgrep -x bb-gpu); do ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null; done
-            for g in $(pgrep -x bb-probe); do ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null; done
+        if [[ $vmstat -lt 4096 && -n $pids ]]; then
+            echo "$(date) WATCHDOG: free+inactive ${vmstat} MiB < 4096 (with our bb-gpu up); killing the run" >> "$res/foot-$tag.warnings"
+            kill_ours
         fi
         sleep 10
     done
