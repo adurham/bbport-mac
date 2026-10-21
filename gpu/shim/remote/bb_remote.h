@@ -120,6 +120,9 @@ struct GamePhaseTotals {
     u64 fault_ns, faults, call_ns, calls, file_reads, file_bytes, file_ns, cpu_us, majflt;
 };
 bool GamePhases(GamePhaseTotals& out);
+/// BB_PROTECT_PROBE=1 + BB_PROTECT_PROBE_LOG=path (diagnostics): one line of protection deltas
+/// per flip (frame_stats.cpp).
+void ProtectProbeFlip(double frame_ms);
 // The game process's pad and files for the button prompts (runtime_pad_prompt*,
 // runtime_pad_mouse_look, runtime_file_host_path there).
 int PadPrompt(const char* name, int prefer_mouse, char* label, int size);

@@ -501,6 +501,11 @@ void OnFlipStats() {
             std::fflush(frame_log);
             unflushed = 0;
         }
+#if __has_include("remote/bb_remote.h")
+        if (BbRemote::BackActive()) {
+            BbRemote::Back::ProtectProbeFlip(frame_ms); // BB_PROTECT_PROBE=1 only
+        }
+#endif
     }
     last_copy_ns = copy_ns;
     last_copy_cpu = copy_cpu;

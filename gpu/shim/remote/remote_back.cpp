@@ -41,6 +41,7 @@
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
 #include "bbport_portable.h"
+#include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "common/slot_vector.h"
 #include "common/thread.h"
@@ -1169,17 +1170,186 @@ void MemoryReadBacking(uintptr_t address, void* data, u64 size) {
     }
 }
 
+/// BB_PROTECT_PROBE=1 (diagnostics, default off; bench/protect-ipc): bb-gpu's protections split by
+/// kind and by calling thread, running totals; ProtectProbeFlip writes per-frame deltas.
+namespace ProtectProbe {
+enum Kind : u32 { TrapOn, TrapOff, Revoke, Restore, Collected, KindCount };
+enum Caller : u32 { CmdThread, RecordThread, FaultHandler, OtherThread, CallerCount };
+struct Totals {
+    std::atomic<u64> ns[KindCount]{}, calls[KindCount]{}, pages[KindCount]{};
+    std::atomic<u64> caller_ns[CallerCount]{}, caller_calls[CallerCount]{};
+    /// trap calls by reason bit (0..7): calls and pages
+    std::atomic<u64> reason_calls[8]{}, reason_pages[8]{}, reason_ns[8]{};
+};
+Totals totals;
+bool Enabled() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_PROTECT_PROBE");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+Kind KindOf(const ProtectArgs& args) {
+    if (args.read & ProtectTrap) {
+        return args.write ? TrapOn : TrapOff;
+    }
+    return args.write ? Restore : Revoke;
+}
+Caller CallerOf() {
+    const u32 self = BbThreads::CurrentThreadPort();
+    if (self == BbStats::gpu_thread_port.load(std::memory_order_relaxed)) {
+        return CmdThread;
+    }
+    if (self == BbStats::record_thread_port.load(std::memory_order_relaxed)) {
+        return RecordThread;
+    }
+    return OtherThread;
+}
+void Note(const ProtectArgs& args, u64 ns, Caller caller) {
+    const Kind kind = KindOf(args);
+    const u64 pages = (args.size + 4095) >> 12;
+    totals.ns[kind].fetch_add(ns, std::memory_order_relaxed);
+    totals.calls[kind].fetch_add(1, std::memory_order_relaxed);
+    totals.pages[kind].fetch_add(pages, std::memory_order_relaxed);
+    totals.caller_ns[caller].fetch_add(ns, std::memory_order_relaxed);
+    totals.caller_calls[caller].fetch_add(1, std::memory_order_relaxed);
+    if (args.read & ProtectTrap) {
+        for (u32 bit = 0; bit < 8; ++bit) {
+            if (args.read & (1u << bit)) {
+                totals.reason_calls[bit].fetch_add(1, std::memory_order_relaxed);
+                totals.reason_pages[bit].fetch_add(pages, std::memory_order_relaxed);
+                totals.reason_ns[bit].fetch_add(ns, std::memory_order_relaxed);
+            }
+        }
+    }
+}
+} // namespace ProtectProbe
+
 /// A protection or trap for the game process to apply: with the reply of the fault being handled
 /// on this thread, or now.
 void ForwardProtect(const ProtectArgs& args) {
     if (collected_protects) {
+        if (ProtectProbe::Enabled()) {
+            ProtectProbe::Note(args, 0, ProtectProbe::FaultHandler);
+        }
         collected_protects->push_back(args);
         return;
     }
     ResultReply result{};
-    // A round trip to the game process (Rosetta): the calling thread waits for its protect thread.
-    BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
-    g.protect->Call(MsgProtect, &args, sizeof(args), &result, sizeof(result));
+    const bool probe = ProtectProbe::Enabled();
+    const auto start = probe ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    {
+        // A round trip to the game process (Rosetta): the calling thread waits for its protect
+        // thread.
+        BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
+        g.protect->Call(MsgProtect, &args, sizeof(args), &result, sizeof(result));
+    }
+    if (probe) {
+        const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - start)
+                               .count());
+        ProtectProbe::Note(args, ns, ProtectProbe::CallerOf());
+    }
+}
+
+void ProtectProbeFlip(double frame_ms) {
+    if (!ProtectProbe::Enabled()) {
+        return;
+    }
+    static FILE* const log = [] () -> FILE* {
+        const char* path = std::getenv("BB_PROTECT_PROBE_LOG");
+        FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
+        if (file) {
+            std::fprintf(file,
+                         "t_s,frame_ms,"
+                         "trap_on_ms,trap_on_calls,trap_on_pages,trap_off_ms,trap_off_calls,"
+                         "trap_off_pages,revoke_ms,revoke_calls,revoke_pages,restore_ms,"
+                         "restore_calls,restore_pages,collected_calls,collected_pages,"
+                         "cmd_ms,cmd_calls,record_ms,record_calls,other_ms,other_calls,"
+                         "r_mirror_calls,r_mirror_pages,r_mirror_ms,r_image_calls,r_image_pages,"
+                         "r_image_ms,r_query_calls,r_vram_calls,r_vram_pages,r_vram_ms,"
+                         "r_probe_calls,"
+                         "g_lock_ms,g_sys_ms,g_sys_calls,g_sys_pages,g_trap_calls,g_trap_noop,"
+                         "g_trap_pages,g_trap_same_pages,"
+                         "p_lock_ms,p_sys_ms,p_sys_calls,p_sys_pages,p_trap_calls,p_trap_noop,"
+                         "p_trap_pages,p_trap_same_pages,p_service_ms,p_messages\n");
+        }
+        return file;
+    }();
+    if (!log) {
+        return;
+    }
+    using namespace ProtectProbe;
+    static const auto t0 = std::chrono::steady_clock::now();
+    static u64 last[96]{};
+    u64 now[96]{};
+    int n = 0;
+    for (u32 k = 0; k < KindCount; ++k) {
+        now[n++] = totals.ns[k].load();
+        now[n++] = totals.calls[k].load();
+        now[n++] = totals.pages[k].load();
+    }
+    for (u32 c = 0; c < CallerCount; ++c) {
+        now[n++] = totals.caller_ns[c].load();
+        now[n++] = totals.caller_calls[c].load();
+    }
+    for (u32 b = 0; b < 8; ++b) {
+        now[n++] = totals.reason_calls[b].load();
+        now[n++] = totals.reason_pages[b].load();
+        now[n++] = totals.reason_ns[b].load();
+    }
+    const int game_base = n;
+    if (g.control) {
+        for (int i = 0; i < 18; ++i) {
+            now[n++] = g.control->state.protect_probe[i].load(std::memory_order_relaxed);
+        }
+    } else {
+        n += 18;
+    }
+    u64 d[96]{};
+    for (int i = 0; i < n; ++i) {
+        d[i] = now[i] >= last[i] ? now[i] - last[i] : 0;
+        last[i] = now[i];
+    }
+    const auto ms = [](u64 ns) { return ns / 1e6; };
+    const auto K = [&](u32 k, u32 field) { return d[k * 3 + field]; };
+    const int cb = KindCount * 3;            // callers
+    const int rb = cb + CallerCount * 2;     // reasons: bit*3 + {calls,pages,ns}
+    const auto R = [&](u32 bit, u32 field) { return d[rb + bit * 3 + field]; };
+    const u64* gd = d + game_base;
+    std::fprintf(log,
+                 "%.4f,%.2f,"
+                 "%.3f,%llu,%llu,%.3f,%llu,%llu,%.3f,%llu,%llu,%.3f,%llu,%llu,%llu,%llu,"
+                 "%.3f,%llu,%.3f,%llu,%.3f,%llu,"
+                 "%llu,%llu,%.3f,%llu,%llu,%.3f,%llu,%llu,%llu,%.3f,%llu,"
+                 "%.3f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,"
+                 "%.3f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%.3f,%llu\n",
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                 frame_ms, ms(K(TrapOn, 0)), (unsigned long long)K(TrapOn, 1),
+                 (unsigned long long)K(TrapOn, 2), ms(K(TrapOff, 0)),
+                 (unsigned long long)K(TrapOff, 1), (unsigned long long)K(TrapOff, 2),
+                 ms(K(Revoke, 0)), (unsigned long long)K(Revoke, 1),
+                 (unsigned long long)K(Revoke, 2), ms(K(Restore, 0)),
+                 (unsigned long long)K(Restore, 1), (unsigned long long)K(Restore, 2),
+                 (unsigned long long)d[cb + 5], 0ull, // fault-handler (collected) calls
+                 ms(d[cb + 0]), (unsigned long long)d[cb + 1], ms(d[cb + 2]),
+                 (unsigned long long)d[cb + 3], ms(d[cb + 6]), (unsigned long long)d[cb + 7],
+                 // reasons: Mirror=bit0, Image=bit1, QueryReads=bit4, VramData=bit5, Probe=bit6
+                 (unsigned long long)R(0, 0), (unsigned long long)R(0, 1), ms(R(0, 2)),
+                 (unsigned long long)R(1, 0), (unsigned long long)R(1, 1), ms(R(1, 2)),
+                 (unsigned long long)R(4, 0), (unsigned long long)R(5, 0),
+                 (unsigned long long)R(5, 1), ms(R(5, 2)), (unsigned long long)R(6, 0),
+                 ms(gd[0]), ms(gd[1]), (unsigned long long)gd[2], (unsigned long long)gd[3],
+                 (unsigned long long)gd[4], (unsigned long long)gd[5], (unsigned long long)gd[6],
+                 (unsigned long long)gd[7], ms(gd[8]), ms(gd[9]), (unsigned long long)gd[10],
+                 (unsigned long long)gd[11], (unsigned long long)gd[12],
+                 (unsigned long long)gd[13], (unsigned long long)gd[14],
+                 (unsigned long long)gd[15], ms(gd[16]), (unsigned long long)gd[17]);
+    static u32 unflushed = 0;
+    if (++unflushed >= 120) {
+        std::fflush(log);
+        unflushed = 0;
+    }
 }
 
 void MemoryGpuProtect(uintptr_t address, u64 size, int read, int write) {

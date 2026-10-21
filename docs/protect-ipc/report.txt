@@ -1,0 +1,170 @@
+== probe-p1: 3083 frames in the last 75 s
+   frame_ms              23.710
+   b_busy_ms             16.540
+   stage_a_cpu_ms         8.150
+   ipc_ms                 1.510
+   ipc_calls            116.000
+   game_fault_ms          3.770
+   game_faults           39.000
+   fault_handler_ms       1.210
+   game_call_ms           1.080
+   game_cpu_ms           30.530
+   draws                885.000
+   revoke_ms              0.753
+   revoke_calls          60.000
+   revoke_pages         948.000
+   restore_ms             0.775
+   restore_calls         57.000
+   restore_pages       1142.000
+   trap_on_calls          0.000
+   trap_off_calls         0.000
+   record_ms              0.753
+   other_ms               0.775
+   p_lock_ms              0.015
+   p_sys_ms               0.583
+   p_sys_calls          116.000
+   p_sys_pages         2105.000
+   p_service_ms           0.632
+   g_sys_ms               0.000
+   g_sys_calls            0.000
+   t(s)       30     60     90    120    150    180    210
+   frame_   23.6   23.4   23.6   23.6   23.6   23.6   23.8
+   ipc_ms    1.4    1.3    1.3    1.3    1.4    2.0    1.4
+   game_f    3.3    3.2    3.2    3.2    3.3    4.6    3.4
+   game_c   28.8   28.4   28.4   28.5   30.0   34.5   29.3
+== probe-p4: 3833 frames in the last 75 s
+   frame_ms              19.460
+   b_busy_ms             11.380
+   stage_a_cpu_ms         8.300
+   ipc_ms                 1.320
+   ipc_calls            117.000
+   game_fault_ms          3.120
+   game_faults           39.000
+   fault_handler_ms       1.060
+   game_call_ms           1.450
+   game_cpu_ms           28.820
+   draws                883.000
+   revoke_ms              0.583
+   revoke_calls          60.000
+   revoke_pages         939.000
+   restore_ms             0.732
+   restore_calls         57.000
+   restore_pages       1127.000
+   trap_on_calls          0.000
+   trap_off_calls         0.000
+   record_ms              0.583
+   other_ms               0.732
+   p_lock_ms              0.013
+   p_sys_ms               0.507
+   p_sys_calls          117.000
+   p_sys_pages         2085.000
+   p_service_ms           0.553
+   g_sys_ms               0.000
+   g_sys_calls            0.000
+   t(s)       30     60     90    120    150    180    210
+   frame_   19.3   19.4   19.1   19.2   19.4   19.6   19.4
+   ipc_ms    1.4    1.7    1.3    1.2    1.3    1.2    1.4
+   game_f    3.3    3.7    2.9    3.0    3.0    2.9    3.3
+   game_c   27.3   29.2   27.9   27.7   28.1   28.1   31.6
+== spot-p1: 3014 frames in the last 75 s
+   frame_ms              24.750
+   b_busy_ms             13.795
+   stage_a_cpu_ms        13.390
+   ipc_ms                 4.270
+   ipc_calls            117.000
+   game_fault_ms          7.750
+   game_faults           39.000
+   fault_handler_ms       2.410
+   game_call_ms           1.940
+   game_cpu_ms           47.600
+   draws                887.000
+   revoke_ms              2.322
+   revoke_calls          59.000
+   revoke_pages         946.000
+   restore_ms             1.872
+   restore_calls         58.000
+   restore_pages       1146.000
+   trap_on_calls          0.000
+   trap_off_calls         0.000
+   record_ms              2.322
+   other_ms               1.872
+   p_lock_ms              0.029
+   p_sys_ms               0.941
+   p_sys_calls          117.000
+   p_sys_pages         2119.000
+   p_service_ms           1.038
+   g_sys_ms               0.000
+   g_sys_calls            0.000
+   t(s)       30     60     90    120    150    180    210
+   frame_   23.8   23.3   23.9   23.8   23.9   24.6   25.3
+   ipc_ms    1.2    1.2    1.2    1.4    2.3    4.1    5.3
+   game_f    2.9    2.8    2.8    3.2    4.9    7.8    9.2
+   game_c   29.4   28.5   28.5   32.1   46.1   47.6   47.7
+== long-p1: 2872 frames in the last 75 s
+   frame_ms              24.880
+   b_busy_ms             18.155
+   stage_a_cpu_ms        10.780
+   ipc_ms                 5.910
+   ipc_calls            118.000
+   game_fault_ms          9.770
+   game_faults           40.000
+   fault_handler_ms       2.890
+   game_call_ms           1.765
+   game_cpu_ms           47.820
+   draws                889.000
+   revoke_ms              3.303
+   revoke_calls          61.000
+   revoke_pages         963.000
+   restore_ms             2.275
+   restore_calls         58.000
+   restore_pages       1189.000
+   trap_on_calls          0.000
+   trap_off_calls         0.000
+   record_ms              3.303
+   other_ms               2.275
+   p_lock_ms              0.029
+   p_sys_ms               1.042
+   p_sys_calls          118.000
+   p_sys_pages         2196.000
+   p_service_ms           1.148
+   g_sys_ms               0.000
+   g_sys_calls            0.000
+   t(s)       30     60     90    120    150    180    210    240    270
+   frame_   23.4   23.6   23.6   23.6   23.7   23.7   23.9   24.5   26.1
+   ipc_ms    1.3    1.4    1.4    1.4    1.5    1.7    2.2    4.8    8.0
+   game_f    3.3    3.5    3.5    3.5    3.7    4.1    5.4    8.6   13.5
+   game_c   28.5   29.1   29.6   30.2   31.8   33.8   40.4   47.8   48.1
+== curve-p1: 1955 frames in the last 75 s
+   frame_ms              36.680
+   b_busy_ms             28.170
+   stage_a_cpu_ms        10.350
+   ipc_ms                24.010
+   ipc_calls            113.000
+   game_fault_ms         40.750
+   game_faults           41.000
+   fault_handler_ms       9.860
+   game_call_ms          18.350
+   game_cpu_ms           51.430
+   draws                889.000
+   t(s)       30     60     90    120    150    180    210    240    270
+   frame_   24.0   24.3   24.9   24.4   25.0   27.7   32.1   36.6   36.8
+   ipc_ms    1.3    1.3    1.3    2.2    6.0   10.9   16.4   23.7   24.8
+   game_f    3.3    3.2    3.3    4.8    9.8   17.1   23.7   41.3   41.7
+   game_c   29.4   29.0   29.4   41.5   48.0   48.3   49.6   51.2   51.7
+== curve-p4: 3666 frames in the last 75 s
+   frame_ms              19.720
+   b_busy_ms             10.140
+   stage_a_cpu_ms        10.130
+   ipc_ms                 1.660
+   ipc_calls            119.000
+   game_fault_ms          3.840
+   game_faults           39.000
+   fault_handler_ms       1.300
+   game_call_ms           1.690
+   game_cpu_ms           34.955
+   draws                887.000
+   t(s)       30     60     90    120    150    180    210    240    270
+   frame_   19.0   19.1   19.1   19.2   19.2   19.3   19.3   19.5   21.4
+   ipc_ms    1.2    1.2    1.2    1.3    1.4    1.4    1.4    1.5    2.5
+   game_f    2.8    2.8    3.0    3.1    3.2    3.3    3.4    3.4    5.3
+   game_c   26.9   27.2   27.9   28.9   29.7   30.5   31.0   32.9   44.1

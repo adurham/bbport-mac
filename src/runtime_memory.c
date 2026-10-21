@@ -992,6 +992,36 @@ void runtime_memory_note_cpu_write(uintptr_t address, uint64_t size) {
  * runtime's lock, then trap_mutex (as kernel_mprotect, which keeps the traps). */
 #define TRAP_LIMIT (1ull<<40)
 #define TRAP_NO_ACCESS 0xf0u
+/* bbport BB_PROTECT_PROBE=1 (diagnostics, default off; bench/protect-ipc): where the GPU side's
+ * page protections spend their time in this process, per thread context (1: the remote protect
+ * thread, 0: any other thread: faulting guest threads applying their reply, the guest's own
+ * mprotect re-applying traps). Totals; remote_front.cpp publishes them for bb-gpu's probe log. */
+enum { PS_LOCK_NS, PS_SYS_NS, PS_SYS_CALLS, PS_SYS_PAGES, PS_TRAP_CALLS, PS_TRAP_NOOP_CALLS,
+       PS_TRAP_PAGES, PS_TRAP_SAME_PAGES, PS_COUNT };
+static int probe_state=-1;
+static __thread int probe_ctx;
+static uint64_t probe_stats[2][PS_COUNT];
+int runtime_memory_probe_enabled(void) {
+    if (probe_state<0) { const char *e=getenv("BB_PROTECT_PROBE"); probe_state=e && e[0]=='1'; }
+    return probe_state;
+}
+void runtime_memory_probe_thread(int protect_thread) { probe_ctx=protect_thread ? 1 : 0; }
+void runtime_memory_probe_stats(uint64_t out[2*PS_COUNT]) {
+    for (int c=0;c<2;++c) for (int i=0;i<PS_COUNT;++i)
+        out[c*PS_COUNT+i]=__atomic_load_n(&probe_stats[c][i],__ATOMIC_RELAXED);
+}
+static uint64_t probe_now(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    return (uint64_t)t.tv_sec*1000000000ull+(uint64_t)t.tv_nsec;
+}
+#define PROBE_ADD(i,v) __atomic_add_fetch(&probe_stats[probe_ctx][(i)],(uint64_t)(v),__ATOMIC_RELAXED)
+/* mprotect for the GPU side's traps and protections, timed with the probe. */
+static void probed_mprotect(void *a, size_t n, int prot) {
+    if (!runtime_memory_probe_enabled()) { mprotect(a,n,prot); return; }
+    const uint64_t t0=probe_now();
+    mprotect(a,n,prot);
+    PROBE_ADD(PS_SYS_NS,probe_now()-t0); PROBE_ADD(PS_SYS_CALLS,1); PROBE_ADD(PS_SYS_PAGES,n>>12);
+}
 static uint8_t *trap_reasons; /* one byte per 4 KiB page below TRAP_LIMIT (reserved, not committed) */
 static pthread_mutex_t trap_mutex=PTHREAD_MUTEX_INITIALIZER;
 /* A page's trap level: 0 none, 1 read-only, 2 no access. */
@@ -1003,7 +1033,7 @@ static void trap_apply(uintptr_t a, uintptr_t b, int level) {
         if (vmas[i].kind==KIND_RESERVED) continue;
         const uintptr_t s=vmas[i].start>a ? vmas[i].start : a, e=vmas[i].end<b ? vmas[i].end : b;
         const int prot=host_prot(vmas[i].prot);
-        mprotect((void *)s,e-s,level==2 ? PROT_NONE : level ? (prot & ~PROT_WRITE) : prot);
+        probed_mprotect((void *)s,e-s,level==2 ? PROT_NONE : level ? (prot & ~PROT_WRITE) : prot);
     }
 }
 /* No traps in [start, end) any more: a mapping replaced or gone (runtime lock held). */
@@ -1039,21 +1069,28 @@ void runtime_memory_trap(uintptr_t address, uint64_t size, unsigned reason, int 
             munmap(bytes,TRAP_LIMIT>>12);
     }
     uintptr_t end=address+size>TRAP_LIMIT ? TRAP_LIMIT : address+size;
+    const int probe=runtime_memory_probe_enabled();
+    const uint64_t t_lock=probe ? probe_now() : 0;
     read_lock();
     pthread_mutex_lock(&trap_mutex);
+    if (probe) PROBE_ADD(PS_LOCK_NS,probe_now()-t_lock);
     /* Runs of pages whose trap level changes, one mprotect each. */
-    uintptr_t run=0; int run_level=0;
+    uintptr_t run=0; int run_level=0; uint64_t same=0, applied=0;
     const uintptr_t first=address>>12, last=(end-1)>>12;
     for (uintptr_t p=first; p<=last; ++p) {
         const uint8_t old=trap_reasons[p], now=on ? (uint8_t)(old|reason) : (uint8_t)(old & ~reason);
-        if (old!=now) trap_reasons[p]=now;
+        if (old!=now) trap_reasons[p]=now; else ++same;
         const int level=trap_level(now), change=trap_level(old)!=level;
-        if (run && (!change || level!=run_level)) { trap_apply(run,p<<12,run_level); run=0; }
+        if (run && (!change || level!=run_level)) { trap_apply(run,p<<12,run_level); run=0; ++applied; }
         if (change && !run) { run=p<<12; run_level=level; }
     }
-    if (run) trap_apply(run,(last+1)<<12,run_level);
+    if (run) { trap_apply(run,(last+1)<<12,run_level); ++applied; }
     pthread_mutex_unlock(&trap_mutex);
     read_unlock();
+    if (probe) {
+        PROBE_ADD(PS_TRAP_CALLS,1); PROBE_ADD(PS_TRAP_PAGES,last-first+1);
+        PROBE_ADD(PS_TRAP_SAME_PAGES,same); if (!applied) PROBE_ADD(PS_TRAP_NOOP_CALLS,1);
+    }
 }
 /* bbport: a libc write about to land on pages with write traps: the GPU side is told first and
  * lifts its traps, instead of the write faulting (a fault handler waits for the draws the GPU
@@ -1204,14 +1241,17 @@ int runtime_memory_region(uintptr_t address, uintptr_t *start, uintptr_t *end, i
 }
 /* GPU page tracking: restrict host access, never beyond the guest's own protection. */
 void runtime_memory_gpu_protect(uintptr_t address, uint64_t size, int read, int write) {
+    const int probe=runtime_memory_probe_enabled();
+    const uint64_t t_lock=probe ? probe_now() : 0;
     read_lock();
+    if (probe) PROBE_ADD(PS_LOCK_NS,probe_now()-t_lock);
     for (size_t i=vma_index(address); i<vma_count && vmas[i].start<address+size; ++i) {
         if (vmas[i].kind==KIND_RESERVED) continue;
         uintptr_t a=vmas[i].start>address ? vmas[i].start : address;
         uintptr_t b=vmas[i].end<address+size ? vmas[i].end : address+size;
         int guest=host_prot(vmas[i].prot);
         int want=(read ? PROT_READ : 0)|(write ? PROT_WRITE|PROT_READ : 0)|(guest & PROT_EXEC);
-        mprotect((void *)a,b-a,guest & want);
+        probed_mprotect((void *)a,b-a,guest & want);
     }
     read_unlock();
 }

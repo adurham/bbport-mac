@@ -37,6 +37,16 @@ void runtime_wait_report(double) {}
 void runtime_file_stats(uint64_t* count, uint64_t* bytes, uint64_t* ns) {
     *count = *bytes = *ns = 0; // the game's files are read in the game process
 }
+// BB_PROTECT_PROBE (runtime_memory.c): the protections are applied in the game process only.
+int runtime_memory_probe_enabled(void) {
+    return 0;
+}
+void runtime_memory_probe_thread(int) {}
+void runtime_memory_probe_stats(uint64_t out[16]) {
+    for (int i = 0; i < 16; ++i) {
+        out[i] = 0;
+    }
+}
 void runtime_thread_attach_host(const char*) {}
 void runtime_restart(void) {
     Back::RequestRestart();

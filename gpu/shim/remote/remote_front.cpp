@@ -76,6 +76,10 @@ int runtime_pad_mouse_look(void);
 int runtime_file_host_path(const char* guest, char* out, size_t size);
 __attribute__((weak)) void runtime_toypad_lights(uint32_t out[3]); // runtime_toypad.c
 void runtime_file_stats(uint64_t* count, uint64_t* bytes, uint64_t* ns); // runtime_file.c
+// runtime_memory.c, BB_PROTECT_PROBE=1 (diagnostics).
+int runtime_memory_probe_enabled(void);
+void runtime_memory_probe_thread(int protect_thread);
+void runtime_memory_probe_stats(uint64_t out[16]);
 }
 
 namespace BbRemote {
@@ -414,14 +418,35 @@ void ApplyProtect(const ProtectArgs& args) {
     }
 }
 
+/// BB_PROTECT_PROBE=1: the runtime's protection totals into SharedState for bb-gpu's probe log.
+void PublishProtectProbe() {
+    if (!g.control || !runtime_memory_probe_enabled()) {
+        return;
+    }
+    uint64_t stats[16];
+    runtime_memory_probe_stats(stats);
+    for (int i = 0; i < 16; ++i) {
+        g.control->state.protect_probe[i].store(stats[i], std::memory_order_relaxed);
+    }
+}
+
 /// bb-gpu's page protection calls (ControlBlock::protect): only the runtime's lock is taken here.
 void ProtectThread() {
     Common::SetCurrentThreadName("bb:remote-protect");
+    runtime_memory_probe_thread(1);
+    const bool probe = runtime_memory_probe_enabled();
     for (;;) {
         g.protect->ReceiveOne(
-            [](const Message& message, auto&& reply) {
+            [probe](const Message& message, auto&& reply) {
+                const u64 start = probe ? MonotonicNs() : 0;
                 if (message.type == MsgProtect) {
                     ApplyProtect(Payload<ProtectArgs>(message));
+                }
+                if (probe && g.control) {
+                    auto& s = g.control->state;
+                    s.protect_probe[16].fetch_add(MonotonicNs() - start, std::memory_order_relaxed);
+                    s.protect_probe[17].fetch_add(1, std::memory_order_relaxed);
+                    PublishProtectProbe();
                 }
                 const ResultReply result{0, 0};
                 reply(&result, sizeof(result));
@@ -953,6 +978,9 @@ int HandleFault(void* context, void* address) {
     // Only when this thread holds the runtime's lock (see FaultReply).
     for (u32 i = 0; i < std::min(reply.count, MaxFaultProtects); ++i) {
         ApplyProtect(reply.protects[i]);
+    }
+    if (reply.count) {
+        PublishProtectProbe();
     }
     return reply.handled;
 }

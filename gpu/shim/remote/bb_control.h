@@ -54,6 +54,11 @@ struct SharedState {
         game_calls{0};
     alignas(64) std::atomic<std::uint64_t> game_file_reads{0}, game_file_bytes{0},
         game_file_ns{0}, game_cpu_us{0}, game_majflt{0};
+    /// BB_PROTECT_PROBE=1 (diagnostics, bench/protect-ipc): the game process's side of bb-gpu's
+    /// page protections, running totals. [0..15]: runtime_memory_probe_stats (lock wait ns,
+    /// mprotect ns/calls/pages, trap calls/no-op calls/pages/unchanged pages; [0..7] on other
+    /// threads, [8..15] on the protect thread); [16] protect-thread service ns, [17] its messages.
+    alignas(64) std::atomic<std::uint64_t> protect_probe[24]{};
 };
 
 struct ControlBlock {
