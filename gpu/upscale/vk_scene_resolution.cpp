@@ -3,6 +3,7 @@
 #include "vulkan/instance.h"
 #include "render/runtime.h"
 #include "render/scheduler.h"
+#include "render/vk_frame_capture.h"
 #include "vulkan/shader_module.h"
 #include "textures/texture_cache.h"
 #include "bbgpu/shaders/depth_resample_frag.h"
@@ -335,6 +336,7 @@ void SceneTargets::Resample(vk::Image src, vk::Image dst, const VideoCore::Image
         }
         cmd.endRendering();
     });
+    FrameCapture::PassTraceExternal(dst_size.width, dst_size.height, 1, "resample");
     // The guest pipelines' dynamic state must be emitted again after this pipeline.
     scheduler.GetDynamicState().Invalidate();
 }

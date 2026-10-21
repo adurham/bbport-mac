@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_overlay.h"
+#include "render/vk_frame_capture.h"
 
 #include <algorithm>
 #include <array>
@@ -1802,6 +1803,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::Image presented, vk::Format presented_
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
     }
     cmdbuf.endRendering();
+    Vulkan::FrameCapture::PassTraceExternal(extent.width, extent.height, 1, "overlay");
     if (capture_requested.exchange(false, std::memory_order_acq_rel)) {
         // The capture hotkey (window.cpp, Ctrl+Shift+C): copy the frame that is about to be
         // presented into host memory. It is the swapchain image and this is after the overlay's

@@ -2,12 +2,15 @@
 #include "render/vk_frame_capture.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <format>
 #include <mutex>
 
+#include "bbport_toggles.h"
 #include "vulkan/vk_common.h"
 #include "textures/image_info.h"
 
@@ -127,9 +130,265 @@ void Write(VAddr presented) {
 
 } // namespace
 
+namespace {
+
+// ---- BB_PASS_TRACE (bench/vertex-passes) -------------------------------------------------------
+// One line per render encoder, so a Metal System Trace's per-encoder vertex time can be joined to
+// the identity the trace does not carry. Off unless BB_PASS_TRACE names a file; even then it only
+// writes inside a window (see PassTraceFlip).
+struct PassLine {
+    u64 frame{};
+    u64 ordinal{};      ///< render encoders since this frame began
+    u32 width{}, height{}, num_colors{};
+    std::string color0, color1, depth;   ///< vk::Format names, "-" when absent
+    u32 draws{}, samplers{};
+    u64 indices{}, instances{};
+    std::vector<u64> vs, ps;
+    u64 t0{};           ///< steady-clock ns at the encoder's begin, relative to the window's first
+};
+
+bool pass_trace_enabled = false;
+std::string pass_trace_path, pass_trace_trigger;
+u64 pass_trace_frames = 200;
+bool pass_trace_armed = false;   ///< the trigger fired; the next encoder opens the file
+bool pass_trace_open = false;
+FILE* pass_trace_file = nullptr;
+u64 pass_trace_window_frame0 = 0;
+u64 pass_trace_last_frame = ~0ull;
+u64 pass_trace_ordinal = 0;
+u64 pass_trace_t_base = 0;
+bool pass_trace_in_pass = false;
+PassLine pass_trace_line;
+// The attachments of the pass the rasterizer is about to begin (stashed by PassTraceTargets, taken
+// by the first encoder that actually begins).
+bool pass_trace_have_targets = false;
+std::string pass_trace_c0, pass_trace_c1, pass_trace_d;
+u32 pass_trace_ncolors = 0;
+std::atomic<u64> pass_trace_flips{0}, pass_trace_flips_at_arm{0};
+
+const char* FormatName(vk::Format format) {
+    static thread_local std::string text;
+    text = vk::to_string(format);
+    return text.c_str();
+}
+
+void PassTraceInit() {
+    static const bool once = [] {
+        const char* path = std::getenv("BB_PASS_TRACE");
+        pass_trace_enabled = path && path[0];
+        if (!pass_trace_enabled) {
+            return true;
+        }
+        pass_trace_path = path;
+        if (const char* trigger = std::getenv("BB_PASS_TRACE_TRIGGER")) {
+            pass_trace_trigger = trigger;
+        }
+        if (const char* frames = std::getenv("BB_PASS_TRACE_FRAMES")) {
+            pass_trace_frames = std::strtoull(frames, nullptr, 10);
+            if (pass_trace_frames == 0) {
+                pass_trace_frames = 200;
+            }
+        }
+        // No trigger file: record from the start (short runs), otherwise wait for the flip.
+        pass_trace_armed = pass_trace_trigger.empty();
+        std::printf("Pass trace: BB_PASS_TRACE=%s frames=%llu trigger=%s\n", pass_trace_path.c_str(),
+                    static_cast<unsigned long long>(pass_trace_frames),
+                    pass_trace_trigger.empty() ? "-" : pass_trace_trigger.c_str());
+        std::fflush(stdout);
+        return true;
+    }();
+    (void)once;
+}
+
+void PassTraceOpen(u64 frame) {
+    pass_trace_file = std::fopen(pass_trace_path.c_str(), "w");
+    if (!pass_trace_file) {
+        std::printf("Pass trace: cannot write %s\n", pass_trace_path.c_str());
+        pass_trace_enabled = false;
+        return;
+    }
+    pass_trace_open = true;
+    pass_trace_window_frame0 = frame;
+    pass_trace_last_frame = ~0ull;
+    pass_trace_ordinal = 0;
+    pass_trace_t_base = 0;
+    // One header, so a reader can tell a truncated window from a whole one.
+    std::fprintf(pass_trace_file,
+                 "# BB_PASS_TRACE frame0=%llu frames=%llu one line per render encoder: "
+                 "f frame, i encoder index in the frame, t target, nc colour attachments, "
+                 "c0/c1/d attachment formats, dr draws, idx indices (x instances), "
+                 "vs/ps shader hashes\n",
+                 static_cast<unsigned long long>(frame),
+                 static_cast<unsigned long long>(pass_trace_frames));
+    std::fflush(pass_trace_file);
+    std::printf("Pass trace: window from frame %llu to %llu\n",
+                static_cast<unsigned long long>(frame),
+                static_cast<unsigned long long>(frame + pass_trace_frames));
+    std::fflush(stdout);
+}
+
+void PassTraceFlush() {
+    if (!pass_trace_in_pass || !pass_trace_open) {
+        pass_trace_in_pass = false;
+        return;
+    }
+    pass_trace_in_pass = false;
+    const auto& l = pass_trace_line;
+    std::fprintf(pass_trace_file, "PT %llu %llu %ux%u nc=%u c0=%s c1=%s d=%s dr=%u idx=%llu inst=%llu vs=",
+                 static_cast<unsigned long long>(l.frame),
+                 static_cast<unsigned long long>(l.ordinal), l.width, l.height, l.num_colors,
+                 l.color0.c_str(), l.color1.c_str(), l.depth.c_str(), l.draws,
+                 static_cast<unsigned long long>(l.indices),
+                 static_cast<unsigned long long>(l.instances));
+    for (size_t i = 0; i < l.vs.size(); ++i) {
+        std::fprintf(pass_trace_file, "%s%016llx", i ? "," : "",
+                     static_cast<unsigned long long>(l.vs[i]));
+    }
+    if (l.vs.empty()) {
+        std::fprintf(pass_trace_file, "-");
+    }
+    std::fprintf(pass_trace_file, " ps=");
+    for (size_t i = 0; i < l.ps.size(); ++i) {
+        std::fprintf(pass_trace_file, "%s%016llx", i ? "," : "",
+                     static_cast<unsigned long long>(l.ps[i]));
+    }
+    if (l.ps.empty()) {
+        std::fprintf(pass_trace_file, "-");
+    }
+    std::fprintf(pass_trace_file, " t=%llu\n", static_cast<unsigned long long>(l.t0));
+    std::fflush(pass_trace_file);
+}
+
+} // namespace
+
+bool FrameCapture::PassTraceEnabled() {
+    PassTraceInit();
+    return pass_trace_enabled && pass_trace_open;
+}
+
+void FrameCapture::PassTraceFlip() {
+    PassTraceInit();
+    if (!pass_trace_enabled) {
+        return;
+    }
+    const u64 flip = pass_trace_flips.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (pass_trace_armed || pass_trace_open) {
+        return;
+    }
+    if (pass_trace_trigger.empty()) {
+        return;
+    }
+    if (!std::filesystem::exists(pass_trace_trigger)) {
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::remove(pass_trace_trigger, ec);
+    pass_trace_armed = true;
+    pass_trace_flips_at_arm.store(flip, std::memory_order_relaxed);
+    std::printf("Pass trace: armed at flip %llu\n", static_cast<unsigned long long>(flip));
+    std::fflush(stdout);
+}
+
+void FrameCapture::PassTraceTargets(const VideoCore::ImageInfo* const* colors, u32 num_colors,
+                                    const VideoCore::ImageInfo* depth) {
+    PassTraceInit();
+    if (!pass_trace_enabled) {
+        return;
+    }
+    pass_trace_ncolors = num_colors;
+    pass_trace_c0 = num_colors > 0 && colors[0] ? FormatName(colors[0]->pixel_format) : "-";
+    pass_trace_c1 = num_colors > 1 && colors[1] ? FormatName(colors[1]->pixel_format) : "-";
+    pass_trace_d = depth ? FormatName(depth->pixel_format) : "-";
+    pass_trace_have_targets = true;
+}
+
+void FrameCapture::PassTraceBegin(u32 width, u32 height, u32 num_colors) {
+    PassTraceInit();
+    if (!pass_trace_enabled) {
+        return;
+    }
+    // A new encoder always ends the previous one first; EndRendering does that, but a split path
+    // that reopens without an end must not lose the line.
+    PassTraceFlush();
+    const u64 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+    if (!pass_trace_open) {
+        if (!pass_trace_armed || frame == 0) {
+            return;
+        }
+        PassTraceOpen(frame);
+    } else if (frame >= pass_trace_window_frame0 + pass_trace_frames) {
+        std::fclose(pass_trace_file);
+        pass_trace_file = nullptr;
+        pass_trace_open = false;
+        pass_trace_enabled = false;
+        std::printf("Pass trace: window closed at frame %llu\n",
+                    static_cast<unsigned long long>(frame));
+        std::fflush(stdout);
+        return;
+    }
+    if (frame != pass_trace_last_frame) {
+        pass_trace_last_frame = frame;
+        pass_trace_ordinal = 0;
+    }
+    auto& l = pass_trace_line;
+    l = PassLine{};
+    l.frame = frame;
+    l.ordinal = pass_trace_ordinal++;
+    l.width = width;
+    l.height = height;
+    l.num_colors = pass_trace_have_targets ? pass_trace_ncolors : num_colors;
+    l.color0 = pass_trace_have_targets ? pass_trace_c0 : "-";
+    l.color1 = pass_trace_have_targets ? pass_trace_c1 : "-";
+    l.depth = pass_trace_have_targets ? pass_trace_d : "-";
+    pass_trace_have_targets = false;
+    const auto now = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count());
+    if (pass_trace_t_base == 0) {
+        pass_trace_t_base = now;
+    }
+    l.t0 = now - pass_trace_t_base;
+    pass_trace_in_pass = true;
+}
+
+void FrameCapture::PassTraceDraw(u64 vs_hash, u64 ps_hash, u32 num_indices, u32 num_instances) {
+    if (!pass_trace_enabled || !pass_trace_open || !pass_trace_in_pass) {
+        return;
+    }
+    auto& l = pass_trace_line;
+    ++l.draws;
+    l.indices += u64(num_indices) * std::max(num_instances, 1u);
+    l.instances += std::max(num_instances, 1u);
+    if (l.vs.size() < 4 && std::ranges::find(l.vs, vs_hash) == l.vs.end()) {
+        l.vs.push_back(vs_hash);
+    }
+    if (ps_hash && l.ps.size() < 4 && std::ranges::find(l.ps, ps_hash) == l.ps.end()) {
+        l.ps.push_back(ps_hash);
+    }
+}
+
+void FrameCapture::PassTraceEnd() {
+    if (!pass_trace_enabled || !pass_trace_open || !pass_trace_in_pass) {
+        return;
+    }
+    PassTraceFlush();
+}
+
+void FrameCapture::PassTraceExternal(u32 width, u32 height, u32 draws, const char* what) {
+    if (!pass_trace_enabled || !pass_trace_open) {
+        return;
+    }
+    const u64 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+    std::fprintf(pass_trace_file, "PT %llu %llu %ux%u nc=0 c0=- c1=- d=- dr=%u idx=0 inst=0 vs=- ps=- t=0 %s\n",
+                 static_cast<unsigned long long>(frame),
+                 static_cast<unsigned long long>(pass_trace_ordinal++), width, height, draws, what);
+    std::fflush(pass_trace_file);
+}
+
 void FrameCapture::OnFlip(VAddr presented_address) {
     last_presented.store(presented_address, std::memory_order_relaxed);
     flips.fetch_add(1, std::memory_order_release);
+    PassTraceFlip();
     static const char* trigger = std::getenv("BB_CAPTURE_TRIGGER");
     if (trigger && state.load(std::memory_order_relaxed) == Idle &&
         std::filesystem::exists(trigger)) {

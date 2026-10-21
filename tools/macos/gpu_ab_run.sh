@@ -72,8 +72,13 @@ if [[ ${TRACE:-0} == 1 || ${CAPTURES:-0} -gt 0 ]]; then
                     xp=$!
                     sleep "$TRACE_SIGINT_S"
                     kill -INT "$xp" 2>/dev/null
-                    for _ in $(seq 1 60); do kill -0 "$xp" 2>/dev/null || break; sleep 1; done
-                    kill -TERM "$xp" 2>/dev/null
+                    # A multi-GB document takes minutes to finalise: TERM before it finishes leaves
+                    # "Document Missing Template Error" (a half-written .trace). Wait 300 s.
+                    for _ in $(seq 1 300); do kill -0 "$xp" 2>/dev/null || break; sleep 1; done
+                    if kill -0 "$xp" 2>/dev/null; then
+                        echo "xctrace still up after 300 s: TERM"
+                        kill -TERM "$xp" 2>/dev/null
+                    fi
                     wait "$xp" 2>/dev/null
                 else
                     xcrun xctrace record --template 'Metal System Trace' --attach "$P" \
@@ -87,8 +92,30 @@ if [[ ${TRACE:-0} == 1 || ${CAPTURES:-0} -gt 0 ]]; then
 fi
 wait $route
 cp out/last-run.log out/run-"$tag".log
+# The trace document is finalised by xctrace itself, after the SIGINT: exporting before it stops
+# growing produced "Document Missing Template Error" (a 2.1 GB half-written .trace).
+settle_trace() {
+    local t=$1 last=-1 cur i
+    for i in $(seq 1 180); do
+        cur=$(du -sk "$t" 2>/dev/null | awk '{print $1}')
+        if [[ -n ${cur:-} && $cur == "$last" ]]; then
+            sleep 2
+            return 0
+        fi
+        last=${cur:-0}
+        sleep 1
+    done
+}
 if [[ -d out/mtl-$tag.trace ]]; then
-    xcrun xctrace export --input out/mtl-"$tag".trace \
-        --xpath '/trace-toc/run[1]/data/table[@schema="metal-gpu-intervals"]' > out/mtl-"$tag"-gpu.xml 2>/dev/null
+    settle_trace out/mtl-$tag.trace
+    for i in 1 2 3; do
+        if xcrun xctrace export --input out/mtl-"$tag".trace \
+            --xpath '/trace-toc/run[1]/data/table[@schema="metal-gpu-intervals"]' \
+            > out/mtl-"$tag"-gpu.xml 2> out/mtl-"$tag"-export.err; then
+            [[ -s out/mtl-$tag-gpu.xml ]] && break
+        fi
+        echo "export attempt $i failed: $(head -2 out/mtl-$tag-export.err | tr '\n' ' ')"
+        sleep 5
+    done
 fi
 echo "done $tag (overlap lines: $(wc -l < out/overlap-"$tag".txt))"

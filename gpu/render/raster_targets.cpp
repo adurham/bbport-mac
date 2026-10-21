@@ -658,7 +658,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         state.height = proxy.height;
         target_scale = {float(size.width) / 1920.0f, float(size.height) / 1080.0f};
     }
-    if (FrameCapture::Active()) {
+    if (FrameCapture::Active() || FrameCapture::PassTraceEnabled()) {
         std::array<const VideoCore::ImageInfo*, Gcn::NUM_COLOR_BUFFERS> colors{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
             if (cb_descs[cb].first) {
@@ -666,7 +666,10 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             }
         }
         const auto* depth = db_desc.first ? &texture_cache.GetImage(db_desc.first).info : nullptr;
-        FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth);
+        if (FrameCapture::Active()) {
+            FrameCapture::BeginPass(colors.data(), state.num_color_attachments, depth);
+        }
+        FrameCapture::PassTraceTargets(colors.data(), state.num_color_attachments, depth);
     }
     if (key.motion_vectors) {
         object_motion->Attach(state, state.width, state.height); // the G-buffer's motion target

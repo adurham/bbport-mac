@@ -22,6 +22,7 @@
 #include "bbport_wait_trace.h"
 #include "common/thread.h"
 #include "render/vk_gpu_profiler.h"
+#include "render/vk_frame_capture.h"
 #include "vulkan/instance.h"
 
 namespace Vulkan {
@@ -212,6 +213,9 @@ void Scheduler::BeginRendering(const RenderState& state) {
     CarrySuspend(false);
     is_rendering = true;
     render_state = state;
+    // BB_PASS_TRACE: a render encoder begins here (the early return above means "same pass, one
+    // encoder"); its line goes out at EndRendering.
+    FrameCapture::PassTraceBegin(state.width, state.height, state.num_color_attachments);
 
     // Owned by the recorded closure (it may run later, on a recording thread).
     struct Pass {
@@ -283,6 +287,7 @@ void Scheduler::EndRendering() {
     }
     CarrySuspend(true);
     is_rendering = false;
+    FrameCapture::PassTraceEnd();
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
     CarryResume(false);
     // BB_COPY_MERGE: the pass is closed; the copies that waited for its end go out here, before

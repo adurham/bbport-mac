@@ -184,6 +184,27 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             return;
         }
     }
+    // BB_SKIP_VS=hash[,hash...] (diagnostics, bench/vertex-passes): draws whose VERTEX shader is one
+    // of these are left out - the ceiling arm for a heavy-vertex pass. Same rules as BB_SKIP_PS: the
+    // pass still begins and ends (the encoder stays), only its geometry is gone.
+    static const std::vector<u64> skipped_vs = [] {
+        std::vector<u64> hashes;
+        if (const char* env = std::getenv("BB_SKIP_VS")) {
+            for (const char* at = env; *at;) {
+                char* end = nullptr;
+                hashes.push_back(std::strtoull(at, &end, 16));
+                at = *end ? end + 1 : end;
+            }
+            std::printf("GPU: BB_SKIP_VS drops draws of %zu vertex shader(s)\n", hashes.size());
+            std::fflush(stdout);
+        }
+        return hashes;
+    }();
+    if (!skipped_vs.empty() &&
+        std::ranges::find(skipped_vs, pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash) !=
+            skipped_vs.end()) {
+        return;
+    }
     // bbport: the key guide icons for the device in use (a change: uploaded before this draw).
     prompts->Update();
     bind_prepared = used_prepared;
@@ -363,6 +384,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (FrameCapture::Active()) {
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
+    }
+    // BB_PASS_TRACE (bench/vertex-passes): the same draw, counted against its encoder's identity.
+    FrameCapture::PassTraceDraw(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0, num_indices,
+                                        num_instances);
+    if (FrameCapture::Active()) {
+        const auto* ps = ps_info;
         if (const auto& bc = regs.blend_control[0]; bc.enable && regs.color_buffers[0]) {
             char note[128];
             std::snprintf(note, sizeof(note), "\n  blend ps %08x idx %u: src %u dst %u func %u z %u%u",

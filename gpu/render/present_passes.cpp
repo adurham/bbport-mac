@@ -5,6 +5,7 @@
 
 #include "vulkan/platform.h"
 #include "vulkan/shader_module.h"
+#include "render/vk_frame_capture.h"
 
 #include "bbgpu/shaders/fullscreen_vert.h"
 #include "bbgpu/shaders/present_encode_frag.h"
@@ -152,6 +153,7 @@ void EncodePass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Image
     });
     cmdbuf.draw(3, 1, 0, 0);
     cmdbuf.endRendering();
+    FrameCapture::PassTraceExternal(output_size.width, output_size.height, 1, "present");
 }
 
 } // namespace Vulkan
