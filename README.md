@@ -19,7 +19,8 @@ sound, cutscenes, a DualSense or other controller, or keyboard and mouse.
 
 - **60 FPS in most areas** at 1440p on an M5 Max, with FSR 3.1 or MetalFX; the busiest areas dip
   into the 40s and 50s.
-- Output up to 4K, the in-game settings menu, mods and shadPS4-format patches.
+- Output up to 4K in any aspect ratio from 4:3 to 32:9 ultrawide (Auto fills a MacBook's 16:10
+  screen), the in-game settings menu, mods and shadPS4-format patches.
 - Online play isn't available on the Mac yet.
 - Tested on one Mac so far (MacBook Pro, M5 Max, macOS 27). Reports from others are welcome.
 

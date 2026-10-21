@@ -395,6 +395,13 @@ void Handle(const Message& message, auto&& reply) {
         BbGuestHooks::SetDisplayAspect(std::isfinite(aspect) ? aspect : 0.0f);
         break;
     }
+    case MsgMonitor: {
+        const auto size = BbSettings::UnpackSize(u32(Payload<ValueArgs>(message).value));
+        if (size.width >= 320 && size.height >= 200) {
+            BbSettings::NoteMonitor(size.width, size.height);
+        }
+        break;
+    }
     case MsgGpuFailed: {
         const auto args = Payload<TextArgs>(message);
         std::fprintf(stderr, "GPU process: %.*s\n", int(sizeof(args.text)), args.text);

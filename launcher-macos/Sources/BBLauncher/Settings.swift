@@ -62,17 +62,27 @@ enum Catalog {
                  .init(7680, 2160)],
     ]
 
-    /// The aspect ratio's group. On the Mac, Auto is 16:9, as the game makes it
-    /// (bbport_settings.cpp ResolvedAspect): the camera and HUD follow another aspect ratio through
-    /// guest hooks the Mac does not install, so the display's shape (16:10 on a MacBook) would
-    /// squash the picture. The Linux launcher picks the group nearest the display's instead.
+    /// The aspect ratio's group: Auto is the one nearest the display's shape (16:10 on a
+    /// MacBook), as the game decides it (bbport_settings.cpp ResolvedAspect). The camera and HUD
+    /// follow the output's aspect ratio through the game's hooks (0.6 final, on the Mac too).
     static func resolvedAspect(_ aspect: String, monitor: OutputSize?) -> String {
-        outputs[aspect] != nil ? aspect : "16:9"
+        if outputs[aspect] != nil { return aspect }
+        guard let monitor, monitor.width > 0, monitor.height > 0 else { return "16:9" }
+        let ratio = Double(monitor.width) / Double(monitor.height)
+        let distance = { (key: String) in abs(log(ratio / (aspectRatios[key] ?? 16.0 / 9.0))) }
+        return aspects.filter { $0 != "auto" }.min { distance($0) < distance($1) } ?? "16:9"
     }
 
-    /// The resolutions of an aspect ratio (on the Mac, Auto adds no display-shaped size).
+    /// The resolutions of an aspect ratio; Auto also offers the display's own size (3024x1964 on
+    /// a 14-inch MacBook Pro), as the game does (bbport_settings.cpp Outputs).
     static func outputSizes(_ aspect: String, monitor: OutputSize?) -> [OutputSize] {
-        outputs[resolvedAspect(aspect, monitor: monitor)] ?? []
+        var sizes = outputs[resolvedAspect(aspect, monitor: monitor)] ?? []
+        if aspect == "auto", let monitor, monitor.width >= 640, monitor.height >= 360,
+           monitor.width <= 7680, monitor.height <= 4320, !sizes.contains(monitor) {
+            sizes.append(monitor)
+            sizes.sort { ($0.height, $0.width) < ($1.height, $1.width) }
+        }
+        return sizes
     }
 
     /// The size itself if listed, else the one nearest in height (another aspect ratio keeps it).
@@ -321,9 +331,8 @@ struct GameSettings: Equatable {
     var sharpness = 0.5
     var objectMotion = true
     var showFPS = true
-    /// 16:9 by default on the Mac: the game's camera keeps 16:9 here (its aspect ratio hooks need
-    /// the memory model the Mac does not use), so another aspect ratio squashes the picture.
-    var aspect = "16:9"
+    /// Auto by default, as upstream: the display's shape. A saved choice is kept.
+    var aspect = "auto"
     /// Any size: the launcher fits it to the aspect ratio's list (LauncherModel.fitOutput).
     var outputRes = "1920x1080"
     var modelLOD = "0"

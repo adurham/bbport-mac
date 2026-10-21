@@ -11,7 +11,7 @@
 
 namespace BbRemote {
 
-inline constexpr std::uint32_t ProtocolVersion = 8;
+inline constexpr std::uint32_t ProtocolVersion = 9;
 
 enum Msg : std::uint32_t {
     // ---- game process -> GPU process ----
@@ -66,6 +66,7 @@ enum Msg : std::uint32_t {
     MsgGameEffects = 112,   ///< ValueArgs: bit e = BbSettings effects[e] (the hot ones switch now)
     MsgFrameLimit = 113,    ///< ValueArgs: BbFrameRate::SetLimit (0: none)
     MsgDisplayAspect = 114, ///< ValueArgs: float bits, BbGuestHooks::SetDisplayAspect (the output's)
+    MsgMonitor = 115,       ///< ValueArgs: BbSettings::PackSize of the window's monitor (NoteMonitor)
 };
 
 /// Sizes of the guest structures carried as raw bytes (checked against the real types).

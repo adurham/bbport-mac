@@ -16,6 +16,7 @@
 #include "bbport_frame_rate.h"
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
+#include "remote/bb_remote.h"
 
 
 namespace {
@@ -130,7 +131,11 @@ SDL_DisplayID ChooseDisplay() {
 void TellMonitor(SDL_Window* window) {
     if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window))) {
         const float density = mode->pixel_density > 0.0f ? mode->pixel_density : 1.0f;
-        BbSettings::SetMonitor(int(mode->w * density + 0.5f), int(mode->h * density + 0.5f));
+        const int width = int(mode->w * density + 0.5f), height = int(mode->h * density + 0.5f);
+        BbSettings::SetMonitor(width, height);
+        if (BbRemote::BackActive()) {
+            BbRemote::Back::Monitor(width, height); // the game's System menu, in the game process
+        }
     }
 }
 

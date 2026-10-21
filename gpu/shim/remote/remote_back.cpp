@@ -1089,6 +1089,11 @@ void DisplayAspect(float aspect) {
     g.channel->Send(MsgDisplayAspect, &args, sizeof(args));
 }
 
+void Monitor(int width, int height) {
+    const ValueArgs args{BbSettings::PackSize({std::clamp(width, 0, 0xffff), std::clamp(height, 0, 0xffff)})};
+    g.channel->Send(MsgMonitor, &args, sizeof(args));
+}
+
 void RequestRestart() {
     // The game process restarts through run.sh; this process ends when it does (WatchParent).
     g.channel->Send(MsgRestart, nullptr, 0);

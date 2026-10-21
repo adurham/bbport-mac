@@ -81,6 +81,9 @@ struct OutputList {
 const char* AspectKey(int aspect);
 /// The monitor the game's window is on (window.cpp): Auto follows it. 0x0 until known.
 void SetMonitor(int width, int height);
+/// The same, only noted (the game process with the native GPU process, whose window reports it:
+/// its System menu labels Auto by it; bb-gpu fits and saves the output).
+void NoteMonitor(int width, int height);
 OutputSize Monitor();
 /// Auto resolved to the group nearest the monitor's aspect ratio (16:9 until it is known).
 int ResolvedAspect(int aspect);
@@ -119,14 +122,9 @@ struct Values {
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};
     std::atomic<int> model_lod{0}; ///< -2 highest .. 2 lowest, 0 the game's
-#ifdef __APPLE__
-    // bbport (macOS): 16:9 by default. The camera and HUD follow another aspect ratio through
-    // guest hooks that only install with the game's memory in place, which the Mac does not use:
-    // there a 16:10 output (Auto on a MacBook) squashes the picture.
-    std::atomic<int> aspect{Aspect16x9};
-#else
+    // bbport (macOS too since 0.6 final: the camera and HUD hooks install with either memory
+    // model, in the game process with the native GPU process).
     std::atomic<int> aspect{AspectAuto};
-#endif
     /// The chosen output resolution (PackSize; CurrentOutput fits it to the aspect ratio).
     std::atomic<std::uint32_t> output_res{PackSize(OutputDefault)};
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest

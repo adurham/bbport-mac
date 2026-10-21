@@ -87,8 +87,12 @@ place show up in the other.
 - *System language*: the game's language.
 
 **Display**
-- *Output resolution*: the size of the final image. 2560×1440 is a good choice on a MacBook Pro;
-  3840×2160 works too.
+- *Aspect ratio*: **Auto** follows your display (16:10 on a MacBook, so the picture fills the
+  screen), or choose 4:3, 16:10, 16:9, 21:9 or 32:9 (ultrawide). The game shows more at the sides
+  (or above and below) instead of stretching, and its HUD follows the screen's edges.
+- *Output resolution*: the size of the final image, from the chosen aspect ratio's list; Auto
+  also offers your display's own size. 2560×1440 (16:9) or 2560×1600 (16:10) is a good choice on
+  a MacBook Pro; 3840×2160 works too.
 - *Live resolution changes*: **Off** (recommended) renders everything at full resolution, and
   changes to resolution or upscaler preset apply after *Apply and restart game* in the in-game
   menu. **On** applies them instantly, but the game's post-processing then stays at 1080p.

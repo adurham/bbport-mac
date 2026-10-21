@@ -122,6 +122,8 @@ void GameEffects(u64 mask);
 void FrameLimit(int fps);
 /// The output's aspect ratio for the game's camera and HUD hooks (BbGuestHooks::SetDisplayAspect).
 void DisplayAspect(float aspect);
+/// The window's monitor in pixels, for the game's System menu ("Auto" follows it).
+void Monitor(int width, int height);
 /// After the frame stats: the game process prints its threads' CPU time and the guest's waits.
 void GameStats(double window_s, double frames);
 // The game process's pad and files for the button prompts (runtime_pad_prompt*,
