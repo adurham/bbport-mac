@@ -12,7 +12,7 @@
 # files, logs and saves go to ~/Library/Application Support/bbport (tools/macos/run.sh, .packaged).
 # No game files and no game artwork are included.
 # GitHub Actions runs this for every release tag (.github/workflows/release.yml).
-set -euo pipefail
+set -Eeuo pipefail # -E: the ERR trap below also reports failures inside functions
 cd -- "$(dirname -- "$0")/../.."
 repo=$PWD
 die() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
@@ -94,7 +94,7 @@ echo "=== Libraries"
 # Every library outside macOS itself is copied into lib/ and loaded through @rpath, so the app
 # runs without deps-x86_64/ and without DYLD_LIBRARY_PATH (which macOS drops when bash starts).
 loads() {  # the libraries a Mach-O file loads
-    otool -l "$1" | awk '/cmd LC_(LOAD|LOAD_WEAK|REEXPORT)_DYLIB$/ { getline; getline; print $2 }'
+    otool -l "$1" | awk '/cmd LC_(LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD|LAZY_LOAD)_DYLIB$/ { getline; getline; print $2 }'
 }
 rpaths() {
     otool -l "$1" | awk '/cmd LC_RPATH$/ { getline; getline; print $2 }'
@@ -114,7 +114,7 @@ find_library() {  # find_library <load command path> <search dir>...: the file t
 # bundle <lib dir> <GPU library dir> <search dirs, ':'-separated> <files...>: copies what the
 # files load (and what that loads) from the search dirs into the app, loaded through @rpath.
 bundle() {
-    local libdir=$1 gpudir=$2 file ref base target source_file done_files=" "
+    local libdir=$1 gpudir=$2 file ref base target source_file dir done_files=" "
     local -a search queue
     IFS=: read -r -a search <<< "$3"
     shift 3
@@ -139,9 +139,16 @@ bundle() {
             if [[ ! -f $target ]]; then
                 source_file=$(find_library "$ref" "${search[@]}")
                 [[ -n $source_file ]] || die "$(basename "$file") loads $ref, which was not found in ${search[*]}"
+                # Only what this build made goes in: not, say, a Homebrew library a dependency
+                # happened to link (unpinned, and outside the review of setup_deps.sh).
+                local under=
+                for dir in "${search[@]}"; do
+                    [[ $source_file == "$dir"/* ]] && under=yes
+                done
+                [[ -n $under ]] || die "$(basename "$file") loads $ref from outside this build's libraries ($source_file)"
                 cp -L "$source_file" "$target"
                 chmod u+w "$target"
-                echo "  $base  ($source_file)"
+                echo "  $base  (${source_file/#$HOME/~})"
                 queue+=("$target")
             fi
             if [[ $ref != "@rpath/$base" ]]; then
@@ -195,7 +202,9 @@ if [[ -n $native ]]; then
     fix_rpaths "$engine/bin/gpu-arm64/bb-gpu" @loader_path @loader_path/../../deps-arm64/lib
     fix_rpaths "$engine/bin/gpu-arm64/libbbgpu.dylib" @loader_path/../../deps-arm64/lib
     for lib in "$engine_arm64"/*.dylib; do
-        fix_rpaths "$lib" @loader_path
+        if [[ -f $lib ]]; then
+            fix_rpaths "$lib" @loader_path
+        fi
     done
     fix_rpaths "$engine_arm64/kosmickrisp/libvulkan_kosmickrisp.dylib" @loader_path/..
 fi
@@ -236,6 +245,13 @@ for file in "${machos[@]}"; do
             *) echo "  ${file#"$app"/}: loads $ref from outside the app"; bad=1 ;;
         esac
     done < <(loads "$file")
+    # Search paths stay inside the app: relative to the file, never absolute.
+    while IFS= read -r path; do
+        case $path in
+            @loader_path*|@executable_path*) ;;
+            *) echo "  ${file#"$app"/}: searches $path"; bad=1 ;;
+        esac
+    done < <(rpaths "$file")
 done
 (( bad == 0 )) || die "the app is not self-contained (above)"
 echo "  ${#machos[@]} engine files, every library inside the app or macOS"

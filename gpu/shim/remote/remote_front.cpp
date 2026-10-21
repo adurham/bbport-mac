@@ -562,7 +562,11 @@ bool Spawn() {
         env_strings.emplace_back(entry);
     }
     if (own_deps) {
-        env_strings.push_back("DYLD_LIBRARY_PATH=" + deps + "/lib");
+        // A checkout's libraries are found through this; the release app's through @rpath
+        // (package.sh), where it would only let them stand in for the system's by name.
+        if (!Exists(deps + "/../.packaged")) {
+            env_strings.push_back("DYLD_LIBRARY_PATH=" + deps + "/lib");
+        }
         env_strings.push_back("VK_DRIVER_FILES=" + deps +
                               "/lib/kosmickrisp/kosmickrisp_mesa_icd.json");
         if (const std::string loader = deps + "/lib/libvulkan.1.dylib"; Exists(loader)) {

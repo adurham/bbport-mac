@@ -117,9 +117,12 @@ final class LauncherModel: ObservableObject {
     /// (BB_NATIVE_GPU=0).
     var nativeGpuAvailable: Bool {
         guard let repo = repoURL else { return false }
-        return ["out/gpu-arm64/bb-gpu", "bin/gpu-arm64/bb-gpu"].contains {
-            FileManager.default.isExecutableFile(atPath: repo.appendingPathComponent($0).path)
+        // As the game decides (remote_front.cpp, Built()): bb-gpu and its arm64 libraries.
+        let files = FileManager.default
+        let gpu = ["out/gpu-arm64/bb-gpu", "bin/gpu-arm64/bb-gpu"].contains {
+            files.isExecutableFile(atPath: repo.appendingPathComponent($0).path)
         }
+        return gpu && files.fileExists(atPath: repo.appendingPathComponent("deps-arm64/lib").path)
     }
 
     /// Generated files, saves, bbport.ini, mods.json and patches.json live in the repository
