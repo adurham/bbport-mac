@@ -63,4 +63,27 @@ version=$(cat .version 2>/dev/null || git log -1 --format='%h' 2>/dev/null || ec
 # Paths in the log as ~/…, so a log shared in a report doesn't show the account name.
 tilde() { [[ -n ${HOME:-} && $1 == "$HOME"/* ]] && printf '~/%s' "${1#"$HOME"/}" || printf '%s' "$1"; }
 echo "macOS run: $(sw_vers -productVersion), bbport $version, game $(tilde "$BB_GAME_DIR"), fps $BB_FPS, upscaler ${BB_UPSCALER:-from $(tilde "$ini")}"
+# Direct memory sized to the scene. run.sh gives every output above 1080p 9152 MiB (the PS4 has
+# 5056), though only scene pixels above 1080p need more: about 448 bytes each, measured by
+# bloodborne-native (bloodborne-native/bloodborne-runtime run.sh: a 2258x1270 scene failed at
+# 5184 MiB and ran at 5376; 1506x848 ran at 5056; 9152 lost the GPU at 1440p on an 18 GB Mac).
+# So 1440p with a scene below 1080p gets the PS4's 5056 and 4K Balanced 5440; scenes larger than
+# those measurements (4K Quality and Native, 1440p Native) keep upstream's 9152. BB_DMEM_MB
+# (e.g. 9152, as before) overrides.
+if [[ -z ${BB_DMEM_MB:-} && -z ${BB_RENDER_RES:-} ]] && python=$(command -v python3); then
+    scene=$("$python" scripts/patches.py --print-scaled --settings "$ini" 2>/dev/null | head -1) || true
+    scene=${scene%% *}
+    if [[ $scene =~ ^([0-9]+)x([0-9]+)$ ]]; then
+        pixels=$(( BASH_REMATCH[1] * BASH_REMATCH[2] ))
+        extra=$(( (pixels - 1920 * 1080) * 448 ))
+        dmem=5056
+        if (( pixels > 2258 * 1270 )); then
+            dmem=9152
+        elif (( extra > 0 )); then
+            dmem=$(( 5056 + (extra + (64 << 20) - 1) / (64 << 20) * 64 ))
+        fi
+        export BB_DMEM_MB=$dmem
+        echo "Direct memory: $dmem MiB for a ${scene} scene (BB_DMEM_MB=9152: the previous size)"
+    fi
+fi
 exec bash run.sh "$@"
