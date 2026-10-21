@@ -44,7 +44,8 @@ enum Catalog {
     // Output aspect ratios and their resolutions, as the Linux launcher (ASPECTS, OUTPUTS) and
     // gpu/shim/bbport_settings.cpp (Groups) have them: the game keeps its 1920x1080 frame; another
     // aspect ratio shows more at the sides (or above and below). The game itself fits output_res
-    // to the aspect ratio and saves what it uses (2560x1600 becomes 2560x1440 at 16:9).
+    // to the aspect ratio and saves what it uses (2560x1600 becomes 2560x1440 at 16:9, and the
+    // other way round with Auto on a MacBook).
     static let aspects = ["auto", "4:3", "16:10", "16:9", "21:9", "32:9"]
     static let aspectRatios: [String: Double] = [
         "4:3": 4.0 / 3.0, "16:10": 16.0 / 10.0, "16:9": 16.0 / 9.0, "21:9": 64.0 / 27.0, "32:9": 32.0 / 9.0,
@@ -333,8 +334,9 @@ struct GameSettings: Equatable {
     var showFPS = true
     /// Auto by default, as upstream: the display's shape. A saved choice is kept.
     var aspect = "auto"
-    /// Any size: the launcher fits it to the aspect ratio's list (LauncherModel.fitOutput).
-    var outputRes = "1920x1080"
+    /// Any size: the launcher fits it to the aspect ratio's list (LauncherModel.fitOutput):
+    /// 2560x1440 (16:9), or 2560x1600 with a MacBook's Auto (16:10), the guide's recommendation.
+    var outputRes = "2560x1440"
     var modelLOD = "0"
     var liveResolution = "0"
     var effects: [EffectSetting] = Catalog.effects.map {

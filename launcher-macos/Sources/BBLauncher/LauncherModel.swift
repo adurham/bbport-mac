@@ -237,11 +237,14 @@ final class LauncherModel: ObservableObject {
     // MARK: - Output resolution
 
     /// The game's display in pixels (the one chosen, else the main one): Auto's aspect ratio.
+    /// As the game picks it (window.cpp ChooseDisplay): the name in any case and part of it, and
+    /// the main display when the chosen one isn't connected.
     var monitorSize: OutputSize? {
-        let screen = prefs.display.isEmpty
-            ? NSScreen.screens.first
-            : NSScreen.screens.first { $0.localizedName == prefs.display }
-        guard let screen else { return nil }
+        let wanted = prefs.display.lowercased()
+        let chosen = wanted.isEmpty
+            ? nil
+            : NSScreen.screens.first { $0.localizedName.lowercased().contains(wanted) }
+        guard let screen = chosen ?? NSScreen.screens.first else { return nil }
         let scale = screen.backingScaleFactor
         return OutputSize(Int((screen.frame.width * scale).rounded()),
                           Int((screen.frame.height * scale).rounded()))
