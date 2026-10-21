@@ -64,8 +64,21 @@ if [[ ${TRACE:-0} == 1 || ${CAPTURES:-0} -gt 0 ]]; then
             done
             if [[ ${TRACE:-0} == 1 ]]; then
                 rm -rf out/mtl-"$tag".trace
-                xcrun xctrace record --template 'Metal System Trace' --attach "$P" \
-                    --time-limit "${TLIMIT:-3s}" --output out/mtl-"$tag".trace > out/mtl-"$tag".txt 2>&1
+                if [[ -n ${TRACE_SIGINT_S:-} ]]; then
+                    # --time-limit has hung and left unexportable traces on this Mac; a SIGINT
+                    # after a fixed time finalises reliably. Bounded: TERM after 60 s more.
+                    xcrun xctrace record --template 'Metal System Trace' --attach "$P" \
+                        --output out/mtl-"$tag".trace > out/mtl-"$tag".txt 2>&1 &
+                    xp=$!
+                    sleep "$TRACE_SIGINT_S"
+                    kill -INT "$xp" 2>/dev/null
+                    for _ in $(seq 1 60); do kill -0 "$xp" 2>/dev/null || break; sleep 1; done
+                    kill -TERM "$xp" 2>/dev/null
+                    wait "$xp" 2>/dev/null
+                else
+                    xcrun xctrace record --template 'Metal System Trace' --attach "$P" \
+                        --time-limit "${TLIMIT:-3s}" --output out/mtl-"$tag".trace > out/mtl-"$tag".txt 2>&1
+                fi
             fi
             break
         fi

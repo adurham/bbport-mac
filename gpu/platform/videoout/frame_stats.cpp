@@ -21,6 +21,7 @@
 
 #include "bbport_cpu.h"
 #include "bbport_heap_sites.h"
+#include "bbport_null_render.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "bbport_wait_trace.h"
@@ -662,6 +663,14 @@ void OnFlipStats() {
                         frames ? double(submits) / frames : 0.0, double(segments) / submits);
         }
         BbWaitTrace::Report(window);
+        // BB_NULL_RENDER: what was dropped this window (no line with the gate off).
+        if (BbNullRender::Enabled() && frames != 0) {
+            std::printf("Null render: %.1f draws, %.1f dispatches dropped/frame; %llu flips shown "
+                        "blank\n",
+                        BbNullRender::draws.exchange(0) / double(frames),
+                        BbNullRender::dispatches.exchange(0) / double(frames),
+                        (unsigned long long)BbNullRender::flips.exchange(0));
+        }
         // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
         if (intervals.size() > 2) {
             std::vector<double> sorted = intervals;

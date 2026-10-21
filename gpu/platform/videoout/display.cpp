@@ -19,6 +19,7 @@
 #include "cp/command_processor.h"
 #include "render/presenter.h"
 #include "remote/bb_remote.h"
+#include "bbport_null_render.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern std::unique_ptr<BbCp::CommandProcessor> liverpool;
@@ -254,7 +255,12 @@ bool Display::SubmitFlip(Port* port, s32 index, s64 flip_arg, bool at_eop) {
 
 void Display::QueueFlip(Port* port, s32 index, s64 flip_arg, bool at_eop) {
     Vulkan::Frame* frame;
-    if (index == -1) {
+    // BB_NULL_RENDER: every flip is a blank one (nothing was drawn to encode); the flip itself,
+    // its labels and events go on as before.
+    if (index == -1 || BbNullRender::Enabled()) {
+        if (index != -1) {
+            BbNullRender::flips.fetch_add(1, std::memory_order_relaxed);
+        }
         frame = presenter->PrepareBlankFrame(false);
     } else {
         const DisplayBuffer& buffer = port->buffers[index];

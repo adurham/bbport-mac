@@ -3,6 +3,7 @@
 // draw recording thread (raster_pipe.cpp), and the per-frame bookkeeping.
 
 #include "render/raster_internal.h"
+#include "bbport_null_render.h"
 
 namespace Vulkan {
 
@@ -84,6 +85,10 @@ std::pair<u32, u32> GetDrawOffsets(
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
     BB_SECTION(ADraw);
     BbStats::draws.fetch_add(1, std::memory_order_relaxed);
+    if (BbNullRender::Enabled()) { // BB_NULL_RENDER: decoded, counted, not recorded
+        BbNullRender::draws.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     // bbport: with the draw pipeline this thread only selects the pipeline and hands the draw
     // to the recording thread (DrawRecord there); draws FilterDraw handles itself run here.
@@ -472,6 +477,10 @@ void Rasterizer::SyncProgramWrites(VAddr address, u64 size) {
 void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
                               u32 max_count, VAddr count_address, u16 vertex_sgpr_offset,
                               u16 instance_sgpr_offset) {
+    if (BbNullRender::Enabled()) {
+        BbNullRender::draws.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     // bbport: like direct draws, handed to the recording thread after the pipeline selection
     // (else the GPU thread waited here for a whole frame of queued draws).
     const bool pipelined = UseDrawPipe() && FilterDrawPasses() &&
@@ -606,6 +615,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
 void Rasterizer::DispatchDirect() {
     BbStats::dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (BbNullRender::DropsDispatches()) {
+        BbNullRender::dispatches.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     // bbport: like draws, handed to the draw recording thread after the pipeline selection.
     const bool pipelined = UseDrawPipe() && !BbToggle::Disabled(BbToggle::PipelinedDispatch);
     if (!pipelined) {
@@ -695,6 +708,10 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
 }
 
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
+    if (BbNullRender::DropsDispatches()) {
+        BbNullRender::dispatches.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     // bbport: handed to the recording thread like direct dispatches.
     const bool pipelined = UseDrawPipe() && !BbToggle::Disabled(BbToggle::PipelinedIndirectDraws);
     if (!pipelined) {

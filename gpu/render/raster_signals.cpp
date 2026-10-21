@@ -6,6 +6,7 @@
 
 #include "render/raster_internal.h"
 #include "bbport_copy.h"
+#include "bbport_null_render.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include <pthread.h>
@@ -188,7 +189,9 @@ bool Rasterizer::OcclusionTranslated() {
         return !(env && env[0] == '0');
     }();
     // Experiment bit 4 of BB_TOGGLE_FILE: the fixed sequence while the game runs (A/B).
-    return enabled && VideoCore::GuestInPlace() && !BbToggle::Experiment(4);
+    // BB_NULL_RENDER: no draws are recorded, so no query could count; the fixed sequence instead.
+    return enabled && VideoCore::GuestInPlace() && !BbToggle::Experiment(4) &&
+           !BbNullRender::Enabled();
 }
 
 bool Rasterizer::OcclusionEvent(VAddr address, u32 pairs) {
