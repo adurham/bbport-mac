@@ -1,0 +1,5 @@
+{"tag":"async-smoke","attempt":1,"max_draws":886,"overlap":0,"pa_lines":30,"pa_csv":1,"watchdog":0,"assert":""}
+{"tag":"ctrl-1","attempt":1,"max_draws":890,"overlap":0,"pa_lines":0,"pa_csv":0,"watchdog":0,"assert":""}
+{"tag":"async-1","attempt":1,"max_draws":889,"overlap":0,"pa_lines":60,"pa_csv":1,"watchdog":0,"assert":""}
+{"tag":"ctrl-2","attempt":1,"max_draws":892,"overlap":0,"pa_lines":0,"pa_csv":0,"watchdog":0,"assert":""}
+{"tag":"async-2","attempt":1,"max_draws":892,"overlap":0,"pa_lines":60,"pa_csv":1,"watchdog":0,"assert":""}

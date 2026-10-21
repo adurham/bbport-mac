@@ -16,6 +16,7 @@
 
 #include "bbport_copy.h"
 #include "bbport_cpu.h"
+#include "bbport_protect_async.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "bbport_wait_trace.h"
@@ -543,6 +544,8 @@ void Scheduler::HandOver() {
         ReportProducer("REENTERED recording", u32(gettid()), inside, "HandOver");
     }
     ProducerScope producer{*this, "HandOver"};
+    // BB_PROTECT_ASYNC=1: the revokes decided for the commands handed over go out in one batch.
+    BbProtectAsync::Flush();
     if (!record_chunk || !ordered_chunk) {
         // Left behind by another HandOver interrupted between handing a chunk over and
         // taking a new one (see ProducerScope). Recover instead of dereferencing null.
@@ -940,6 +943,9 @@ void Scheduler::QueueSubmit(std::span<const vk::CommandBuffer> cmdbufs, SubmitIn
     for (auto& operation : info.before_submit) {
         operation();
     }
+    // BB_PROTECT_ASYNC=1: every revoke decided before these commands is applied before the GPU
+    // runs them (they may copy straight from guest memory).
+    BbProtectAsync::BarrierAll();
     vk::Result result;
     {
         BbStats::CatTimer category{BbStats::CatEmit};

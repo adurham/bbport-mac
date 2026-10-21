@@ -1,0 +1,76 @@
+== ctrl-1 (gameplay from 43.3 s, end 299.9 s, async log no, 'Protect async' lines 0, asserts 0)
+   flat: 2108 frames, p50 23.54 p99 26.01, draws 887.0, ipc 1.24 ms (118.0 waits), service 0.538, wait/queue 0.702, game cpu 29.84, guest faults 3.02 ms, handler 0.98
+   late: 2901 frames, p50 24.88 p99 39.47, draws 887.0, ipc 5.78 ms (117.0 waits), service 1.036, wait/queue 4.744, game cpu 47.21, guest faults 9.7 ms, handler 2.76
+== async-1 (gameplay from 43.3 s, end 299.8 s, async log YES, 'Protect async' lines 60, asserts 0)
+   flat: 2073 frames, p50 23.8 p99 28.61, draws 885.0, ipc 0.07 ms (3.0 waits), service 1.085, wait/queue -1.015, game cpu 46.82, guest faults 3.1 ms, handler 0.57
+          async: {'protect_calls_sent_per_frame': 117.0, 'batches_per_frame': 62.3, 'replies_awaited_per_frame': 3.27, 'restores_no_reply_per_frame': 57.6, 'revokes_batched_per_frame': 59.5, 'revokes_per_revoke_batch': 1.76, 'wait_ms_per_frame': 0.162, 'submit_wait_ms_per_frame': 0.003, 'queue_ms_per_frame': 3.491, 'service_ms_per_frame': 0.9, 'guest_fault_wait_ms_per_frame': 1.965, 'violations': 0, 'skipped': 0, 'out_of_order': 0, 'refaults': 1}
+   late: 2901 frames, p50 24.96 p99 40.41, draws 885.0, ipc 0.19 ms (3.0 waits), service 1.229, wait/queue -1.039, game cpu 46.91, guest faults 6.17 ms, handler 0.72
+          async: {'protect_calls_sent_per_frame': 114.9, 'batches_per_frame': 60.8, 'replies_awaited_per_frame': 3.21, 'restores_no_reply_per_frame': 55.9, 'revokes_batched_per_frame': 59.0, 'revokes_per_revoke_batch': 1.77, 'wait_ms_per_frame': 0.506, 'submit_wait_ms_per_frame': 0.006, 'queue_ms_per_frame': 7.016, 'service_ms_per_frame': 1.057, 'guest_fault_wait_ms_per_frame': 2.963, 'violations': 0, 'skipped': 0, 'out_of_order': 0, 'refaults': 1}
+   async totals: {'violations': 0, 'skipped': 0, 'g_out_of_order': 0, 'g_refaults': 14, 'barriers': 35932, 'replies_awaited': 35748, 'appended': 1232995}
+== ctrl-2 (gameplay from 43.2 s, end 300.0 s, async log no, 'Protect async' lines 0, asserts 0)
+   flat: 2066 frames, p50 24.08 p99 26.16, draws 889.0, ipc 1.31 ms (119.0 waits), service 0.548, wait/queue 0.762, game cpu 29.91, guest faults 3.23 ms, handler 1.02
+   late: 2699 frames, p50 26.42 p99 43.37, draws 888.0, ipc 8.71 ms (117.0 waits), service 1.149, wait/queue 7.561, game cpu 47.52, guest faults 14.76 ms, handler 3.8
+== async-2 (gameplay from 43.3 s, end 300.0 s, async log YES, 'Protect async' lines 60, asserts 0)
+   flat: 2117 frames, p50 23.51 p99 25.27, draws 887.0, ipc 0.03 ms (3.0 waits), service 0.643, wait/queue -0.613, game cpu 30.33, guest faults 1.65 ms, handler 0.33
+          async: {'protect_calls_sent_per_frame': 118.6, 'batches_per_frame': 62.6, 'replies_awaited_per_frame': 3.2, 'restores_no_reply_per_frame': 57.9, 'revokes_batched_per_frame': 60.7, 'revokes_per_revoke_batch': 1.77, 'wait_ms_per_frame': 0.066, 'submit_wait_ms_per_frame': 0.0, 'queue_ms_per_frame': 1.711, 'service_ms_per_frame': 0.558, 'guest_fault_wait_ms_per_frame': 1.158, 'violations': 0, 'skipped': 0, 'out_of_order': 0, 'refaults': 26}
+   late: 2726 frames, p50 25.83 p99 43.1, draws 887.0, ipc 0.23 ms (3.0 waits), service 1.26, wait/queue -1.03, game cpu 47.05, guest faults 6.75 ms, handler 0.72
+          async: {'protect_calls_sent_per_frame': 115.4, 'batches_per_frame': 61.0, 'replies_awaited_per_frame': 3.4, 'restores_no_reply_per_frame': 56.4, 'revokes_batched_per_frame': 59.0, 'revokes_per_revoke_batch': 1.78, 'wait_ms_per_frame': 0.774, 'submit_wait_ms_per_frame': 0.009, 'queue_ms_per_frame': 8.695, 'service_ms_per_frame': 1.112, 'guest_fault_wait_ms_per_frame': 3.633, 'violations': 0, 'skipped': 0, 'out_of_order': 0, 'refaults': 1}
+   async totals: {'violations': 0, 'skipped': 0, 'g_out_of_order': 0, 'g_refaults': 60, 'barriers': 36627, 'replies_awaited': 36389, 'appended': 1261566}
+
+20 s bins: frame p50 / ipc / game cpu / guest fault ms / present wait
+ctrl-1
+  t 40 frame  23.04 ipc  1.14 gcpu 29.14 gfault  2.45 pw  8.92
+  t 60 frame  23.57 ipc  1.31 gcpu 30.17 gfault  3.27 pw  9.56
+  t 80 frame   23.5 ipc  1.24 gcpu 29.36 gfault  3.17 pw  9.86
+  t100 frame   23.5 ipc  1.25 gcpu 29.65 gfault   3.1 pw  9.83
+  t120 frame   23.5 ipc  1.25 gcpu 29.86 gfault  3.01 pw  9.66
+  t140 frame  23.55 ipc  1.23 gcpu 30.03 gfault  3.01 pw  9.52
+  t160 frame  23.44 ipc  1.25 gcpu 30.73 gfault  3.03 pw  8.95
+  t180 frame  23.44 ipc  1.39 gcpu 32.22 gfault  3.26 pw   8.1
+  t200 frame  23.41 ipc  1.44 gcpu  33.9 gfault  3.31 pw   7.2
+  t220 frame  23.72 ipc  2.18 gcpu 43.56 gfault  4.78 pw  2.71
+  t240 frame  24.49 ipc  4.42 gcpu 47.74 gfault  8.12 pw  1.55
+  t260 frame  25.33 ipc  7.75 gcpu 47.06 gfault 12.13 pw   0.9
+  t280 frame  27.12 ipc 11.07 gcpu 46.72 gfault 18.34 pw   0.0
+async-1
+  t 40 frame  24.37 ipc  0.02 gcpu 28.74 gfault  1.29 pw  9.68
+  t 60 frame  23.94 ipc  0.04 gcpu 32.24 gfault  1.96 pw  8.82
+  t 80 frame  23.67 ipc  0.04 gcpu 35.06 gfault   2.1 pw  7.25
+  t100 frame  23.66 ipc  0.05 gcpu 40.85 gfault  2.26 pw  4.16
+  t120 frame  23.87 ipc  0.08 gcpu 47.59 gfault  3.87 pw  1.01
+  t140 frame  23.88 ipc  0.08 gcpu 47.34 gfault  2.85 pw  0.96
+  t160 frame  24.11 ipc  0.11 gcpu 47.61 gfault  4.14 pw  0.73
+  t180 frame  24.18 ipc  0.11 gcpu 47.64 gfault  4.18 pw  0.96
+  t200 frame  24.28 ipc  0.08 gcpu 47.28 gfault  3.75 pw  1.46
+  t220 frame  24.52 ipc  0.09 gcpu 47.25 gfault  4.79 pw  2.08
+  t240 frame   24.7 ipc  0.11 gcpu 46.89 gfault  5.14 pw  2.06
+  t260 frame  25.29 ipc  0.37 gcpu 46.89 gfault  8.55 pw  1.15
+  t280 frame   25.5 ipc  0.43 gcpu 46.48 gfault  8.92 pw  1.71
+ctrl-2
+  t 40 frame   23.1 ipc  1.06 gcpu 27.92 gfault  2.36 pw  9.71
+  t 60 frame  23.28 ipc  1.19 gcpu 28.46 gfault  2.98 pw 10.03
+  t 80 frame  24.02 ipc  1.22 gcpu 28.53 gfault  2.96 pw 10.75
+  t100 frame  23.87 ipc  1.23 gcpu 28.73 gfault  3.02 pw 10.63
+  t120 frame  24.15 ipc   1.3 gcpu 29.83 gfault  3.26 pw 10.34
+  t140 frame  24.15 ipc   1.5 gcpu 33.64 gfault  3.52 pw  8.33
+  t160 frame  24.23 ipc  2.58 gcpu  45.1 gfault   5.6 pw   2.8
+  t180 frame  24.85 ipc   5.7 gcpu 47.69 gfault  9.92 pw  1.99
+  t200 frame  25.67 ipc  7.76 gcpu 47.37 gfault 13.62 pw  1.89
+  t220 frame  26.16 ipc  8.25 gcpu 47.47 gfault 14.13 pw  2.62
+  t240 frame  28.11 ipc  11.4 gcpu 48.08 gfault 17.91 pw  0.62
+  t260 frame  26.67 ipc  8.96 gcpu 47.27 gfault 14.86 pw  2.45
+  t280 frame  26.02 ipc   7.3 gcpu 47.37 gfault 13.15 pw  2.93
+async-2
+  t 40 frame  23.06 ipc  0.02 gcpu 27.91 gfault  1.12 pw  9.49
+  t 60 frame  23.39 ipc  0.03 gcpu 28.64 gfault  1.65 pw  10.0
+  t 80 frame  23.58 ipc  0.03 gcpu  28.7 gfault   1.7 pw 10.33
+  t100 frame  23.52 ipc  0.03 gcpu 29.34 gfault  1.58 pw  9.93
+  t120 frame  23.52 ipc  0.03 gcpu 30.46 gfault  1.65 pw  9.33
+  t140 frame  23.52 ipc  0.03 gcpu 31.98 gfault   1.8 pw  8.45
+  t160 frame  23.42 ipc  0.04 gcpu 32.11 gfault  1.75 pw  8.17
+  t180 frame  23.41 ipc  0.04 gcpu 35.16 gfault  1.84 pw  6.76
+  t200 frame  23.63 ipc  0.04 gcpu 38.93 gfault  2.03 pw  5.08
+  t220 frame  24.26 ipc  0.07 gcpu 47.05 gfault   3.3 pw  1.36
+  t240 frame  25.25 ipc  0.15 gcpu 46.95 gfault  5.66 pw  2.13
+  t260 frame  26.72 ipc  0.38 gcpu 46.42 gfault  8.32 pw  2.32
+  t280 frame  31.16 ipc  1.31 gcpu 48.41 gfault 14.63 pw   0.0

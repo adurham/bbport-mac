@@ -65,6 +65,9 @@ enum Msg : std::uint32_t {
     MsgFileHostPath = 111,  ///< call: PathArgs -> PathReply (runtime_file_host_path, /app0/ only)
     MsgWindowModeKept = 112, ///< ValueArgs: the player kept the current window mode (BbSettings)
     MsgOutputResKept = 113,  ///< ValueArgs: the player kept the current output resolution (packed)
+    /// BB_PROTECT_ASYNC=1 only (bench/protect-async): ProtectBatchArgs on the protect channel, no
+    /// reply; applied in order, then SharedState::pa_applied = the last one's sequence number.
+    MsgProtectBatch = 114,
 };
 
 /// Sizes of the guest structures carried as raw bytes (checked against the real types).
@@ -144,6 +147,15 @@ struct FaultReply {
     std::int32_t handled;
     std::uint32_t count;
     ProtectArgs protects[MaxFaultProtects];
+};
+
+/// MsgProtectBatch: protections numbered first_seq, first_seq + 1, ... (BB_PROTECT_ASYNC=1).
+inline constexpr std::uint32_t MaxBatchProtects = 168;
+struct ProtectBatchArgs {
+    std::uint64_t first_seq;
+    std::uint64_t send_ns; ///< CLOCK_MONOTONIC when bb-gpu sent it (the queue's share of the wait)
+    std::uint32_t count, pad;
+    ProtectArgs protects[MaxBatchProtects];
 };
 
 struct InitArgs {
@@ -259,6 +271,8 @@ static_assert(sizeof(HelloArgs) == 80 && sizeof(HelloReply) == 16 + 16 * MaxTake
               sizeof(ProtectArgs) == 24 && sizeof(ResultReply) == 8 && sizeof(ValueArgs) == 8);
 static_assert(sizeof(FaultArgs) == 24 && sizeof(FaultReply) == 8 + 24 * MaxFaultProtects &&
               sizeof(FaultReply) <= 4096);
+static_assert(sizeof(ProtectBatchArgs) == 24 + 24 * MaxBatchProtects &&
+              sizeof(ProtectBatchArgs) <= 4096);
 static_assert(sizeof(InitArgs) == 16 + 128 + 32 + 1024 && sizeof(SubmitGfxArgs) == 56 &&
               sizeof(SubmitAscArgs) == 16 && sizeof(ComputeQueueArgs) == 24);
 static_assert(sizeof(VoArgs) == 8 && sizeof(VoRegisterArgs) == 16 + 40 + 128 &&

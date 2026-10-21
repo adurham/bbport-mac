@@ -59,6 +59,22 @@ struct SharedState {
     /// mprotect ns/calls/pages, trap calls/no-op calls/pages/unchanged pages; [0..7] on other
     /// threads, [8..15] on the protect thread); [16] protect-thread service ns, [17] its messages.
     alignas(64) std::atomic<std::uint64_t> protect_probe[24]{};
+    /// BB_PROTECT_ASYNC=1 (bench/protect-async, default off; nothing here is touched without it):
+    /// the protect thread's progress through bb-gpu's protection batches (MsgProtectBatch): the
+    /// last sequence number it applied, and a word bumped after each batch for the waiters on
+    /// both sides (bb-gpu's read barriers, a faulting guest thread).
+    alignas(64) std::atomic<std::uint64_t> pa_applied{0};
+    std::atomic<std::uint32_t> pa_applied_word{0}, pa_applied_sleepers{0};
+    /// Written by bb-gpu's fault handler before its reply: everything sent up to then (the
+    /// fault's restores included); the faulting guest thread waits until it is applied.
+    alignas(64) std::atomic<std::uint64_t> pa_fault_seq{0};
+    /// The game process's side, running totals: [0] guest fault wait ns (for the fault's
+    /// restores), [1] those waits, [2] same-page re-faults by one thread within 200 us of its
+    /// previous fault's return (a restore applied late), [3] batches applied, [4] protections
+    /// applied from them, [5] lock-held faults, [6] batches out of sequence (a gap or reordering:
+    /// must stay 0), [7] send-to-applied ns summed over batches, [8] service ns (lock + mprotect)
+    /// summed over batches.
+    alignas(64) std::atomic<std::uint64_t> pa_game[12]{};
 };
 
 struct ControlBlock {

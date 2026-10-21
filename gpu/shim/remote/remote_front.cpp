@@ -430,6 +430,70 @@ void PublishProtectProbe() {
     }
 }
 
+/// BB_PROTECT_ASYNC=1 (bench/protect-async, default off): a batch of bb-gpu's protections, sent
+/// with no reply. Applied in order; then the last one's number is published (pa_applied) and the
+/// waiters on it (bb-gpu's read barriers, faulting guest threads) are woken.
+void ApplyProtectBatch(const Message& message) {
+    ProtectBatchArgs batch{};
+    std::memcpy(&batch, message.data, std::min<std::size_t>(sizeof(batch), message.size));
+    const u32 count = std::min(batch.count, MaxBatchProtects);
+    if (count == 0 || !g.control) {
+        return;
+    }
+    auto& s = g.control->state;
+    const u64 start = MonotonicNs();
+    if (batch.first_seq != s.pa_applied.load(std::memory_order_relaxed) + 1) {
+        s.pa_game[6].fetch_add(1, std::memory_order_relaxed); // a gap or a reordering
+    }
+    for (u32 i = 0; i < count; ++i) {
+        ApplyProtect(batch.protects[i]);
+    }
+    const u64 done = MonotonicNs();
+    s.pa_game[3].fetch_add(1, std::memory_order_relaxed);
+    s.pa_game[4].fetch_add(count, std::memory_order_relaxed);
+    if (batch.send_ns && done > batch.send_ns) {
+        s.pa_game[7].fetch_add(done - batch.send_ns, std::memory_order_relaxed);
+    }
+    s.pa_game[8].fetch_add(done - start, std::memory_order_relaxed);
+    s.pa_applied.store(batch.first_seq + count - 1, std::memory_order_release);
+    Signal(s.pa_applied_word, s.pa_applied_sleepers);
+}
+
+bool ProtectAsyncEnabled() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_PROTECT_ASYNC");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
+/// BB_PROTECT_ASYNC=1: after a write fault's reply, the guest thread waits until the game
+/// process applied what bb-gpu sent up to the reply (the fault's restores among it); a thread
+/// that holds the runtime's lock does not (the protect thread may need that lock) and applied
+/// them itself. Counts a same-page re-fault soon after the previous return (a restore late).
+void ProtectAsyncAfterFault(u64 address, bool lock_held) {
+    auto& s = g.control->state;
+    thread_local u64 last_page = ~0ull, last_return_ns = 0;
+    const u64 page = address >> 12;
+    const u64 now = MonotonicNs();
+    if (page == last_page && now - last_return_ns < 200'000) {
+        s.pa_game[2].fetch_add(1, std::memory_order_relaxed);
+    }
+    if (lock_held) {
+        s.pa_game[5].fetch_add(1, std::memory_order_relaxed);
+    } else {
+        const u64 seq = s.pa_fault_seq.load(std::memory_order_acquire);
+        if (s.pa_applied.load(std::memory_order_acquire) < seq) {
+            WaitUntil(s.pa_applied_word, s.pa_applied_sleepers,
+                      [&] { return s.pa_applied.load(std::memory_order_acquire) >= seq; });
+            s.pa_game[0].fetch_add(MonotonicNs() - now, std::memory_order_relaxed);
+            s.pa_game[1].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    last_page = page;
+    last_return_ns = MonotonicNs();
+}
+
 /// bb-gpu's page protection calls (ControlBlock::protect): only the runtime's lock is taken here.
 void ProtectThread() {
     Common::SetCurrentThreadName("bb:remote-protect");
@@ -441,6 +505,8 @@ void ProtectThread() {
                 const u64 start = probe ? MonotonicNs() : 0;
                 if (message.type == MsgProtect) {
                     ApplyProtect(Payload<ProtectArgs>(message));
+                } else if (message.type == MsgProtectBatch) {
+                    ApplyProtectBatch(message);
                 }
                 if (probe && g.control) {
                     auto& s = g.control->state;
@@ -981,6 +1047,9 @@ int HandleFault(void* context, void* address) {
     }
     if (reply.count) {
         PublishProtectProbe();
+    }
+    if (ProtectAsyncEnabled() && g.control) {
+        ProtectAsyncAfterFault(addr, args.lock_held != 0);
     }
     return reply.handled;
 }

@@ -12,6 +12,7 @@
 #include <xxhash.h>
 
 #include "bbport_button_prompts.h"
+#include "bbport_protect_async.h"
 #include "buffers/buffer_cache.h"
 #include "render/runtime.h"
 #include "render/scheduler.h"
@@ -139,6 +140,9 @@ void TextureCache::RefreshImage(Image& image) {
     }
     BbStats::Timer timer{BbStats::t_refresh};
     const ImageInfo& info = image.info;
+    // BB_PROTECT_ASYNC=1: the hashes below read the guest's memory directly; the image's watch
+    // (TrackImage, before this) must be in place first.
+    BbProtectAsync::Barrier(info.guest_address, info.guest_size);
 
     // Maybe written (a page under it was, not it): compared by its whole contents, as
     // MarkAsMaybeDirty hashes it. bbport (macOS port): its first 8x8 texels alone missed writes

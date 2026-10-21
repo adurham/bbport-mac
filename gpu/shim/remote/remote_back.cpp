@@ -24,6 +24,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <chrono>
+#include <cstddef>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -55,6 +56,7 @@
 #include "shader/ir/passes/srt.h"
 #include "remote/bb_protocol.h"
 #include "remote/bb_remote.h"
+#include "bbport_protect_async.h"
 #include "render/presenter.h"
 #include "render/rasterizer.h"
 #include "sdl_window.h"
@@ -73,6 +75,16 @@ static_assert(sizeof(VO::ResolutionStatus) == ResolutionBytes);
 static_assert(sizeof(VO::BufferAttribute) == BufferAttributeBytes);
 static_assert(sizeof(VO::DisplayBuffer) == VideoOutBufferBytes);
 static_assert(sizeof(VO::BufferAttributeGroup) == AttributeGroupBytes);
+
+/// BB_PROTECT_ASYNC=1 (defined below, after ForwardProtect's probe).
+namespace ProtectAsync {
+bool Enabled();
+void FaultBegin(bool lock_held);
+void FaultEnd();
+void Flip(double frame_ms);
+void Report();
+void Install();
+} // namespace ProtectAsync
 
 namespace {
 
@@ -438,6 +450,10 @@ void CallHook(GpuRange State::*which, const RangeArgs& args) {
 void WriteFault(const Message& message, auto&& reply) {
     const auto args = Payload<FaultArgs>(message);
     BbStats::PhaseTimer timer{BbStats::t_fault_handler, BbStats::fault_handlers};
+    const bool async = ProtectAsync::Enabled();
+    if (async) {
+        ProtectAsync::FaultBegin(args.lock_held != 0);
+    }
     std::vector<ProtectArgs> protects;
     collected_protects = args.lock_held ? &protects : nullptr;
     int handled = 0;
@@ -460,11 +476,17 @@ void WriteFault(const Message& message, auto&& reply) {
     out.handled = handled;
     out.count = u32(std::min<std::size_t>(protects.size(), MaxFaultProtects));
     std::copy_n(protects.begin(), out.count, out.protects);
-    // More than fit (not expected): the rest as calls.
-    for (std::size_t i = out.count; i < protects.size(); ++i) {
+    // More than fit (not expected): the rest as calls. With BB_PROTECT_ASYNC=1 they are in the
+    // batch already (ForwardProtect).
+    for (std::size_t i = out.count; !async && i < protects.size(); ++i) {
         ResultReply result{};
         BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
         g.protect->Call(MsgProtect, &protects[i], sizeof(ProtectArgs), &result, sizeof(result));
+    }
+    if (async) {
+        // The fault's restores go out now (no reply); the guest thread waits for them itself
+        // (SharedState::pa_fault_seq) after this reply.
+        ProtectAsync::FaultEnd();
     }
     reply(&out, u32(offsetof(FaultReply, protects) + out.count * sizeof(ProtectArgs)));
 }
@@ -935,6 +957,9 @@ int Main(int argc, char** argv) {
     }
     InstallFaultHandler();
     WatchParent();
+    if (ProtectAsync::Enabled()) {
+        ProtectAsync::Install();
+    }
     if (const char* toggles = std::getenv("BB_TOGGLES")) {
         runtime_disabled_optimizations = std::strtoull(toggles, nullptr, 0);
     }
@@ -1079,6 +1104,9 @@ bool GamePhases(GamePhaseTotals& out) {
 }
 
 void GameStats(double window_s, double frames) {
+    if (ProtectAsync::Enabled()) {
+        ProtectAsync::Report();
+    }
     const StatsArgs args{window_s, frames};
     g.channel->Send(MsgGameStats, &args, sizeof(args));
 }
@@ -1225,6 +1253,322 @@ void Note(const ProtectArgs& args, u64 ns, Caller caller) {
 }
 } // namespace ProtectProbe
 
+/// BB_PROTECT_ASYNC=1 (bench/protect-async, default off; bbport_protect_async.h). Every protection
+/// gets a sequence number in the order bb-gpu decides it (under the decision's own region lock)
+/// and joins one batch; the game process's protect thread applies batches in that order and
+/// publishes the last number it applied (SharedState::pa_applied). Write-restores (and trap-offs)
+/// send the batch at once with no reply; write-revokes (and trap-ons) wait in it for the next
+/// flush point (Scheduler::HandOver, a restore, a full batch, a flip) and stay in `pending` until
+/// applied. Nothing waits for a revoke except a read of the memory under it: Barrier (the upload
+/// copies, backing reads, an image refresh's hash) and BarrierAll (each Vulkan submission, whose
+/// commands may read guest memory on the GPU) wait for the newest overlapping one. The protect
+/// thread applies everything in sequence order, so no protection takes effect earlier than with
+/// the synchronous calls, only later: a late restore costs the guest a repeated fault (its fault
+/// path waits for the restores first), a late revoke is covered by the barriers.
+namespace ProtectAsync {
+bool Enabled() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_PROTECT_ASYNC");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
+struct Pending {
+    u64 seq, begin, end;
+};
+std::mutex mutex;
+u64 next_seq = 0; ///< the newest number handed out
+u64 sent_seq = 0; ///< the newest number sent
+ProtectBatchArgs batch{};
+u32 batch_revokes = 0;
+std::vector<Pending> pending; ///< revokes not known to be applied, in sequence order
+std::atomic<u32> pending_count{0};
+std::atomic<u64> newest_revoke{0}; ///< the newest revoke's number (lock-free fast path)
+/// The fault handler's thread while it handles a fault: restores go out with its end, and with
+/// the faulting thread holding the runtime's lock nothing may wait for the protect thread.
+thread_local bool in_fault = false, fault_lock_held = false;
+
+/// Running totals for the frame log (ProtectAsyncFlip).
+enum Counter : u32 {
+    Appended,       ///< protections handed to the batch
+    Batches,        ///< MsgProtectBatch messages sent (no reply)
+    RevokeBatches,  ///< of them, those carrying a revoke
+    Restores,       ///< restores and trap-offs: sent, never waited for
+    Revokes,        ///< revokes and trap-ons: batched
+    Waits,          ///< reads that had to wait for the game process (replies awaited)
+    WaitNs,
+    SubmitWaits,    ///< of them, at a Vulkan submission
+    SubmitWaitNs,
+    Barriers,       ///< reads with an overlapping revoke still pending
+    Skipped,        ///< of them, in a lock-held fault (could not wait)
+    Violations,     ///< a read went on with an overlapping revoke not applied
+    CounterCount
+};
+std::array<std::atomic<u64>, CounterCount> counters{};
+void Add(Counter c, u64 n = 1) {
+    counters[c].fetch_add(n, std::memory_order_relaxed);
+}
+
+bool IsRevoke(const ProtectArgs& args) {
+    return (args.read & ProtectTrap) ? args.write != 0 : args.write == 0;
+}
+u64 Applied() {
+    return g.control->state.pa_applied.load(std::memory_order_acquire);
+}
+/// With `mutex` held.
+void SendLocked() {
+    if (batch.count == 0) {
+        return;
+    }
+    const u32 bytes = u32(offsetof(ProtectBatchArgs, protects) + batch.count * sizeof(ProtectArgs));
+    batch.send_ns = MonotonicNs();
+    g.protect->Send(MsgProtectBatch, &batch, bytes);
+    sent_seq = batch.first_seq + batch.count - 1;
+    Add(Batches);
+    if (batch_revokes) {
+        Add(RevokeBatches);
+    }
+    batch.count = 0;
+    batch_revokes = 0;
+}
+/// With `mutex` held.
+void Prune(u64 applied) {
+    std::erase_if(pending, [applied](const Pending& p) { return p.seq <= applied; });
+    pending_count.store(u32(pending.size()), std::memory_order_release);
+}
+
+void Append(const ProtectArgs& args) {
+    std::scoped_lock lock{mutex};
+    if (batch.count == MaxBatchProtects) {
+        SendLocked();
+    }
+    const u64 seq = ++next_seq;
+    if (batch.count == 0) {
+        batch.first_seq = seq;
+    }
+    batch.protects[batch.count++] = args;
+    Add(Appended);
+    if (IsRevoke(args)) {
+        Add(Revokes);
+        ++batch_revokes;
+        pending.push_back({seq, args.address, args.address + args.size});
+        pending_count.store(u32(pending.size()), std::memory_order_release);
+        newest_revoke.store(seq, std::memory_order_release);
+    } else {
+        Add(Restores);
+        if (!in_fault) {
+            SendLocked();
+        }
+    }
+}
+
+void Flush() {
+    std::scoped_lock lock{mutex};
+    SendLocked();
+}
+/// Sends the batch; the newest number sent.
+u64 FlushedSeq() {
+    std::scoped_lock lock{mutex};
+    SendLocked();
+    return sent_seq;
+}
+
+/// Waits until the game process applied protection `seq` (sent first if it was not).
+void WaitApplied(u64 seq, bool submit) {
+    if (Applied() >= seq) {
+        return;
+    }
+    {
+        std::scoped_lock lock{mutex};
+        if (sent_seq < seq) {
+            SendLocked();
+        }
+    }
+    const u64 start = MonotonicNs();
+    {
+        // The frame log's ipc_ms/ipc_calls: bb-gpu's threads waiting for the game process.
+        BbStats::PhaseTimer timer{BbStats::t_ipc_call, BbStats::ipc_calls};
+        auto& s = g.control->state;
+        WaitUntil(s.pa_applied_word, s.pa_applied_sleepers,
+                  [&] { return s.pa_applied.load(std::memory_order_acquire) >= seq; });
+    }
+    const u64 ns = MonotonicNs() - start;
+    Add(Waits);
+    Add(WaitNs, ns);
+    if (submit) {
+        Add(SubmitWaits);
+        Add(SubmitWaitNs, ns);
+    }
+}
+
+/// The newest pending revoke overlapping [begin, end), 0 when none.
+u64 NewestOverlap(u64 begin, u64 end) {
+    if (pending_count.load(std::memory_order_acquire) == 0 ||
+        Applied() >= newest_revoke.load(std::memory_order_acquire)) {
+        return 0;
+    }
+    std::scoped_lock lock{mutex};
+    Prune(Applied());
+    u64 newest = 0;
+    for (const Pending& p : pending) {
+        if (p.begin < end && begin < p.end) {
+            newest = std::max(newest, p.seq);
+        }
+    }
+    return newest;
+}
+
+void Barrier(u64 address, u64 size) {
+    if (size == 0 || address + size < address) {
+        return;
+    }
+    const u64 seq = NewestOverlap(address, address + size);
+    if (seq == 0) {
+        return;
+    }
+    Add(Barriers);
+    if (in_fault && fault_lock_held) {
+        // The protect thread may be waiting for the lock the faulting thread holds.
+        Add(Skipped);
+        Add(Violations);
+        return;
+    }
+    WaitApplied(seq, false);
+    if (Applied() < seq) {
+        Add(Violations);
+    }
+}
+
+void BarrierAll() {
+    if (pending_count.load(std::memory_order_acquire) == 0 ||
+        Applied() >= newest_revoke.load(std::memory_order_acquire)) {
+        return;
+    }
+    u64 seq = 0;
+    {
+        std::scoped_lock lock{mutex};
+        Prune(Applied());
+        if (pending.empty()) {
+            return;
+        }
+        seq = pending.back().seq;
+    }
+    Add(Barriers);
+    if (in_fault && fault_lock_held) {
+        Add(Skipped);
+        Add(Violations);
+        return;
+    }
+    WaitApplied(seq, true);
+    if (Applied() < seq) {
+        Add(Violations);
+    }
+}
+
+void FaultBegin(bool lock_held) {
+    in_fault = true;
+    fault_lock_held = lock_held;
+}
+void FaultEnd() {
+    in_fault = false;
+    fault_lock_held = false;
+    // Everything sent so far, this fault's restores with it: the faulting thread returns to the
+    // guest once the game process has applied it (remote_front.cpp HandleFault).
+    const u64 seq = FlushedSeq();
+    auto& word = g.control->state.pa_fault_seq;
+    for (u64 old = word.load(std::memory_order_relaxed);
+         old < seq && !word.compare_exchange_weak(old, seq, std::memory_order_release);) {
+    }
+}
+
+/// One line of per-frame deltas (BB_PROTECT_ASYNC_LOG=path) and the batch sent at each flip.
+void Flip(double frame_ms) {
+    Flush();
+    static FILE* const log = []() -> FILE* {
+        const char* path = std::getenv("BB_PROTECT_ASYNC_LOG");
+        FILE* file = path && *path ? std::fopen(path, "w") : nullptr;
+        if (file) {
+            std::fprintf(file, "t_s,frame_ms,appended,batches,revoke_batches,restores_no_reply,"
+                               "revokes_batched,revokes_per_batch,replies_awaited,wait_ms,"
+                               "submit_waits,submit_wait_ms,barriers,skipped,violations,"
+                               "applied_lag,g_fault_waits,g_fault_wait_ms,g_refaults,"
+                               "g_batches,g_protects,g_lock_held,g_out_of_order,g_queue_ms,"
+                               "g_service_ms\n");
+        }
+        return file;
+    }();
+    if (!log) {
+        return;
+    }
+    static const u64 t0 = MonotonicNs();
+    static u64 last[CounterCount + 12]{};
+    u64 now[CounterCount + 12]{};
+    for (u32 i = 0; i < CounterCount; ++i) {
+        now[i] = counters[i].load(std::memory_order_relaxed);
+    }
+    for (u32 i = 0; i < 12; ++i) {
+        now[CounterCount + i] = g.control->state.pa_game[i].load(std::memory_order_relaxed);
+    }
+    u64 d[CounterCount + 12]{};
+    for (u32 i = 0; i < CounterCount + 12; ++i) {
+        d[i] = now[i] >= last[i] ? now[i] - last[i] : 0;
+        last[i] = now[i];
+    }
+    u64 lag = 0;
+    {
+        std::scoped_lock lock{mutex};
+        const u64 applied = Applied();
+        lag = next_seq > applied ? next_seq - applied : 0;
+    }
+    const u64* gd = d + CounterCount;
+    std::fprintf(log,
+                 "%.4f,%.2f,%llu,%llu,%llu,%llu,%llu,%.2f,%llu,%.3f,%llu,%.3f,%llu,%llu,%llu,%llu,"
+                 "%llu,%.3f,%llu,%llu,%llu,%llu,%llu,%.3f,%.3f\n",
+                 (MonotonicNs() - t0) / 1e9, frame_ms, (unsigned long long)d[Appended],
+                 (unsigned long long)d[Batches], (unsigned long long)d[RevokeBatches],
+                 (unsigned long long)d[Restores], (unsigned long long)d[Revokes],
+                 d[RevokeBatches] ? double(d[Revokes]) / double(d[RevokeBatches]) : 0.0,
+                 (unsigned long long)d[Waits], d[WaitNs] / 1e6, (unsigned long long)d[SubmitWaits],
+                 d[SubmitWaitNs] / 1e6, (unsigned long long)d[Barriers],
+                 (unsigned long long)d[Skipped], (unsigned long long)d[Violations],
+                 (unsigned long long)lag, (unsigned long long)gd[1], gd[0] / 1e6,
+                 (unsigned long long)gd[2], (unsigned long long)gd[3], (unsigned long long)gd[4],
+                 (unsigned long long)gd[5], (unsigned long long)gd[6], gd[7] / 1e6, gd[8] / 1e6);
+    static u32 unflushed = 0;
+    if (++unflushed >= 120) {
+        std::fflush(log);
+        unflushed = 0;
+    }
+}
+
+/// With the frame stats (stdout, once a stats window): running totals since the start.
+void Report() {
+    const auto c = [](Counter k) { return (unsigned long long)counters[k].load(); };
+    const auto gm = [](int i) {
+        return (unsigned long long)g.control->state.pa_game[i].load(std::memory_order_relaxed);
+    };
+    const u64 rb = counters[RevokeBatches].load();
+    std::printf("Protect async: %llu protections in %llu batches (no reply); %llu restores sent "
+                "without a reply; %llu revokes batched, %.1f per revoke batch; %llu replies "
+                "awaited (%.1f ms, %llu at submissions %.1f ms); %llu barriers, %llu skipped in "
+                "lock-held faults; ordering violations %llu; game: %llu batches applied, %llu out "
+                "of order, %llu fault waits %.1f ms, %llu same-page re-faults\n",
+                c(Appended), c(Batches), c(Restores), c(Revokes),
+                rb ? double(counters[Revokes].load()) / double(rb) : 0.0, c(Waits),
+                counters[WaitNs].load() / 1e6, c(SubmitWaits), counters[SubmitWaitNs].load() / 1e6,
+                c(Barriers), c(Skipped), c(Violations), gm(3), gm(6), gm(1), gm(0) / 1e6, gm(2));
+}
+
+void Install() {
+    BbProtectAsync::barrier = &Barrier;
+    BbProtectAsync::barrier_all = &BarrierAll;
+    BbProtectAsync::flush = &Flush;
+    std::printf("Protect async: on (BB_PROTECT_ASYNC=1): restores sent with no reply, revokes "
+                "batched until a read or submission needs them\n");
+}
+} // namespace ProtectAsync
+
 /// A protection or trap for the game process to apply: with the reply of the fault being handled
 /// on this thread, or now.
 void ForwardProtect(const ProtectArgs& args) {
@@ -1233,6 +1577,20 @@ void ForwardProtect(const ProtectArgs& args) {
             ProtectProbe::Note(args, 0, ProtectProbe::FaultHandler);
         }
         collected_protects->push_back(args);
+        if (ProtectAsync::Enabled()) {
+            // The faulting thread applies it itself; the protect thread applies it again after
+            // the revokes decided before it, so the final state follows the decisions' order.
+            ProtectAsync::Append(args);
+        }
+        return;
+    }
+    if (ProtectAsync::Enabled()) {
+        const bool probe = ProtectProbe::Enabled();
+        const u64 start = probe ? MonotonicNs() : 0;
+        ProtectAsync::Append(args);
+        if (probe) {
+            ProtectProbe::Note(args, MonotonicNs() - start, ProtectProbe::CallerOf());
+        }
         return;
     }
     ResultReply result{};
@@ -1253,6 +1611,9 @@ void ForwardProtect(const ProtectArgs& args) {
 }
 
 void ProtectProbeFlip(double frame_ms) {
+    if (ProtectAsync::Enabled()) {
+        ProtectAsync::Flip(frame_ms);
+    }
     if (!ProtectProbe::Enabled()) {
         return;
     }

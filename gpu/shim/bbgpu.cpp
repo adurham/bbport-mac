@@ -9,6 +9,7 @@
 #include "bbport_settings.h"
 #include "game_profile.h"
 #include "bbport_copy.h"
+#include "bbport_protect_async.h"
 #include <sys/resource.h>
 #include "bbport_free_check.h"
 #include "bbport_toggles.h"
@@ -176,6 +177,8 @@ static void CopySparseSerial(VAddr source, u8* dest, u64 size) {
     }
 }
 void MemoryManager::CopySparseMemory(VAddr source, u8* dest, u64 size) {
+    // BB_PROTECT_ASYNC=1: the revokes over this memory decided before the copy are applied first.
+    BbProtectAsync::Barrier(source, size);
     // bbport: large uploads (streaming) are split across the copy threads.
     constexpr u64 Chunk = 512 * 1024;
     if (size < 4 * Chunk || !BbCopy::Enabled()) {
@@ -187,6 +190,7 @@ void MemoryManager::CopySparseMemory(VAddr source, u8* dest, u64 size) {
     });
 }
 void MemoryManager::ReadBacking(VAddr address, void* data, u64 size) {
+    BbProtectAsync::Barrier(address, size);
     runtime_memory_read_backing(address, data, size);
 }
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
