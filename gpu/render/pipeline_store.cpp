@@ -257,6 +257,14 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
     sel.graphics_key.Deserialize(ar);
     GraphicsPipeline::SerializationSupport sdata{};
     sdata.Deserialize(ar);
+    // bbport: a pipeline with a geometry stage, cached while the driver had one, is skipped
+    // (stale, not damaged) when it has none now: BB_GEOMETRY_SHADERS=0, or a branch on a driver
+    // without geometry shaders. Building it there is invalid; the driver's rejection wiped the
+    // whole cache.
+    if (sel.graphics_key.stage_hashes[static_cast<u32>(Shader::SwStage::Geometry)] &&
+        !instance.IsGeometryStageSupported()) {
+        return false;
+    }
 
     for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
         const u64 hash = sel.graphics_key.stage_hashes[stage];
