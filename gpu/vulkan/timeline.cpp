@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "vulkan/timeline.h"
 
+#include <chrono>
 #include <limits>
 
 #include "common/assert.h"
@@ -52,11 +53,26 @@ void Semaphore::Wait(u64 tick) {
         .pSemaphores = &handle,
         .pValues = &tick,
     };
+    // A second first: a longer wait is reported (what the queue holds), then waited out.
+    const auto start = std::chrono::steady_clock::now();
+    const auto waited_ms = [&] {
+        return u64(std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - start)
+                       .count());
+    };
+    bool slow = false;
     for (;;) {
-        const vk::Result result =
-            instance.GetDevice().waitSemaphores(&wait, std::numeric_limits<u64>::max());
+        const u64 timeout = slow ? std::numeric_limits<u64>::max() : 1'000'000'000ull;
+        const vk::Result result = instance.GetDevice().waitSemaphores(&wait, timeout);
         if (result == vk::Result::eSuccess) {
             break;
+        }
+        if (result == vk::Result::eTimeout && !slow) {
+            slow = true;
+            if (const auto hook = slow_wait_hook.load(std::memory_order_acquire)) {
+                hook(*this, tick, waited_ms(), false);
+            }
+            continue;
         }
         if (result == vk::Result::eErrorDeviceLost) {
             Breadcrumbs::ReportDeviceLost("waiting for a submission");
@@ -64,6 +80,11 @@ void Semaphore::Wait(u64 tick) {
         }
     }
     Refresh();
+    if (slow) {
+        if (const auto hook = slow_wait_hook.load(std::memory_order_acquire)) {
+            hook(*this, tick, waited_ms(), true);
+        }
+    }
 }
 
 } // namespace Vulkan

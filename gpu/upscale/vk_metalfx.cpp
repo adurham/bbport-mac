@@ -429,7 +429,7 @@ bool MetalFxUpscaler::Run(const Frame& frame) {
         // The copy back (and, in queue order, everything after it) waits for MetalFX on the GPU.
         ++done_value;
         SubmitInfo info{};
-        info.AddWait(done_semaphore, done_value);
+        info.AddWait(done_semaphore, done_value, "MetalFX");
         scheduler.Flush(info);
     } else if (mode == Mode::SubmitThread) {
         // Right before the copy back goes to the queue (BB_ASYNC_SUBMIT: on a recording thread,

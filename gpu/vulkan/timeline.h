@@ -41,6 +41,11 @@ public:
     /// Returns once the GPU reached `tick` (a lost device stops the port with a report).
     void Wait(u64 tick);
 
+    /// Diagnostics: called when a Wait has gone on for a second (`done` false, once) and when
+    /// that wait ends (`done` true), on the waiting thread.
+    using SlowWaitHook = void (*)(const Semaphore& semaphore, u64 tick, u64 waited_ms, bool done);
+    static inline std::atomic<SlowWaitHook> slow_wait_hook{nullptr};
+
 private:
     const Instance& instance;
     vk::UniqueSemaphore semaphore;

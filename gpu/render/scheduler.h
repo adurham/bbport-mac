@@ -72,6 +72,9 @@ struct SubmitInfo {
     static constexpr u32 MaxSemaphores = 4;
     std::array<vk::Semaphore, MaxSemaphores> wait_semas{};
     std::array<u64, MaxSemaphores> wait_ticks{};
+    /// What each wait is, for the report of a long GPU wait; binary ones cannot be queried.
+    std::array<const char*, MaxSemaphores> wait_labels{};
+    std::array<bool, MaxSemaphores> wait_timeline{};
     std::array<vk::Semaphore, MaxSemaphores> signal_semas{};
     std::array<u64, MaxSemaphores> signal_ticks{};
     vk::Fence fence{};
@@ -81,10 +84,19 @@ struct SubmitInfo {
     /// binds): with BB_ASYNC_SUBMIT the submission itself goes out later, on a recording thread.
     std::vector<std::function<void()>> before_submit;
 
-    /// `tick` of a timeline semaphore (1 for a binary one).
-    void AddWait(vk::Semaphore semaphore, u64 tick = 1) {
+    /// A binary semaphore.
+    void AddWait(vk::Semaphore semaphore, const char* label = "a binary semaphore") {
+        AddWaitImpl(semaphore, 1, label, false);
+    }
+    /// `tick` of a timeline semaphore.
+    void AddWait(vk::Semaphore semaphore, u64 tick, const char* label = "a timeline") {
+        AddWaitImpl(semaphore, tick, label, true);
+    }
+    void AddWaitImpl(vk::Semaphore semaphore, u64 tick, const char* label, bool timeline) {
         ASSERT(num_wait_semas < MaxSemaphores);
         wait_semas[num_wait_semas] = semaphore;
+        wait_labels[num_wait_semas] = label;
+        wait_timeline[num_wait_semas] = timeline;
         wait_ticks[num_wait_semas++] = tick;
     }
     void AddSignal(vk::Semaphore semaphore, u64 tick = 1) {
@@ -540,6 +552,9 @@ private:
     void PriorityOpsThread(std::stop_token stop);
     /// Submits `cmdbufs` with `info`'s waits and signals (submit_mutex held).
     void QueueSubmit(std::span<const vk::CommandBuffer> cmdbufs, SubmitInfo& info);
+    /// Semaphore::slow_wait_hook: what the queue holds while a wait takes over a second.
+    static void ReportSlowWait(const Semaphore& semaphore, u64 tick, u64 waited_ms, bool done);
+    const char* name = "";
 
 private:
     const Instance& instance;

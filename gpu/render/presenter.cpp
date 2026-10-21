@@ -689,9 +689,9 @@ bool Presenter::PresentImage(Frame* frame, vk::Image source, bool last) {
         draw_scheduler.WaitSubmitted(frame->ready_tick);
     }
     SubmitInfo info{};
-    info.AddWait(swapchain.GetImageAcquiredSemaphore());
+    info.AddWait(swapchain.GetImageAcquiredSemaphore(), "the swapchain image");
     if (!blank) {
-        info.AddWait(frame->ready_semaphore, frame->ready_tick);
+        info.AddWait(frame->ready_semaphore, frame->ready_tick, "the frame's draws");
         if (last) {
             info.AddSignal(frame->present_done);
         }

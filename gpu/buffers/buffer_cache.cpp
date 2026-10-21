@@ -3880,7 +3880,7 @@ void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     bind_wait_tick = 0;
     const u64 signal_tick = memory_semaphore.NextTick();
     const auto signal_sema = memory_semaphore.Handle();
-    info.AddWait(signal_sema, signal_tick);
+    info.AddWait(signal_sema, signal_tick, "the memory binds before it");
 
     // The binds go into the queue right before the submission (BB_ASYNC_SUBMIT: later, from a
     // recording thread), after the submissions still on their way there.
