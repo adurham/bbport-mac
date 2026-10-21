@@ -1,5 +1,5 @@
 diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
-index fe31935..e4b4aac 100644
+index fe31935..b18d193 100644
 --- a/src/kosmickrisp/vulkan/kk_shader.c
 +++ b/src/kosmickrisp/vulkan/kk_shader.c
 @@ -1885,6 +1885,12 @@ kk_msl_deserialize(struct blob_reader *blob, struct msl_compile_data *data)
@@ -15,7 +15,7 @@ index fe31935..e4b4aac 100644
     data->entrypoint_name = ralloc_array(NULL, char, entrypoint_length);
     if (data->entrypoint_name == NULL)
        return VK_ERROR_OUT_OF_HOST_MEMORY;
-@@ -1896,12 +1902,40 @@ kk_msl_deserialize(struct blob_reader *blob, struct msl_compile_data *data)
+@@ -1896,12 +1902,65 @@ kk_msl_deserialize(struct blob_reader *blob, struct msl_compile_data *data)
     blob_copy_bytes(blob, (void *)data->entrypoint_name, entrypoint_length);
     blob_copy_bytes(blob, (void *)data->code, code_length);
  
@@ -28,7 +28,10 @@ index fe31935..e4b4aac 100644
  }
  
 +/* bbport: a shader's info from the on-disk cache, checked before it indexes anything (stage
-+ * arrays, the pipeline's pre-render list, the static GS topology copied at draw time). */
++ * arrays, the pipeline's pre-render list, the static GS topology copied at draw time) or reaches
++ * a switch without a default. Against corrupt entries: shaders that don't match each other
++ * (each entry is checked alone) are not caught, and whoever can write this cache can write the
++ * driver next to it too. */
 +static bool
 +kk_shader_info_valid(const struct kk_shader_info *info)
 +{
@@ -40,13 +43,35 @@ index fe31935..e4b4aac 100644
 +                               BITFIELD_BIT(MESA_SHADER_GEOMETRY) |
 +                               BITFIELD_BIT(MESA_SHADER_FRAGMENT);
 +      const uint32_t bits = info->vs.additional_stages_bits;
-+      /* pre_render_count is the bit count minus one, plus one for a GS: at most 4 */
-+      if ((bits & ~allowed) != 0u || util_bitcount(bits) == 0u || util_bitcount(bits) > 4u)
++      const uint32_t tess = BITFIELD_BIT(MESA_SHADER_TESS_CTRL) |
++                            BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
++      /* Always an FS (an empty one is added); TCS and TES together; pre_render_count is the
++       * bit count minus one, plus one for a GS: at most 4. */
++      if ((bits & ~allowed) != 0u || !(bits & BITFIELD_BIT(MESA_SHADER_FRAGMENT)) ||
++          ((bits & tess) != 0u && (bits & tess) != tess) || util_bitcount(bits) > 4u)
++         return false;
++      /* Passed to switches whose default is unreachable (vk_to_mtl_map.c). */
++      if (info->vs.has_ds && (unsigned)info->vs.depth_compare_op > VK_COMPARE_OP_ALWAYS)
++         return false;
++      if (info->vs.has_stencil_test &&
++          (info->vs.stencil_front.compare > VK_COMPARE_OP_ALWAYS ||
++           info->vs.stencil_back.compare > VK_COMPARE_OP_ALWAYS))
 +         return false;
 +   }
 +   if (info->stage == MESA_SHADER_GEOMETRY) {
 +      if ((unsigned)info->gs.shape > (unsigned)POLY_GS_SHAPE_STATIC_PER_INSTANCE)
 +         return false;
++      /* The rasterization primitive (mesa_prim_to_mtl_primitive_type: unreachable default) */
++      switch (info->gs.mode) {
++      case MESA_PRIM_POINTS:
++      case MESA_PRIM_LINES:
++      case MESA_PRIM_LINE_STRIP:
++      case MESA_PRIM_TRIANGLES:
++      case MESA_PRIM_TRIANGLE_STRIP:
++         break;
++      default:
++         return false;
++      }
 +      if (info->gs.shape == POLY_GS_SHAPE_STATIC_INDEXED &&
 +          info->gs.max_indices > ARRAY_SIZE(info->gs.topology))
 +         return false;
@@ -57,7 +82,7 @@ index fe31935..e4b4aac 100644
  static VkResult
  kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
                        uint32_t binary_version,
-@@ -1912,7 +1946,7 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+@@ -1912,7 +1971,7 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
  
     struct kk_shader_info info;
     blob_copy_bytes(blob, &info, sizeof(info));
@@ -66,3 +91,18 @@ index fe31935..e4b4aac 100644
        return vk_error(dev, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
  
     struct kk_shader *shader = vk_shader_zalloc(
+@@ -1921,12 +1980,12 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+    kk_bbstat_add(KK_BBSTAT_SHADERS, 1);
+ 
++   /* bbport: set first, so a failure below frees the strings of this stage */
++   shader->info = info;
+    VkResult result = kk_msl_deserialize(blob, &shader->msl_data[info.stage]);
+    if (result != VK_SUCCESS)
+       goto fail;
+ 
+-   shader->info = info;
+-
+    if (shader->info.stage == MESA_SHADER_VERTEX) {
+       u_foreach_bit(stage, shader->info.vs.additional_stages_bits) {
+          result = kk_msl_deserialize(blob, &shader->msl_data[stage]);
