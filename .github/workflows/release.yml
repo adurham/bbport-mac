@@ -6,7 +6,8 @@
 # - pushing a branch release/0.4-v2.
 # Versions: <upstream bbport version>-v<our build for it>, e.g. 0.4-v1, 0.4-v2, 0.4.1-v1, 0.5-v1.
 # A push to a ci-* branch, or "Run workflow" without a version, only builds the zip (kept as a
-# workflow artifact), to try a build without releasing it. The ci-* branch is deleted again
+# workflow artifact), to try a build without releasing it; such test builds reuse what an earlier
+# test build of the same branch compiled (ccache), releases never do. The ci-* branch is deleted again
 # once its build has finished (the run keeps the result, annotations and zip).
 name: Mac release
 
@@ -130,18 +131,47 @@ jobs:
             !deps-arm64/src
           key: ${{ steps.deps_arm64.outputs.cache-primary-key }}
 
-      # No ccache in CI: the runner's cache starts empty, so it would only add a wrapper.
+      # ccache for test builds only (ci-*, "Run workflow" without a version): files compiled by an
+      # earlier test build of the same branch name come from the cache. A release (publish=1)
+      # builds everything from scratch without it, so nothing a test branch compiled can reach a
+      # release (docs/security-review.md, known gaps). Kept at most 2 GB; GitHub evicts the
+      # least recently used caches, the dependencies above being used by every run.
+      - name: Restore the compiler cache (test builds)
+        if: steps.version.outputs.publish != '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+
       - name: Build
         env:
-          BB_CCACHE: "0"
+          BB_CCACHE: ${{ steps.version.outputs.publish == '1' && '0' || '1' }}
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: 2G
         run: bash tools/macos/build.sh
 
       # build.sh only warns when bb-gpu does not build (the game runs without it); here it fails.
       - name: Native GPU process (arm64)
         if: hashFiles('tools/macos/build_gpu_native.sh') != ''
         env:
-          BB_CCACHE: "0"
+          BB_CCACHE: ${{ steps.version.outputs.publish == '1' && '0' || '1' }}
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+          CCACHE_MAXSIZE: 2G
         run: bash tools/macos/build_gpu_native.sh
+
+      - name: Compiler cache statistics (test builds)
+        if: steps.version.outputs.publish != '1'
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/ccache
+        run: command -v ccache >/dev/null && ccache --show-stats || true
+
+      - name: Store the compiler cache (test builds)
+        if: steps.version.outputs.publish != '1'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Package
         run: bash tools/macos/package.sh "${{ steps.version.outputs.version }}"

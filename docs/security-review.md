@@ -58,7 +58,8 @@ What the port doesn't pin or check yet, to keep in mind in every review:
 - Homebrew's build tools (cmake, meson, LLVM, glslang, ccache and others in `setup_deps.sh`) are
   whatever Homebrew has that day; ccache's cache (`~/Library/Caches/ccache`) is shared by every
   local build, so code built from an untrusted branch could leave objects that later builds reuse
-  (`ccache -C` clears it; CI builds without it); the Python modules for Mesa are pinned by version, not by
+  (`ccache -C` clears it; CI releases build without it, CI test builds keep a cache per branch
+  name that releases never use); the Python modules for Mesa are pinned by version, not by
   hash.
 - The release zip's SHA-256 is computed by the same build job that ran the third-party build
   scripts: it shows the file arrived intact, not that the build was clean.
