@@ -110,14 +110,20 @@ void MetalFxUpscaler::SetUpEvents() {
         std::printf("Upscaler: MetalFX synchronous (BB_METALFX_SYNC=1)\n");
         return;
     }
-    // Default: MetalFX on the submission thread (no waits on the GPU thread, none across APIs).
-    // BB_METALFX_EVENTS=1: Metal and Vulkan wait for each other on the GPU through shared events
-    // (timed out on KosmicKrisp: Metal never saw the Vulkan value).
+    // Default (BB_METALFX_EVENTS=2): the worker. Its own thread waits for the input copies on
+    // the CPU and gives MetalFX the work with no GPU-side wait; the copy back waits for MetalFX
+    // on the GPU. With BB_METALFX_EVENTS=1 Metal also waits for Vulkan on the GPU, and that wait
+    // now and then never woke (2026-10-21: Vulkan had finished the copies, MetalFX's command
+    // buffer waited about 4 s until macOS stopped it, native GPU process too); the worker ran a
+    // full session without one. BB_METALFX_EVENTS=0: on the submission thread, CPU waits on both
+    // sides (slower). Without shared events from the driver, the submission thread too.
     mode = Mode::SubmitThread;
     const char* events_env = std::getenv("BB_METALFX_EVENTS");
-    const bool worker_mode = events_env && events_env[0] == '2';
-    if (!EnvOn("BB_METALFX_EVENTS") && !worker_mode) {
-        std::printf("Upscaler: MetalFX on the submission thread (no GPU thread waits)\n");
+    const char events = events_env && *events_env ? events_env[0] : '2';
+    const bool worker_mode = events == '2';
+    if (events != '1' && !worker_mode) {
+        std::printf("Upscaler: MetalFX on the submission thread (BB_METALFX_EVENTS=%s)\n",
+                    events_env);
         return;
     }
     if (!instance.IsMetalObjectsEnabled()) {
@@ -168,7 +174,8 @@ void MetalFxUpscaler::SetUpEvents() {
     if (worker_mode) {
         worker = std::jthread{[this](std::stop_token stop) { WorkerLoop(stop); }};
         std::printf("Upscaler: MetalFX from a thread of its own (it waits for the input copies; "
-                    "the copy back waits for MetalFX on the GPU; BB_METALFX_EVENTS=2)\n");
+                    "the copy back waits for MetalFX on the GPU; BB_METALFX_EVENTS=0 or 1: the "
+                    "other hand-overs)\n");
         return;
     }
     std::printf("Upscaler: MetalFX without CPU waits (Vulkan timelines as Metal shared events)\n");

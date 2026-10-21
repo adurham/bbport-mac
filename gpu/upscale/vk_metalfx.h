@@ -3,12 +3,14 @@
 // scene's color, depth and motion vectors are copied into buffers on exportable memory whose
 // MTLHeaps (VK_EXT_external_memory_metal) MetalFX reads on KosmicKrisp's own MTLDevice
 // (gpu/shim/bbport_metalfx.mm); its output comes back the same way. The GPU thread submits the
-// copies and records the copy back; MetalFX runs on the submission thread right before the copy
-// back is submitted (it waits for the copies, then for MetalFX). BB_METALFX_SYNC=1: the GPU
-// thread finishes the frame so far and waits for MetalFX itself. BB_METALFX_EVENTS=1 (needs this
-// port's KosmicKrisp patch 0002): GPU-side waits through shared events. BB_METALFX_EVENTS=2: a
-// thread of its own waits for the copies on the CPU, then hands MetalFX the work; the copy back
-// waits for MetalFX on the GPU. Elsewhere it reports itself unsupported.
+// copies and records the copy back. By default (BB_METALFX_EVENTS=2, needs this port's
+// KosmicKrisp patch 0002) a thread of its own waits for the copies on the CPU, then hands
+// MetalFX the work; the copy back waits for MetalFX on the GPU. BB_METALFX_EVENTS=1: GPU-side
+// waits both ways through shared events (Metal's wait can miss Vulkan's signal: 4 s stalls).
+// BB_METALFX_EVENTS=0, or a driver without shared events: MetalFX runs on the submission thread
+// right before the copy back is submitted (it waits for the copies, then for MetalFX).
+// BB_METALFX_SYNC=1: the GPU thread finishes the frame so far and waits for MetalFX itself.
+// Elsewhere it reports itself unsupported.
 
 #pragma once
 
@@ -99,11 +101,11 @@ private:
     std::string problem;
     void* get_metal_handle = nullptr; ///< PFN_vkGetMemoryMetalHandleEXT
     void SetUpEvents();
-    /// Sync: the GPU thread waits for the GPU and MetalFX. SubmitThread (default): MetalFX runs
-    /// right before the copy back is submitted, on the submission thread. Events
-    /// (BB_METALFX_EVENTS=1): GPU-side waits through shared events. Worker
-    /// (BB_METALFX_EVENTS=2): a thread of its own waits for the input copies on the CPU and
-    /// hands MetalFX its work then; the copy back waits for MetalFX on the GPU.
+    /// Sync: the GPU thread waits for the GPU and MetalFX. SubmitThread (BB_METALFX_EVENTS=0, or
+    /// no shared events): MetalFX runs right before the copy back is submitted, on the submission
+    /// thread. Events (BB_METALFX_EVENTS=1): GPU-side waits through shared events. Worker
+    /// (default): a thread of its own waits for the input copies on the CPU and hands MetalFX its
+    /// work then; the copy back waits for MetalFX on the GPU.
     enum class Mode { Sync, SubmitThread, Events, Worker };
     struct Job; ///< a frame for the worker (vk_metalfx.cpp)
     struct Pending {
