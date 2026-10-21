@@ -134,10 +134,11 @@ jobs:
       # ccache for test builds only (ci-*, "Run workflow" without a version): files compiled by an
       # earlier test build of the same branch name come from the cache. A release (publish=1)
       # builds everything from scratch without it, so nothing a test branch compiled can reach a
-      # release (docs/security-review.md, known gaps). Kept at most 2 GB; GitHub evicts the
+      # release (docs/security-review.md, known gaps). Only an explicit test build (publish=0) uses
+      # it: a missing value builds as a release does. Kept at most 1 GB per run; GitHub evicts the
       # least recently used caches, the dependencies above being used by every run.
       - name: Restore the compiler cache (test builds)
-        if: steps.version.outputs.publish != '1'
+        if: steps.version.outputs.publish == '0'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/ccache
@@ -146,28 +147,28 @@ jobs:
 
       - name: Build
         env:
-          BB_CCACHE: ${{ steps.version.outputs.publish == '1' && '0' || '1' }}
+          BB_CCACHE: ${{ steps.version.outputs.publish == '0' && '1' || '0' }}
           CCACHE_DIR: ${{ runner.temp }}/ccache
-          CCACHE_MAXSIZE: 2G
+          CCACHE_MAXSIZE: 1G
         run: bash tools/macos/build.sh
 
       # build.sh only warns when bb-gpu does not build (the game runs without it); here it fails.
       - name: Native GPU process (arm64)
         if: hashFiles('tools/macos/build_gpu_native.sh') != ''
         env:
-          BB_CCACHE: ${{ steps.version.outputs.publish == '1' && '0' || '1' }}
+          BB_CCACHE: ${{ steps.version.outputs.publish == '0' && '1' || '0' }}
           CCACHE_DIR: ${{ runner.temp }}/ccache
-          CCACHE_MAXSIZE: 2G
+          CCACHE_MAXSIZE: 1G
         run: bash tools/macos/build_gpu_native.sh
 
       - name: Compiler cache statistics (test builds)
-        if: steps.version.outputs.publish != '1'
+        if: steps.version.outputs.publish == '0'
         env:
           CCACHE_DIR: ${{ runner.temp }}/ccache
         run: command -v ccache >/dev/null && ccache --show-stats || true
 
       - name: Store the compiler cache (test builds)
-        if: steps.version.outputs.publish != '1'
+        if: steps.version.outputs.publish == '0'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/ccache

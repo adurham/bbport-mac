@@ -59,8 +59,12 @@ What the port doesn't pin or check yet, to keep in mind in every review:
   whatever Homebrew has that day; ccache's cache (`~/Library/Caches/ccache`) is shared by every
   local build, so code built from an untrusted branch could leave objects that later builds reuse
   (`ccache -C` clears it; CI releases build without it, CI test builds keep a cache per branch
-  name that releases never use); the Python modules for Mesa are pinned by version, not by
+  name that releases never use, which a test build's third-party build scripts could plant
+  objects in for the next test build of that name, test zips only); the Python modules for Mesa are pinned by version, not by
   hash.
+- CI's dependency caches (the x86-64 and arm64 libraries, KosmicKrisp) are built and saved by
+  whichever run first misses them, test builds included; a release restores one only from its own
+  ref or the default branch.
 - The release zip's SHA-256 is computed by the same build job that ran the third-party build
   scripts: it shows the file arrived intact, not that the build was clean.
 - The native GPU process checks the channel's messages, but not every guest address in the GPU
