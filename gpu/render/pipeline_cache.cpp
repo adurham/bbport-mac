@@ -565,6 +565,21 @@ bool FetchCodeDecodes(const u32* code) {
     }
     return false;
 }
+
+/// A vertex program's fetch shader pointer (in the draw's user data) can be null: the user data
+/// was not written yet, or a title-screen draw binds a program without its fetch shader. Decoding
+/// that would read address 0 (SIGSEGV in GetProgram); the draw is skipped instead. Logged once per
+/// session with the program, then counted (every 10000th skip logs the running total).
+void NoteNullFetchSkip(u64 program_hash) {
+    static std::atomic<u64> skips{0};
+    const u64 n = skips.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n == 1 || n % 10000 == 0) {
+        LOG_WARNING(Render_Vulkan,
+                    "Null fetch shader: program {:#x} has a null fetch shader pointer in its "
+                    "user data: draw skipped ({} so far this session)",
+                    program_hash, n);
+    }
+}
 } // namespace
 
 /// The GPU's writes before this draw, for a program that is not whole in memory (a copy into
@@ -1303,11 +1318,13 @@ PipelineCache::Result PipelineCache::LookUpProgram(PipelineSelection& sel,
     }
     runtime_fault_recover = &recover;
     info.RefreshFlatBuf();
-    if (info.has_fetch_shader &&
-        !FetchCodeDecodes(Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base))) {
-        runtime_fault_recover = nullptr;
-        worker.failed = true; // the GPU thread reads back what the GPU wrote, or skips the draw
-        return {};
+    if (info.has_fetch_shader) {
+        const u32* fetch = Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
+        if (!fetch || !FetchCodeDecodes(fetch)) {
+            runtime_fault_recover = nullptr;
+            worker.failed = true; // the GPU thread reads back what the GPU wrote, or skips the draw
+            return {};
+        }
     }
     const auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
     runtime_fault_recover = nullptr;
@@ -1361,7 +1378,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     info.RefreshFlatBuf();
     if (info.has_fetch_shader) {
         const u32* fetch = Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
-        if (!sel.worker && fetch && program_write_sync) {
+        if (!fetch) {
+            NoteNullFetchSkip(params.hash);
+            return {}; // bind_stage skips the draw (not_a_program)
+        }
+        if (!sel.worker && program_write_sync) {
             program_write_sync(reinterpret_cast<VAddr>(fetch), 256);
         }
         if (!FetchCodeDecodes(fetch)) {
