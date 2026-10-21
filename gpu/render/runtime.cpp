@@ -18,6 +18,13 @@
 namespace Vulkan {
 
 namespace {
+/// bbport: buffer copy regions per recorded command: their data and the command share a 128 KiB
+/// recording chunk (Scheduler::ReserveRecordData keeps 1 KiB for the command).
+constexpr size_t MaxRecordedBufferCopies = 4096;
+static_assert(MaxRecordedBufferCopies * sizeof(vk::BufferCopy) + 1024 <= RecordChunk::Capacity);
+} // namespace
+
+namespace {
 
 using Stage = vk::PipelineStageFlagBits2;
 using AccessBit = vk::AccessFlagBits2;
@@ -247,10 +254,15 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
     if (needs_flush) {
         FlushBarriers();
     }
-    scheduler.Record([src = src->Handle(), dst = dst->Handle(),
-                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBuffer(src, dst, u32(regions.size()), regions.data());
-    });
+    // bbport: in groups that fit a recording chunk with their command (ReserveRecordData): a 4 MiB
+    // pre-upload whose changed bytes lay in thousands of runs asserted there (code 23).
+    for (size_t at = 0; at < copies.size(); at += MaxRecordedBufferCopies) {
+        const auto part = copies.subspan(at, std::min(MaxRecordedBufferCopies, copies.size() - at));
+        scheduler.Record([src = src->Handle(), dst = dst->Handle(),
+                          regions = scheduler.RecordData(part)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src, dst, u32(regions.size()), regions.data());
+        });
+    }
     if (resume) {
         profiler->Resume(resume);
     }
@@ -288,10 +300,13 @@ void Runtime::CopyFromGuestChunk(vk::Buffer src, const VideoCore::Buffer* dst,
     if (needs_flush) {
         FlushBarriers();
     }
-    scheduler.Record([src, dst = dst->Handle(),
-                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBuffer(src, dst, u32(regions.size()), regions.data());
-    });
+    for (size_t at = 0; at < copies.size(); at += MaxRecordedBufferCopies) {
+        const auto part = copies.subspan(at, std::min(MaxRecordedBufferCopies, copies.size() - at));
+        scheduler.Record([src, dst = dst->Handle(),
+                          regions = scheduler.RecordData(part)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src, dst, u32(regions.size()), regions.data());
+        });
+    }
     for (const auto& copy : copies) {
         AccessBuffer(dst, copy.dstOffset, copy.size, Stage::eCopy, AccessBit::eTransferWrite);
     }
