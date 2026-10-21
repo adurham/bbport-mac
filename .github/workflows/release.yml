@@ -130,12 +130,17 @@ jobs:
             !deps-arm64/src
           key: ${{ steps.deps_arm64.outputs.cache-primary-key }}
 
+      # No ccache in CI: the runner's cache starts empty, so it would only add a wrapper.
       - name: Build
+        env:
+          BB_CCACHE: "0"
         run: bash tools/macos/build.sh
 
       # build.sh only warns when bb-gpu does not build (the game runs without it); here it fails.
       - name: Native GPU process (arm64)
         if: hashFiles('tools/macos/build_gpu_native.sh') != ''
+        env:
+          BB_CCACHE: "0"
         run: bash tools/macos/build_gpu_native.sh
 
       - name: Package

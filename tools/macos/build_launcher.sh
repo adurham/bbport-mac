@@ -15,6 +15,8 @@ pkg=launcher-macos
 app=${BB_APP:-out/bbport.app}
 work=out/launcher-build
 release=${BB_RELEASE:-}
+# update.sh's record of what the app was built from: no longer true from here on.
+[[ $app == out/bbport.app ]] && rm -f out/.bb-app
 
 [[ $(uname -s) == Darwin ]] || { echo "STOP: run this on the Mac" >&2; exit 1; }
 command -v swift >/dev/null || { echo "STOP: swift missing: xcode-select --install" >&2; exit 1; }

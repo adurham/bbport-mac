@@ -13,12 +13,18 @@ BREW_PREFIX=$( (command -v brew >/dev/null && brew --prefix) || echo /opt/homebr
 export PATH="$BREW_PREFIX/bin:$PATH"
 JOBS=$(sysctl -n hw.ncpu)
 mkdir -p out
+# update.sh's record of what out/ was built from: no longer true from here on. The native GPU
+# process's failure mark is set again below if it still does not build.
+rm -f out/.bb-built out/.bb-native-failed
 # ccache (from setup_deps.sh): files compiled before, on any branch, come from its cache in
 # ~/Library/Caches/ccache, at most 10 GB (oldest out first). BB_CCACHE=0: off.
+# The compiler is checked by its version output: Apple's /usr/bin/clang is a stub that a
+# Command Line Tools update leaves as it is. Clear the cache (ccache -C) after building code you
+# do not trust: what it compiled could be served to later builds.
 LAUNCHER=()
-if [[ ${BB_CCACHE:-1} != 0 ]] && command -v ccache >/dev/null; then
-    export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-10G}
-    LAUNCHER=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+if [[ ${BB_CCACHE:-1} != 0 ]] && ccache=$(command -v ccache); then
+    export CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-10G} CCACHE_COMPILERCHECK=${CCACHE_COMPILERCHECK:-'%compiler% -v'}
+    LAUNCHER=(-DCMAKE_C_COMPILER_LAUNCHER="$ccache" -DCMAKE_CXX_COMPILER_LAUNCHER="$ccache")
 else
     LAUNCHER=(-UCMAKE_C_COMPILER_LAUNCHER -UCMAKE_CXX_COMPILER_LAUNCHER)
 fi
@@ -89,10 +95,10 @@ echo "Built: $(lipo -archs out/bb-probe) out/bb-probe, $(lipo -archs "$gpu_lib")
 if [[ -z ${BB_SKIP_GPU:-} && -f deps-arm64/env.sh ]]; then
     echo "=== Native GPU process (arm64)"
     # out/.bb-native-failed: update.sh then builds again next time (it records nothing).
-    if bash tools/macos/build_gpu_native.sh; then
-        rm -f out/.bb-native-failed
-    else
+    # A failed build leaves no bb-gpu: an older one would not match the game built here.
+    if ! bash tools/macos/build_gpu_native.sh; then
         touch out/.bb-native-failed
+        rm -f out/gpu-arm64/bb-gpu
         echo "warning: native GPU process not built (out/gpu-arm64-errors.txt)" >&2
     fi
 fi

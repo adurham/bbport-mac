@@ -42,7 +42,9 @@ To update later, press **Update** in the app, or run `bash tools/macos/update.sh
 the latest version from GitHub and rebuilds only what changed (dependencies, the port, the app).
 Each part remembers what it was built from, so an update with nothing new, or a switch back to
 code that is already built, skips the build. Files compiled before on any branch come from
-ccache (`~/Library/Caches/ccache`, at most 10 GB; `BB_CCACHE=0` turns it off).
+ccache (`~/Library/Caches/ccache`, at most 10 GB; `BB_CCACHE=0` turns it off; `ccache -C`
+clears it, worth doing after building code you do not trust). `BB_REBUILD=1 bash
+tools/macos/update.sh` builds everything again.
 `bash tools/macos/update.sh <branch>` switches to another branch; in the app, set the branch in
 bbport > Settings. If the app itself was rebuilt, quit and reopen it. The app remembers the checkout it was built from, and you can change
 it in bbport > Settings (⌘,). If you have already picked the game folder in the app,

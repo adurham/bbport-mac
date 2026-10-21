@@ -20,6 +20,8 @@ ARCH=${BB_ARCH:-x86_64}
 PREFIX=${1:-$REPO/deps-$ARCH}
 SRC=$PREFIX/src
 mkdir -p "$PREFIX" "$SRC"
+# update.sh's record of what this prefix was built from: no longer true from here on.
+rm -f "$PREFIX/.bb-recipe"
 exec > >(tee -a "$PREFIX/setup.log") 2>&1
 JOBS=$(sysctl -n hw.ncpu)
 CURRENT_STEP=start

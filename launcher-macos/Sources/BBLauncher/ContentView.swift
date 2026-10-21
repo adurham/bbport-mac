@@ -552,7 +552,8 @@ struct DeveloperSection: View {
 
     var body: some View {
         Section {
-            Toggle(isOn: $model.prefs.nativeGpu) {
+            // Shown off where it is not on offer, whatever was saved on a native branch.
+            Toggle(isOn: model.nativeGpuAvailable ? $model.prefs.nativeGpu : .constant(false)) {
                 Text("Native GPU process")
                 Text(model.nativeGpuAvailable
                      ? "Experimental: the GPU work runs as native Apple Silicon code (BB_NATIVE_GPU)"
