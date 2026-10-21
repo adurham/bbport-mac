@@ -532,3 +532,78 @@ extern "C" void bb_window_release_display(void) {
         }
     }
 }
+
+// Set the panel's mode BEFORE any SDL window exists. This is the Spaces design Fable spelled out on
+// 2026-10-20: SDL3's Cocoa backend only keeps a window in a macOS Space when it has NO explicit
+// fullscreen mode (SDL_SetWindowFullscreenMode(w, non-NULL) selects the exclusive path, which exits
+// the Space and makes a level-25 borderless window — measured five ways today, all Composited). The
+// Direct-era window of 2026-10-16 was a Space, so its mode was never handed to SDL.
+//
+// Doing the set here also sidesteps the 2026-10-18 panic ordering entirely: at this point there is
+// no window, no Metal view and no swapchain, so no surface of ours can be re-pointed under the
+// display coprocessor. The pixel size and refresh limit come from window.cpp's picker, which never
+// lands a source-width change on the 240 Hz 10-bit (DSC) link.
+extern "C" int bb_display_set_mode_now(int width, int height, double max_hz) {
+    @autoreleasepool {
+        const CGDirectDisplayID display = CGMainDisplayID();
+        CFArrayRef modes = CGDisplayCopyAllDisplayModes(
+            display, (__bridge CFDictionaryRef) @{@"kCGDisplayShowDuplicateLowResolutionModes" : @YES});
+        if (!modes) {
+            std::printf("Display mode: no mode list for display %u (set skipped)\n", display);
+            return 0;
+        }
+        CGDisplayModeRef best = nullptr;
+        double best_hz = 0;
+        for (CFIndex i = 0; i < CFArrayGetCount(modes); ++i) {
+            CGDisplayModeRef mode = (CGDisplayModeRef) CFArrayGetValueAtIndex(modes, i);
+            if (int(CGDisplayModeGetPixelWidth(mode)) != width || int(CGDisplayModeGetPixelHeight(mode)) != height) {
+                continue;
+            }
+            const double hz = CGDisplayModeGetRefreshRate(mode);
+            if (hz <= 0 || hz > max_hz + 0.5) {
+                continue;
+            }
+            if (hz > best_hz) {
+                best = mode;
+                best_hz = hz;
+            }
+        }
+        if (best) {
+            CFRetain(best);
+        }
+        CFRelease(modes);
+        if (!best) {
+            std::printf("Display mode: no %dx%d mode at or below %.0f Hz on display %u (set skipped)\n",
+                        width, height, max_hz, display);
+            return 0;
+        }
+        CGDisplayConfigRef config = nullptr;
+        CGError err = CGBeginDisplayConfiguration(&config);
+        if (err == kCGErrorSuccess && config) {
+            err = CGConfigureDisplayWithDisplayMode(config, display, best, nullptr);
+            if (err == kCGErrorSuccess) {
+                err = CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly);
+            } else {
+                CGCancelDisplayConfiguration(config);
+            }
+        }
+        // Settle: CGCompleteDisplayConfiguration returns before the panel reports the new mode.
+        for (int i = 0; i < 200; ++i) {
+            CGDisplayModeRef now = CGDisplayCopyDisplayMode(display);
+            const int w = now ? int(CGDisplayModeGetPixelWidth(now)) : 0;
+            const int h = now ? int(CGDisplayModeGetPixelHeight(now)) : 0;
+            if (now) CFRelease(now);
+            if (w == width && h == height) {
+                std::printf("Display mode: panel set to %dx%d @ %.0f Hz before any window existed (result %d)\n",
+                            width, height, best_hz, int(err));
+                CFRelease(best);
+                return 1;
+            }
+            [NSThread sleepForTimeInterval:0.01];
+        }
+        std::printf("Display mode: set to %dx%d @ %.0f Hz requested but the panel still reports another size (result %d)\n",
+                    width, height, best_hz, int(err));
+        CFRelease(best);
+        return 0;
+    }
+}

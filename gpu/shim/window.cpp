@@ -35,6 +35,7 @@ extern "C" int bb_display_native_pixels(void* nswindow, int* width, int* height)
 extern "C" int bb_display_current_pixels(void* nswindow, int* width, int* height);
 extern "C" int bb_display_wait_mode_change(void* nswindow, int old_width, int old_height, int timeout_ms);
 extern "C" int bb_window_take_display(void* nswindow);
+extern "C" int bb_display_set_mode_now(int width, int height, double max_hz);
 extern "C" void bb_window_release_display(void);
 #endif
 
@@ -369,6 +370,9 @@ bool boot_mode_phase = true;
 /// CGDisplaySetDisplayMode is in flight. The constructor waits for it to land before the layer is
 /// created; the picker choosing the current mode again (the common case) must not cost a wait.
 bool mode_set_pending = false;
+/// The panel was put on its mode by CoreGraphics before any window existed (bb_display_set_mode_now),
+/// so SDL is given no fullscreen mode and keeps the window in a macOS Space.
+bool cg_mode_applied = false;
 
 } // namespace
 
@@ -419,9 +423,22 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     // as a plain window and moved to its mode + fullscreen by apply_window_mode below — still
     // before SDL_Metal_CreateView makes a layer the WindowServer could scan.
     const bool boot_fullscreen = window_mode == BbSettings::WindowFullscreen && !warm_window;
-    const bool moves_panel = boot_fullscreen && !BbSettings::FullscreenKeepsDesktopMode();
+    const bool want_panel_move = boot_fullscreen && !BbSettings::FullscreenKeepsDesktopMode();
+#ifdef __APPLE__
+    // The panel's mode is set HERE, before any window exists, and SDL is then given no mode at all:
+    // its Cocoa backend keeps a window in a macOS Space only without an explicit fullscreen mode, and
+    // the Space is what the Direct-era window of 2026-10-16 had (presentationOptions 0x40a, level 0).
+    // Handing SDL the mode selects its exclusive path, which exits the Space and makes a borderless
+    // level-25 window — measured five ways on 2026-10-20, all Composited. No window, no Metal view and
+    // no swapchain exists at this point, so the 2026-10-18 panic ordering cannot apply.
+    if (want_panel_move && !DryDisplayRun()) {
+        const BbSettings::OutputSize out = BbSettings::CurrentOutput();
+        cg_mode_applied = bb_display_set_mode_now(out.width, out.height, 120.0) != 0;
+    }
+#endif
+    const bool moves_panel = want_panel_move && !cg_mode_applied;
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
-                           window_mode == BbSettings::WindowFullscreen && !moves_panel);
+                           window_mode == BbSettings::WindowFullscreen && (!want_panel_move || cg_mode_applied));
     // A warm run (BB_WARM_ONLY): hidden window; the caches are compiled for later sessions and
     // presenter.cpp asks the game to quit after BB_WARM_SECONDS.
     if (const char* warm = std::getenv("BB_WARM_ONLY"); warm && warm[0] == '1') {
@@ -572,6 +589,16 @@ const SDL_DisplayMode* pick_display_mode(SDL_DisplayMode** listed, int count, Bb
 /// as it was before. Both of those move the panel, so both are opt-in.
 void apply_display_mode(SDL_Window* window, const char* why) {
     if (!window) {
+        return;
+    }
+    // The panel was set by CoreGraphics before this window existed (bb_display_set_mode_now): SDL is
+    // given NO fullscreen mode on purpose, because that keeps the window in a macOS Space — SDL3's
+    // exclusive path (an explicit mode) exits the Space and yields a level-25 borderless window, which
+    // is exactly what every 2026-10-20 run before this one produced.
+    if (cg_mode_applied) {
+        std::printf("Display mode: %s is set already, before this window existed (CG); SDL keeps the "
+                    "macOS Space and gets no fullscreen mode (%s)\n",
+                    BbSettings::SizeText(BbSettings::CurrentOutput()).c_str(), why);
         return;
     }
     const bool dry_run = WarmRun() || DryDisplayRun(); // logs the pick (the picker's check), switches nothing
@@ -792,18 +819,12 @@ void LogFullscreenFlag(SDL_Window* window, const char* when) {
 /// Composited says whether the flag took: if it did and the HUD still says Composited, the cause is
 /// above the window (a compositor overlay, e.g. BetterDisplay's filter) and not this.
 bool EnsureFullscreenFlag(SDL_Window* window, const char* when) {
-    if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) {
-        LogFullscreenFlag(window, when);
-        return true;
-    }
-    std::printf("Window: not flagged fullscreen %s; leaving and entering again\n", when);
-    SDL_SetWindowFullscreen(window, false);
-    SDL_SyncWindow(window);
-    SDL_SetWindowFullscreen(window, true);
-    SDL_SyncWindow(window);
-    const bool took = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
-    LogFullscreenFlag(window, took ? "re-entry took" : "re-entry did NOT take");
-    return took;
+    // Log only. Leaving and re-entering would restore the desktop mode and set the target again —
+    // two mode switches under a live swapchain, which is the sequence the 2026-10-18 panics were
+    // attributed to.
+    const bool fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+    LogFullscreenFlag(window, when);
+    return fullscreen;
 }
 
 /// The window mode itself. Window calls change AppKit state, so this runs on the window's own

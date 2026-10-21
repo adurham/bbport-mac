@@ -1,9 +1,34 @@
 # Direct vs composited on the AW3425DW (2026-10-20)
 
-## Bottom line
+## SOLVED — Direct is reachable, and this is the recipe
 
-**The port cannot reach Direct on the current window construction, and compositing costs less than
-the instrument can resolve.** Four variants were tried with the BetterDisplay colour filter off, the
+Two things were wrong, and neither was what earlier attempts blamed.
+
+1. **The mode must be set by CoreGraphics before any window exists, and SDL must be given no
+   fullscreen mode.** Passing a mode to `SDL_SetWindowFullscreenMode` selects SDL3's *exclusive* path,
+   which explicitly exits any macOS Space and produces a level-25 borderless window; giving SDL no
+   mode keeps the window in a Space (`fullscreen 1`, level 0, no shadow) — the Direct-era state.
+   Implemented: `bb_display_set_mode_now()` (bbport_layer.mm) runs in the window constructor before
+   `SDL_CreateWindowWithProperties`, and `apply_display_mode` then logs and returns without handing
+   SDL a mode (`cg_mode_applied`). The mode set happens with no window, no Metal view and no
+   swapchain in existence, so the 2026-10-18 panic ordering cannot apply.
+2. **The layer must not be tagged SRGB** — a tagged colour space forces a conversion pass. The port
+   already has the knob: `layer_colorspace=nil` (or `BB_LAYER_COLORSPACE=nil`).
+
+And one environmental condition: **BetterDisplay must not be running.** Its 1x1, alpha-0.00 stub
+window sits at level 1000, above the game's level-0 window, and that alone drops the display back to
+Composited — measured: BD quit + colours nil = **Direct** (HUD, green, 3440x1440, Game Mode On);
+BD running with its filter neutral + the same colours setting = Composited. BetterDisplay's
+colour filter is a second, independent blocker (it composites the whole display by design).
+
+Verified state in the Direct run (`out/direct-ab/run-ab10.out`): window `fullscreen 1`, level 0,
+hasShadow 0, `presentationOptions 0xa`, layer opaque 1, `colorspace nil`, drawable 3440x1440 == mode
+727 (1x 3440x1440 @120, 1:1 scanout), nothing above the window; HUD `Direct`.
+
+## Earlier conclusion (superseded)
+
+**Superseded by the recipe above.** The port could not reach Direct on the window construction it had
+before the CG pre-set; compositing costs less than the instrument can resolve. Four variants were tried with the BetterDisplay colour filter off, the
 layer opaque and the drawable matching the display mode's pixels; the Metal HUD read *Composited* in
 every one — read from the agent's own screenshots (`/tmp/hud-now.png` and the ab3–ab5 captures), not
 from the logs.
