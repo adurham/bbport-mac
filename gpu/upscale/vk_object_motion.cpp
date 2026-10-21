@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 #include <vk_mem_alloc.h>
 #include "bbport_settings.h"
@@ -76,6 +77,15 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
     std::memset(params_mapped, 0, 32);
     Shader::MotionVectors::params_address = params_address;
     Shader::MotionVectors::positions_address = positions_address;
+    // BB_MOTION_FAST (bench/motion-fast, default off): 1 = both halves, store = the plain
+    // history store only, still = the still-draw twin pipelines only.
+    if (const char* fast = std::getenv("BB_MOTION_FAST"); fast && *fast && fast[0] != '0') {
+        const std::string_view value{fast};
+        Shader::MotionVectors::fast_store = value != "still";
+        Shader::MotionVectors::fast_still = value != "store";
+        std::printf("Object motion: BB_MOTION_FAST store %d still %d\n",
+                    int(Shader::MotionVectors::fast_store), int(Shader::MotionVectors::fast_still));
+    }
     enabled = true;
     std::printf("Object motion: on (%u vertices per frame)\n", PositionsPerFrame);
 }

@@ -518,6 +518,7 @@ private:
     bool scene_started = false;
     std::unique_ptr<ObjectMotion> object_motion;
     bool motion_draw = false;
+    u64 motion_fast_twin_draws = 0, motion_fast_untwinned_draws = 0; ///< BB_MOTION_FAST
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
     std::unique_ptr<TemporalUpscaler> upscaler; // bbport: FSR (docs/upscaler.md)

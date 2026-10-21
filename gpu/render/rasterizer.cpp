@@ -352,6 +352,23 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
+    // BB_MOTION_FAST: a motion draw left without history (motion_param 0: still, no geometry,
+    // or no room) runs its pipeline's still twin, which writes what the motion shaders write for
+    // motion_param 0 without their vertex epilogue and varyings. Same rendering and resources.
+    if (motion_draw && push_data.motion_param == 0 && Shader::MotionVectors::fast_still) {
+        if (const auto* twin = pipeline->StillTwin()) {
+            pipeline = twin;
+            ++motion_fast_twin_draws;
+        } else {
+            ++motion_fast_untwinned_draws;
+        }
+        if (const u64 n = motion_fast_twin_draws + motion_fast_untwinned_draws;
+            BbStats::enabled && (n & 0x1FFFF) == 0) {
+            std::printf("Motion fast: %llu still draws on their twin, %llu without one\n",
+                        (unsigned long long)motion_fast_twin_draws,
+                        (unsigned long long)motion_fast_untwinned_draws);
+        }
+    }
     // Geometry drawn with the scene depth is jittered, full-screen passes are not (a shifted
     // full-screen quad leaves an edge column unwritten).
     BeginDraw(pipeline, state, is_indexed,

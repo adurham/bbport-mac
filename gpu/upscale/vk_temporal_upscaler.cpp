@@ -2185,6 +2185,22 @@ void TemporalUpscaler::RunScaled() {
         reset = false;
         dispatched_last_frame = true;
         ExtraSharpen(vk::Image(ui_image), true, ow, oh);
+        // bbport: BB_DUMP_TRIGGER on the scaled (live resolution) path too: the motion inputs
+        // FSR 3 reads (the resolved motion image, the raw object-motion attachment, depth), for
+        // A/B checks of the object motion vectors (bench/motion-fast). Only on dumped frames.
+        if (const int dump = DumpFrame(); dump >= 0) {
+            camera_motion.PrintState(dump);
+            auto dump_cmdbuf = scheduler.CommandBuffer(); // after the commands recorded above
+            DumpImages(instance, scheduler, dump_cmdbuf, dump,
+                       {{vk::Image(motion_image), w, h, 4, "motion", "rg16f"}});
+            DumpImages(instance, scheduler, dump_cmdbuf, dump,
+                       {{depth_image, source_width, source_height, 4, "depth", "f32",
+                         vk::ImageAspectFlagBits::eDepth}});
+            if (const auto object = camera_motion.ObjectMotionImage(w, h); object) {
+                DumpImages(instance, scheduler, dump_cmdbuf, dump,
+                           {{object, w, h, 16, "objects", "rgba32f"}});
+            }
+        }
     }
     barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eGeneral, all,
             rw, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eColorAttachmentOutput,

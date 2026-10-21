@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <optional>
 #include <span>
 #include <string>
@@ -217,6 +218,16 @@ public:
         return key;
     }
 
+    /// BB_MOTION_FAST: for a motion pipeline, the same pipeline with the plain vertex shader
+    /// and a constant "no object motion" fragment epilogue, for its draws with motion_param 0
+    /// (null until compiled). Set on the GPU thread, read on the recording thread.
+    const GraphicsPipeline* StillTwin() const noexcept {
+        return still_twin.load(std::memory_order_acquire);
+    }
+    void SetStillTwin(const GraphicsPipeline* twin) const noexcept {
+        still_twin.store(twin, std::memory_order_release);
+    }
+
     /// Without dynamic vertex input: the static vertex input of a pipeline about to be created
     /// on a worker (BB_ASYNC_PIPELINES), read here on the drawing thread while the stage's user
     /// data and V#s are this draw's.
@@ -238,6 +249,7 @@ public:
 private:
     GraphicsPipelineKey key;
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
+    mutable std::atomic<const GraphicsPipeline*> still_twin{nullptr};
 };
 
 struct ClipDistanceShaderKey {

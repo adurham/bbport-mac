@@ -453,7 +453,7 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
             !instance.IsDepthClipControlSupported() &&
             regs.clipper_control.clip_space == Gcn::ClipSpace::MinusWToW;
         vs.clip_disable = regs.IsClipDisabled();
-        vs.motion_vectors = sel.motion;
+        vs.motion_vectors = sel.motion && !sel.still;
         break;
     }
     case HwStage::Fragment: {
@@ -468,7 +468,9 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
                 ? regs.aa_config.NumSamples()
                 : 1;
         fs.z_export_format = regs.z_export_format;
-        fs.motion_vectors = sel.motion;
+        fs.motion_vectors = !sel.motion ? Shader::MotionVectors::FragmentOff
+                            : sel.still ? Shader::MotionVectors::FragmentStill
+                                        : Shader::MotionVectors::FragmentMotion;
         const auto& depth = regs.depth_shader_control;
         const u8 stencil_export =
             depth.stencil_op_val_export_enable | depth.stencil_test_val_export_enable;
@@ -719,7 +721,14 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         }
     }
     const auto it = graphics_pipelines.find(prepared.key);
-    return it != graphics_pipelines.end() ? it->second.get() : nullptr;
+    if (it == graphics_pipelines.end()) {
+        return nullptr;
+    }
+    if (Shader::MotionVectors::fast_still && it->second->GetGraphicsKey().motion_vectors == 1 &&
+        !it->second->StillTwin()) {
+        LinkStillTwin(it->second.get(), {});
+    }
+    return it->second.get();
 }
 
 void PipelineCache::NoteDrawTarget(const Gcn::Regs& regs) {
@@ -756,6 +765,10 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     }
     if (const auto found = graphics_pipelines.find(sel.graphics_key);
         found != graphics_pipelines.end()) {
+        if (Shader::MotionVectors::fast_still && found->second->GetGraphicsKey().motion_vectors == 1 &&
+            !found->second->StillTwin()) {
+            LinkStillTwin(found->second.get(), params);
+        }
         return found->second.get();
     }
     const bool skippable = AsyncSkippable(sel, indirect);
@@ -778,7 +791,12 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
         }
         pending_graphics.erase(sel.graphics_key);
-        return FinishPipeline(sel.graphics_key, *job);
+        const auto* finished = FinishPipeline(sel.graphics_key, *job);
+        if (Shader::MotionVectors::fast_still && finished &&
+            finished->GetGraphicsKey().motion_vectors == 1) {
+            LinkStillTwin(finished, params);
+        }
+        return finished;
     }
     if (skippable) {
         return CompileInBackground(sel);
@@ -795,7 +813,62 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                                               sdata, false);
     PipelineStore::SaveGraphics(sel.graphics_key, pipeline_hash, sdata);
     sel.fetch_shader.reset();
+    if (Shader::MotionVectors::fast_still && sel.graphics_key.motion_vectors == 1) {
+        LinkStillTwin(slot.get(), params);
+    }
     return slot.get();
+}
+
+void PipelineCache::LinkStillTwin(const GraphicsPipeline* motion, DrawIndirectParams params) {
+    // The same registers selected again with the twin's stages: every other part of the key
+    // (attachments, formats, blending, the motion target) comes out as the motion pipeline's,
+    // so the twin draws into the same rendering. Its key differs in the stage hashes and in
+    // motion_vectors (2: never what a regular selection asks for, still truthy for the
+    // attachment code).
+    PipelineSelection twin;
+    twin.regs = sel.regs;
+    twin.draw_indirect_params = params;
+    twin.want_still = true;
+    if (!still_tried.insert(motion).second) {
+        return; // tried before and failed (a success leaves StillTwin() set)
+    }
+    if (!RefreshGraphicsKey(twin) || !twin.still) {
+        return;
+    }
+    const GraphicsPipelineKey key = twin.graphics_key;
+    {
+        GraphicsPipelineKey expect = motion->GetGraphicsKey();
+        expect.stage_hashes = key.stage_hashes;
+        expect.motion_vectors = 2;
+        if (!(expect == key)) {
+            static std::atomic<u32> reported{0};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
+                std::printf("Motion fast: a still twin's key differs from its motion pipeline's "
+                            "beyond the stages; not linked\n");
+            }
+            return;
+        }
+    }
+    if (const auto found = graphics_pipelines.find(key); found != graphics_pipelines.end()) {
+        motion->SetStillTwin(found->second.get());
+        return;
+    }
+    // Compiled here, once per motion pipeline (a few dozen a session, when their pass is first
+    // drawn): a background compile would have to be finished by a later lookup, and the
+    // prepared-draw path never comes back here. Session-only: not written to the store.
+    CompileTimer timer{CompileLayer::Driver};
+    GraphicsPipeline::SerializationSupport sdata{};
+    auto& slot = graphics_pipelines[key];
+    slot = std::make_unique<GraphicsPipeline>(instance, scheduler, desc_heap, profile, key,
+                                              *pipeline_cache, twin.infos, twin.runtime_infos,
+                                              twin.fetch_shader, twin.modules, sdata, false);
+    motion->SetStillTwin(slot.get());
+    ++still_twins;
+    if (still_twins <= 64 || (still_twins & (still_twins - 1)) == 0) {
+        std::printf("Motion fast: still twin %llu (vs %016llx)\n", (unsigned long long)still_twins,
+                    (unsigned long long)(twin.infos[u32(SwStage::Vertex)]
+                                             ? twin.infos[u32(SwStage::Vertex)]->pgm_hash : 0));
+    }
 }
 
 const GraphicsPipeline* PipelineCache::CompileInBackground(const PipelineSelection& selection) {
@@ -842,8 +915,10 @@ const GraphicsPipeline* PipelineCache::CompileInBackground(const PipelineSelecti
 }
 
 const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey& key,
-                                                      PendingPipeline& job) {
-    PipelineStore::SaveGraphics(key, std::hash<GraphicsPipelineKey>{}(key), job.sdata);
+                                                      PendingPipeline& job, bool save) {
+    if (save) {
+        PipelineStore::SaveGraphics(key, std::hash<GraphicsPipelineKey>{}(key), job.sdata);
+    }
     auto& slot = graphics_pipelines[key];
     slot = std::move(job.pipeline);
     return slot.get();
@@ -979,6 +1054,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         db.NumSamples() == 1 && !regs.IsClipDisabled() &&
         regs.stage_enable.raw == Gcn::ShaderStageEnable::VgtStages::Vs;
     sel.motion = false;
+    sel.still = false;
 
     if (!RefreshGraphicsStages(sel)) {
         return false;
@@ -1033,6 +1109,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         if (all_motion) {
             sel.motion = true;
         }
+        sel.still = sel.motion && sel.want_still;
         if (sel.motion && !RefreshGraphicsStages(sel)) {
             return false;
         }
@@ -1064,7 +1141,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
 
     if (sel.motion) {
         constexpr u32 mv = Shader::MotionVectors::Output;
-        key.motion_vectors = 1;
+        key.motion_vectors = sel.still ? 2 : 1;
         key.mrt_mask |= 1u << mv;
         key.num_color_attachments = mv + 1;
         auto& color_buffer = key.color_buffers[mv];
@@ -1244,9 +1321,16 @@ bool PipelineCache::RefreshComputeKey() {
     return true;
 }
 
+namespace {
+bool IsStillPermutation(const Shader::RuntimeInfo& runtime_info) {
+    return runtime_info.hw_stage == HwStage::Fragment &&
+           runtime_info.hw.fs.motion_vectors == Shader::MotionVectors::FragmentStill;
+}
+} // namespace
+
 vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               std::span<const u32> code, size_t perm_idx,
-                                              Shader::Backend::Bindings& binding) {
+                                              Shader::Backend::Bindings& binding, bool store) {
     LOG_INFO(Render_Vulkan, "Compiling {} shader {:#x} {}", info.hw_stage, info.pgm_hash,
              perm_idx != 0 ? "(permutation)" : "");
     DumpShader(code, info.pgm_hash, info.hw_stage, perm_idx, "bin");
@@ -1270,7 +1354,14 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     const vk::ShaderModule module = CompileSPV(spv, instance.GetDevice());
-    PipelineStore::SaveShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
+    // BB_MOTION_FAST: neither still twins nor fast-store motion vertex shaders go to the store
+    // (motion vertex shaders are never preloaded; a gate-off session's files stay its own).
+    const bool fast_motion_vs = Shader::MotionVectors::fast_store &&
+                                in_runtime_info.hw_stage == HwStage::Vertex &&
+                                in_runtime_info.hw.vs.motion_vectors;
+    if (store && !IsStillPermutation(in_runtime_info) && !fast_motion_vs) {
+        PipelineStore::SaveShaderBinary(std::move(spv), info.pgm_hash, perm_idx);
+    }
     SetObjectName(instance.GetDevice(), module, GetShaderName(info.hw_stage, info.pgm_hash, perm_idx));
     return module;
 }
@@ -1338,7 +1429,10 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         const auto module = CompileModule(new_program->info, runtime_info, params.code, 0, binding);
         auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
         const u64 perm_hash = HashCombine(params.hash, 0);
-        PipelineStore::SaveShaderMeta(new_program->info, spec, perm_hash, 0);
+        new_program->session_only_index = IsStillPermutation(runtime_info);
+        if (!new_program->session_only_index) {
+            PipelineStore::SaveShaderMeta(new_program->info, spec, perm_hash, 0);
+        }
         new_program->AddPermut(module, std::move(spec));
         new_program->info_template = std::make_unique<Shader::Info>(new_program->info);
         Program* program = new_program.get();
@@ -1393,8 +1487,16 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     } else {
         perm_idx = modules.size();
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
-        const auto module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding);
-        PipelineStore::SaveShaderMeta(info, spec, HashCombine(params.hash, perm_idx), perm_idx);
+        // BB_MOTION_FAST's still twins are session-only (meta and binary alike), and so is every
+        // later permutation of their program.
+        program.session_only_index |= IsStillPermutation(runtime_info);
+        const auto module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding,
+                                          !program.session_only_index);
+        // BB_MOTION_FAST's still twins are session-only: their permutations stay out of the
+        // store, so a session without the gate numbers its permutations as before.
+        if (!program.session_only_index) {
+            PipelineStore::SaveShaderMeta(info, spec, HashCombine(params.hash, perm_idx), perm_idx);
+        }
         std::unique_lock lk{programs_mutex};
         program.AddPermut(module, std::move(spec));
     }

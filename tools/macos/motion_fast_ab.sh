@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# tools/macos/motion_fast_ab.sh TAG [TAG ...]: hidden standing runs for BB_MOTION_FAST
+# (bench/motion-fast). Same route, save and settings as vertex_ceiling.sh (fsr3 preset 4, 3440x1440,
+# frame_generation=0, sandbox user dir out/curve3440/user, no BB_VRAM_LIMIT_MB, 420 s standing), so
+# the flat (60-110 s) and late (last 75 s) windows compare with the vertex/null series.
+#
+#   off-N    : gate off (control)
+#   on-N     : BB_MOTION_FAST=1 (both halves)
+#   store-N  : BB_MOTION_FAST=store (plain history store only)
+#   still-N  : BB_MOTION_FAST=still (still-draw twins only)
+#   motoff-N : BB_OBJECT_MOTION=0 (the ceiling)
+#   smoke-*  : prefix any of the above with smoke- for a short run (SECS default 150, no trace)
+#
+# Every non-smoke run: Metal System Trace of bb-gpu (TRACE_SIGINT_S, TRACE_AFTER 200 s of gameplay,
+# outside both windows) and a BB_DUMP_TRIGGER image dump (the upscaler's inputs: scene colour,
+# depth, the resolved motion image and the raw object-motion attachment) DUMP_AT s into gameplay
+# (default 120: after the flat window), BB_DUMP_FRAMES (2) frames, into out/dump-TAG/.
+# Outputs: out/frames-TAG.csv, out/run-TAG.log, out/mtl-TAG-gpu.xml, out/dump-TAG/,
+# out/motionfast/{attempts.jsonl,series.log,wrapper-*,foot-*}.
+set -uo pipefail
+cd -- "$(dirname -- "$0")/../.."
+here=$PWD
+[[ "$(basename "$here")" == bbport-motionfast-build ]] || { echo "STOP: not the motion-fast checkout: $here" >&2; exit 1; }
+res=$here/out/motionfast
+mkdir -p "$res"
+exec >>"${SERIES_LOG:-$res/series.log}" 2>&1
+echo "motion_fast_ab: checkout $here @ $(git rev-parse --short HEAD)$(git diff --quiet || echo +dirty) ($(date +%T))"
+grep -q '^frame_generation=0' "$here/bbport.ini" || { echo "STOP: checkout ini lacks frame_generation=0"; exit 1; }
+
+watchdog() {
+    local tag=$1 page free inactive mib foot pids cl
+    while kill -0 "$route" 2>/dev/null; do
+        page=$(vm_stat | awk '/page size of/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/){print $i; exit}}')
+        free=$(vm_stat | awk '/Pages free:/{v=$3; gsub(/\./,"",v); print v}')
+        inactive=$(vm_stat | awk '/Pages inactive:/{v=$3; gsub(/\./,"",v); print v}')
+        mib=$(( (free + inactive) * page / 1048576 ))
+        foot=0; pids=$(pgrep -x bb-gpu 2>/dev/null || true)
+        for p in $pids; do
+            cl=$(ps -o command= -p "$p" 2>/dev/null)
+            case "$cl" in *"$here"*)
+                foot=$(/usr/bin/footprint -p "$p" 2>/dev/null | awk '/Footprint:/{for(i=1;i<=NF;i++) if($i=="Footprint:"){v=$(i+1); u=$(i+2)}; if(u~/GB/){v*=1024} else if(u~/KB/){v/=1024} printf "%.0f", v; exit}')
+                break ;;
+            esac
+        done
+        echo "$(date +%s) foot_mib=${foot:-0} freeinactive_mib=$mib" >> "$res/foot-$tag.txt"
+        if [[ ${foot:-0} -gt 19456 || ( $mib -lt 4096 && -n $pids ) ]]; then
+            echo "$(date) WATCHDOG: foot=${foot} MiB free+inactive=${mib} MiB; killing" >> "$res/foot-$tag.warnings"
+            for g in $(pgrep -x bb-gpu) $(pgrep -x bb-probe); do
+                ps -o command= -p "$g" | grep -q "$here" && kill "$g" 2>/dev/null
+            done
+        fi
+        sleep 10
+    done
+}
+
+# The dump trigger: DUMP_AT s after the first 'Frame stats' line with >= 500 draws/frame.
+dump_watch() {
+    local trig=$1 start=""
+    while kill -0 "$route" 2>/dev/null; do
+        if [[ -z $start ]] && grep '^Frame stats' "$here/out/last-run.log" 2>/dev/null |
+                grep -qE '([5-9][0-9]{2}|[0-9]{4,}) draws/frame'; then
+            start=$(date +%s)
+        fi
+        if [[ -n $start && $(( $(date +%s) - start )) -ge ${DUMP_AT:-120} ]]; then
+            : > "$trig"
+            echo "motion_fast_ab: dump trigger touched $(date +%T)" >> "$res/wrapper-$tag-$attempt.txt"
+            return
+        fi
+        sleep 1
+    done
+}
+
+for tag in "$@"; do
+    arm=(); trace=(); smoke=0; base=$tag
+    [[ $tag == smoke-* ]] && { smoke=1; base=${tag#smoke-}; }
+    case $base in
+        off-*)    arm=() ;;
+        on-*)     arm=(BB_MOTION_FAST=1) ;;
+        store-*)  arm=(BB_MOTION_FAST=store) ;;
+        still-*)  arm=(BB_MOTION_FAST=still) ;;
+        motoff-*) arm=(BB_OBJECT_MOTION=0) ;;
+        *) echo "unknown tag $tag"; continue ;;
+    esac
+    secs=${SECS:-420}
+    if [[ $smoke == 1 ]]; then
+        secs=${SECS:-150}
+    else
+        trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-3} TRACE_AFTER=${TRACE_AFTER:-200})
+    fi
+    [[ -f $res/$tag.done ]] && { echo "$tag done - skip"; continue; }
+    for attempt in 1 2 3; do
+        while pgrep -x bb-probe >/dev/null; do echo "$(date +%T) foreign bb-probe up; waiting"; sleep 10; done
+        dtrig=$here/out/dump_trigger_motionfast
+        rm -f "$dtrig"; rm -rf "$here/out/dump-$tag"; mkdir -p "$here/out/dump-$tag"
+        echo "motion_fast_ab: ---- $tag attempt $attempt ($(date +%T)) arm=${arm[*]-off} secs=$secs"
+        env ${trace[@]+"${trace[@]}"} \
+            BB_WARM_USER="$here/out/curve3440/user" ROUTE='ly=128,rx=128:5' \
+            BB_UPSCALER=fsr3 BB_UPSCALE_PRESET=4 BB_OUTPUT_RES=3440x1440 \
+            BB_DUMP_TRIGGER="$dtrig" BB_DUMP_DIR="$here/out/dump-$tag" BB_DUMP_FRAMES=${DUMP_FRAMES:-2} \
+            ${arm[@]+"${arm[@]}"} \
+            bash tools/macos/gpu_ab_run.sh "$tag" "$secs" > "$res/wrapper-$tag-$attempt.txt" 2>&1 &
+        route=$!
+        watchdog "$tag" & wd=$!
+        dump_watch "$dtrig" & dw=$!
+        wait $route; kill $wd $dw 2>/dev/null; wait $wd $dw 2>/dev/null
+        log=$here/out/run-$tag.log
+        cp -f "$log" "$res/run-$tag-$attempt.log" 2>/dev/null
+        gcn=$(grep -c 'gcn_to_vk.cpp:422' "$log" 2>/dev/null || true); gcn=${gcn:-0}
+        pm4=$(grep -cE 'cp_graphics.cpp:203|Bad PM4' "$log" 2>/dev/null || true); pm4=${pm4:-0}
+        asserts=$(grep -E 'gcn_to_vk|Bad PM4|cp_graphics|Unreachable code|died mid-run|Assertion|ASSERT|ended by signal' "$log" 2>/dev/null | head -3)
+        maxd=$(grep -oE '[0-9]+ draws/frame' "$log" 2>/dev/null | awk '{print $1}' | sort -n | tail -1)
+        ov=$(wc -l < "$here/out/overlap-$tag.txt" 2>/dev/null | tr -d ' ')
+        fast=$(grep -c '^Motion fast' "$log" 2>/dev/null || true); fast=${fast:-0}
+        mism=$(grep -c "key differs from its motion pipeline" "$log" 2>/dev/null || true); mism=${mism:-0}
+        dumps=$(ls "$here/out/dump-$tag" 2>/dev/null | wc -l | tr -d ' ')
+        xml=0; [[ -s $here/out/mtl-$tag-gpu.xml ]] && xml=1
+        wd_kill=0; [[ -s $res/foot-$tag.warnings ]] && wd_kill=1
+        echo "{\"tag\":\"$tag\",\"attempt\":$attempt,\"max_draws\":${maxd:-0},\"overlap\":${ov:-0},\"gcn422\":$gcn,\"pm4_203\":$pm4,\"motion_fast_lines\":$fast,\"twin_key_mismatch\":$mism,\"dump_files\":$dumps,\"trace_xml\":$xml,\"watchdog\":$wd_kill,\"assert\":\"$(echo "$asserts" | head -1 | tr -d '"\\')\"}" >> "$res/attempts.jsonl"
+        ok=1
+        [[ -z $asserts && ${maxd:-0} -ge 500 && ${ov:-0} -eq 0 && $wd_kill -eq 0 ]] || ok=0
+        [[ $smoke == 0 && $xml == 0 ]] && ok=0
+        if [[ $ok == 1 ]]; then
+            echo ok > "$res/$tag.done"; echo "motion_fast_ab: $tag OK (draws $maxd, fast lines $fast, dumps $dumps, xml $xml)"; break
+        fi
+        echo "motion_fast_ab: $tag attempt $attempt failed (draws=${maxd:-0} overlap=${ov:-0} watchdog=$wd_kill xml=$xml assert=$asserts)"
+        rm -f "$res/foot-$tag.warnings"
+    done
+done
+echo "motion_fast_ab: ALLDONE ($(date +%T))"

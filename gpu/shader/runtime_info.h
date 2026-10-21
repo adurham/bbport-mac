@@ -97,6 +97,17 @@ struct MotionVectors {
     static inline u64 positions_address = 0;
     static constexpr u32 FlagStore = 1;
     static constexpr u32 FlagLoad = 2;
+    /// BB_MOTION_FAST (bench/motion-fast, default off; set once by ObjectMotion before any
+    /// motion shader is translated). fast_store: the vertex shader writes its clip position with
+    /// one plain 16-byte store instead of four device-scope atomic exchanges. fast_still: draws the
+    /// rasterizer gives no history (motion_param 0) run a twin pipeline: the plain vertex shader
+    /// and a fragment shader writing the same constant "no object motion" vector.
+    static inline bool fast_store = false;
+    static inline bool fast_still = false;
+    /// HwFragmentRuntimeInfo::motion_vectors values.
+    static constexpr u8 FragmentOff = 0;
+    static constexpr u8 FragmentMotion = 1;
+    static constexpr u8 FragmentStill = 2; ///< fast_still: no varyings, (0, 0, invalid, depth)
 };
 
 struct HwLocalRuntimeInfo {
@@ -229,8 +240,9 @@ struct HwFragmentRuntimeInfo {
     bool front_face_all_bits{false};
     bool dual_source_blending{false};
     bool clip_distance_emulation{false};
-    /// Writes the object motion vector to MotionVectors::Output.
-    bool motion_vectors{false};
+    /// Writes the object motion vector to MotionVectors::Output (MotionVectors::Fragment*; a u8
+    /// with the old bool's size and values, so serialized permutations are unchanged).
+    u8 motion_vectors{0};
 
     bool operator==(const HwFragmentRuntimeInfo& other) const noexcept {
         return std::ranges::equal(color_buffers, other.color_buffers) &&

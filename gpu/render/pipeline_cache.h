@@ -20,6 +20,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/container/small_vector.hpp>
@@ -61,6 +62,9 @@ struct Program {
     Shader::Info info;
     ModuleList modules{};
     size_t last_used = 0; ///< permutation of the previous lookup, compared first
+    /// BB_MOTION_FAST: a session-only (still twin) permutation holds an index: later ones are not
+    /// stored either, or their stored indices would not match a later session's numbering.
+    bool session_only_index = false;
     /// `info` as translated, for draw-preparation workers (they must not read `info`, whose user
     /// data the GPU thread rewrites every draw). Guarded by PipelineCache::programs_mutex.
     std::unique_ptr<Shader::Info> info_template;
@@ -97,6 +101,11 @@ struct PipelineSelection {
     std::optional<Shader::Gcn::FetchShaderData> fetch_shader{};
     GraphicsPipelineKey graphics_key{};
     bool motion = false;
+    /// BB_MOTION_FAST: select the still twin of a motion pipeline (want_still), and whether
+    /// this selection is one (still: `motion` with the plain vertex shader and the fragment
+    /// shader's MotionVectors::FragmentStill variant; key.motion_vectors 2).
+    bool want_still = false;
+    bool still = false;
     DrawIndirectParams draw_indirect_params{};
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
 };
@@ -184,7 +193,7 @@ private:
                     std::string_view ext);
     vk::ShaderModule CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                    std::span<const u32> code, size_t perm_idx,
-                                   Shader::Backend::Bindings& binding);
+                                   Shader::Backend::Bindings& binding, bool store = true);
     const Shader::RuntimeInfo& BuildRuntimeInfo(PipelineSelection& sel, Shader::HwStage stage,
                                                 Shader::SwStage l_stage);
 
@@ -244,7 +253,11 @@ private:
     void NoteDrawTarget(const Gcn::Regs& regs);
     bool AsyncSkippable(const PipelineSelection& sel, bool indirect);
     const GraphicsPipeline* CompileInBackground(const PipelineSelection& sel);
-    const GraphicsPipeline* FinishPipeline(const GraphicsPipelineKey& key, PendingPipeline& job);
+    const GraphicsPipeline* FinishPipeline(const GraphicsPipelineKey& key, PendingPipeline& job,
+                                           bool save = true);
+    /// BB_MOTION_FAST: links `motion`'s still twin (compiled in the background when it can be),
+    /// from the GPU thread's selection of the draw that selected `motion`.
+    void LinkStillTwin(const GraphicsPipeline* motion, DrawIndirectParams params);
     tsl::robin_map<GraphicsPipelineKey, std::shared_ptr<PendingPipeline>> pending_graphics;
     std::unordered_map<u64, TargetStreak> target_streaks;
     u64 last_target = 0;
@@ -253,6 +266,8 @@ private:
     u64 frame_start_draws = 0, last_frame_draws = 0;
     u32 stats_printed = 0;
     u64 async_started = 0, async_skipped = 0, async_waited = 0; ///< statistics
+    u64 still_twins = 0; ///< BB_MOTION_FAST still twins compiled
+    std::unordered_set<const GraphicsPipeline*> still_tried; ///< BB_MOTION_FAST link attempts
     std::unique_ptr<PipelineCompiler> compiler; ///< last: its threads are joined first
 };
 

@@ -119,15 +119,26 @@ void EmitVertexMotion(EmitContext& ctx) {
     ctx.AddLabel(store_label);
     const Id store_address = address(MotionVectors::positions_address,
                                      ctx.OpIAdd(u32_type, store_base, slot), 16);
-    // Indexed draws may invoke the same vertex more than once. Atomic component stores
-    // avoid write/write races; all these invocations produce the same clip position.
-    const Id scalar_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, u32_type);
-    const Id scope = ctx.ConstU32(static_cast<u32>(spv::Scope::Device));
-    for (u32 i = 0; i < 4; ++i) {
-        const Id ptr = ctx.OpConvertUToPtr(scalar_ptr,
-            ctx.OpIAdd(ctx.U64, store_address, ctx.Constant(ctx.U64, u64(i * 4))));
-        const Id bits = ctx.OpBitcast(u32_type, ctx.OpCompositeExtract(ctx.F32[1], position, i));
-        ctx.OpAtomicExchange(u32_type, ptr, scope, ctx.u32_zero_value, bits);
+    if (MotionVectors::fast_store) {
+        // BB_MOTION_FAST: one plain 16-byte store. Every invocation of a vertex writes the same
+        // bits, and nothing reads this half of the history in the frame that writes it (loads
+        // read the other half; ObjectMotion::OnFrameStart's vertex->vertex barrier orders them),
+        // so neither atomicity nor a fence is needed: a torn write of identical values is the
+        // same value.
+        ctx.OpStore(ctx.OpConvertUToPtr(f32x4_ptr, store_address), position,
+                    spv::MemoryAccessMask::Aligned, 16u);
+    } else {
+        // Indexed draws may invoke the same vertex more than once. Atomic component stores
+        // avoid write/write races; all these invocations produce the same clip position.
+        const Id scalar_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, u32_type);
+        const Id scope = ctx.ConstU32(static_cast<u32>(spv::Scope::Device));
+        for (u32 i = 0; i < 4; ++i) {
+            const Id ptr = ctx.OpConvertUToPtr(scalar_ptr,
+                ctx.OpIAdd(ctx.U64, store_address, ctx.Constant(ctx.U64, u64(i * 4))));
+            const Id bits =
+                ctx.OpBitcast(u32_type, ctx.OpCompositeExtract(ctx.F32[1], position, i));
+            ctx.OpAtomicExchange(u32_type, ptr, scope, ctx.u32_zero_value, bits);
+        }
     }
     ctx.OpBranch(store_merge);
     ctx.AddLabel(store_merge);
@@ -153,6 +164,31 @@ void EmitVertexMotion(EmitContext& ctx) {
 // Screen-space motion (previous minus current, pixels) through the viewport scale; z = valid.
 void EmitFragmentMotion(EmitContext& ctx) {
     const Id f32_type = ctx.F32[1];
+    if (!Sirit::ValidId(ctx.motion_in_cur)) {
+        // BB_MOTION_FAST still twin (MotionVectors::FragmentStill): what the motion variant
+        // writes for motion_param 0 (previous == current, valid 0) without the varyings. In
+        // front (clip w > 1e-5; 1 / FragCoord.w is the clip w) that is (+0 - +0) x scale, so the
+        // sign of zero follows the viewport scale; behind it, +0. Invalid, the fragment's depth.
+        const auto push = [&](u32 index) {
+            return ctx.OpLoad(f32_type, ctx.OpAccessChain(
+                ctx.TypePointer(spv::StorageClass::PushConstant, f32_type), ctx.push_data_block,
+                ctx.ConstU32(index)));
+        };
+        const Id zero = ctx.Constant(f32_type, 0.0f);
+        const Id coord = ctx.OpLoad(ctx.F32[4], ctx.frag_coord);
+        const Id depth = ctx.OpCompositeExtract(f32_type, coord, 2u);
+        const Id clip_w = ctx.OpFDiv(f32_type, ctx.Constant(f32_type, 1.0f),
+                                     ctx.OpCompositeExtract(f32_type, coord, 3u));
+        const Id front = ctx.OpFOrdGreaterThan(ctx.U1[1], clip_w, ctx.Constant(f32_type, 1e-5f));
+        const auto scaled = [&](u32 index) {
+            return ctx.OpSelect(f32_type, front, ctx.OpFMul(f32_type, zero, push(index)), zero);
+        };
+        ctx.OpStore(ctx.motion_frag_out,
+                    ctx.OpCompositeConstruct(ctx.F32[4], std::array<Id, 4>{
+                        scaled(PushData::XScaleIndex), scaled(PushData::YScaleIndex), zero,
+                        depth}));
+        return;
+    }
     const Id current = ctx.OpLoad(ctx.F32[4], ctx.motion_in_cur);
     const Id previous = ctx.OpLoad(ctx.F32[4], ctx.motion_in_prev);
     const auto push = [&](u32 index) {
