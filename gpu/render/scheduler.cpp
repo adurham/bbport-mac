@@ -153,31 +153,43 @@ void Scheduler::ReportSlowWait(const Semaphore& semaphore, u64 tick, u64 waited_
         std::fflush(stdout);
         return;
     }
-    std::scoped_lock lock{queue_log_mutex};
+    // Gathered under the lock (records of a scheduler being destroyed are cleared under it),
+    // printed after it: QueueSubmit takes the lock too.
+    std::string out;
+    const auto add = [&out](const char* format, auto... args) {
+        if constexpr (sizeof...(args) == 0) {
+            out += format;
+        } else {
+            char line[512];
+            std::snprintf(line, sizeof(line), format, args...);
+            out += line;
+        }
+    };
+    std::unique_lock lock{queue_log_mutex};
     const char* owner = "another timeline";
     const Scheduler* scheduler = nullptr;
     for (std::size_t i = 0; i < QueueRecords && i < queue_log_count; ++i) {
-        if (queue_log[i].semaphore == &semaphore) {
+        if (queue_log[i].semaphore == &semaphore && queue_log[i].scheduler) {
             scheduler = queue_log[i].scheduler;
             owner = scheduler->name;
             break;
         }
     }
     const_cast<Semaphore&>(semaphore).Refresh();
-    std::printf("GPU wait: %s has waited %llu ms for tick %llu of %s; the GPU finished %llu",
+    add("GPU wait: %s has waited %llu ms for tick %llu of %s; the GPU finished %llu",
                 thread, (unsigned long long)waited_ms, (unsigned long long)tick, owner,
                 (unsigned long long)semaphore.KnownGpuTick());
     if (scheduler) {
         const u64 queued = scheduler->SubmittedTick();
-        std::printf(", the queue has up to %llu, recording %llu", (unsigned long long)queued,
+        add(", the queue has up to %llu, recording %llu", (unsigned long long)queued,
                     (unsigned long long)scheduler->CurrentTick());
         if (queued < tick) {
-            std::printf(" (tick %llu has not reached the queue: still recorded or submitted "
+            add(" (tick %llu has not reached the queue: still recorded or submitted "
                         "here, not the GPU)",
                         (unsigned long long)tick);
         }
     }
-    std::printf("\n  the queue's unfinished submissions, oldest first:\n");
+    add("\n  the queue's unfinished submissions, oldest first:\n");
     const u64 now = SteadyNs();
     const u64 first = queue_log_count > QueueRecords ? queue_log_count - QueueRecords : 0;
     u32 shown = 0;
@@ -191,35 +203,37 @@ void Scheduler::ReportSlowWait(const Semaphore& semaphore, u64 tick, u64 waited_
             continue;
         }
         ++shown;
-        std::printf("    %s tick %llu: %u command buffer%s", r.scheduler->name,
+        add("    %s tick %llu: %u command buffer%s", r.scheduler->name,
                     (unsigned long long)r.tick, r.cmdbufs, r.cmdbufs == 1 ? "" : "s");
         if (r.queue_ops) {
-            std::printf(", %u queue operation%s first (%.1f ms)", r.queue_ops,
-                        r.queue_ops == 1 ? "" : "s", (r.ops_ns - r.enter_ns) / 1e6);
+            add(", %u queue operation%s first (%.1f ms)", r.queue_ops,
+                        r.queue_ops == 1 ? "" : "s", ((r.ops_ns ? r.ops_ns : now) - r.enter_ns) / 1e6);
         }
         if (r.exit_ns) {
-            std::printf("; submitted %.0f ms ago (vkQueueSubmit %.1f ms)", (now - r.exit_ns) / 1e6,
+            add("; submitted %.0f ms ago (vkQueueSubmit %.1f ms)", (now - r.exit_ns) / 1e6,
                         (r.exit_ns - r.ops_ns) / 1e6);
         } else {
-            std::printf("; IN SUBMISSION for %.0f ms (%s)", (now - r.enter_ns) / 1e6,
+            add("; IN SUBMISSION for %.0f ms (%s)", (now - r.enter_ns) / 1e6,
                         r.ops_ns ? "vkQueueSubmit" : "its queue operations");
         }
         for (u32 i = 0; i < r.num_waits; ++i) {
-            std::printf("%s %s", i == 0 ? "; waits for" : ",", r.labels[i] ? r.labels[i] : "?");
+            add("%s %s", i == 0 ? "; waits for" : ",", r.labels[i] ? r.labels[i] : "?");
             if (r.timeline[i]) {
                 const auto [result, value] =
                     r.scheduler->instance.GetDevice().getSemaphoreCounterValue(r.waits[i]);
-                std::printf(" %llu (at %llu%s)", (unsigned long long)r.values[i],
+                add(" %llu (at %llu%s)", (unsigned long long)r.values[i],
                             result == vk::Result::eSuccess ? (unsigned long long)value : 0ull,
                             result == vk::Result::eSuccess && value >= r.values[i] ? ": reached"
                                                                                    : ": NOT YET");
             }
         }
-        std::printf("\n");
+        add("\n");
     }
     if (shown == 0) {
-        std::printf("    none (the GPU finished all of them)\n");
+        add("    none (the GPU finished all of them)\n");
     }
+    lock.unlock();
+    std::fputs(out.c_str(), stdout);
     std::fflush(stdout);
     if (Breadcrumbs::Enabled()) {
         Breadcrumbs::ReportStuck("a GPU wait over 1 s");
@@ -273,14 +287,6 @@ Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
 }
 
 Scheduler::~Scheduler() {
-    {
-        std::scoped_lock lock{queue_log_mutex};
-        for (auto& record : queue_log) {
-            if (record.scheduler == this) {
-                record.scheduler = nullptr;
-            }
-        }
-    }
     if (!workers.empty()) {
         SyncRecording();
         for (auto& worker : workers) {
@@ -288,6 +294,14 @@ Scheduler::~Scheduler() {
         }
         for (auto& worker : workers) {
             worker->thread.join();
+        }
+    }
+    // After the last submission (the recording threads submit until they are joined).
+    std::scoped_lock lock{queue_log_mutex};
+    for (auto& record : queue_log) {
+        if (record.scheduler == this) {
+            record.scheduler = nullptr;
+            record.semaphore = nullptr;
         }
     }
 }
