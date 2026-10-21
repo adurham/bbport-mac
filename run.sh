@@ -84,6 +84,11 @@ fi
 if [[ ${BB_AUTO_RENDER_RES:-} == 1 ]]; then
     unset BB_RENDER_RES BB_OUTPUT_RES BB_AUTO_RENDER_RES
 fi
+# bbport (macOS: tools/macos/run.sh sets BB_DMEM_AUTO when BB_DMEM_MB is not given): direct
+# memory sized below for this launch's scene, so the previous launch's size goes too.
+if [[ ${BB_DMEM_AUTO:-} == 1 ]]; then
+    unset BB_DMEM_MB
+fi
 # BB_RENDER_RES=WxH explicitly sets the game's render resolution (a patch at start).
 # Frame rate: BB_FPS=uncap (default; hooks in the game's code, gpu/shim/bbport_frame_rate.cpp:
 # each frame's real time; vblank 480 Hz, frames shown at once; BB_FRAME_HOOKS=0: the patches),
@@ -124,6 +129,19 @@ if [[ $live == 1 ]]; then
     echo "Output ${scaled_output}: live resolution changes (live_resolution=0: startup patch)"
 elif [[ -n ${scaled_output:-} ]]; then
     export BB_RENDER_RES=$scaled_render BB_OUTPUT_RES=$scaled_output BB_AUTO_RENDER_RES=1
+    # bbport (macOS, BB_DMEM_AUTO): only scene pixels above 1080p need more than the PS4's 5056
+    # MiB, about 448 bytes each, measured by bloodborne-native (bloodborne-runtime's run.sh: a
+    # 2258x1270 scene failed at 5184 MiB and ran at 5376; 1506x848 ran at 5056; a flat 9152 lost
+    # the GPU at 1440p on an 18 GB Mac). In 64 MiB steps plus one spare; scenes larger than they
+    # measured keep the 9152 below.
+    if [[ ${BB_DMEM_AUTO:-} == 1 && $scaled_render =~ ^([0-9]+)x([0-9]+)$ ]]; then
+        scene_pixels=$(( BASH_REMATCH[1] * BASH_REMATCH[2] ))
+        if (( scene_pixels <= 1920 * 1080 )); then
+            export BB_DMEM_MB=5056
+        elif (( scene_pixels <= 2258 * 1270 )); then
+            export BB_DMEM_MB=$(( 5056 + ((scene_pixels - 1920 * 1080) * 448 + (64 << 20) - 1) / (64 << 20) * 64 + 64 ))
+        fi
+    fi
     export BB_DMEM_MB=${BB_DMEM_MB:-9152}
     echo "Output ${scaled_output}: scene ${scaled_render}, direct memory ${BB_DMEM_MB} MiB (live_resolution=1: live changes)"
 fi

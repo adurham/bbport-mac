@@ -46,10 +46,10 @@ the controls, where saves live and what to do when something goes wrong. Recomme
 - **Metal underneath.** Vulkan runs on KosmicKrisp, Mesa's Vulkan-on-Metal driver and the one
   shadPS4 ships on macOS, so bbport's own renderer runs here with few changes.
 - **MetalFX**, Apple's temporal upscaler, alongside FSR 3.1.
-- **A real Mac app.** A SwiftUI launcher, a Retina window, Core Audio, native text input, and
-  everything the engine needs inside the app: nothing else to install.
-- **Reviewed before it ships.** Every upstream release and every dependency change gets two
-  independent security reviews ([docs/security-review.md](docs/security-review.md)).
+- **A real Mac app.** A SwiftUI launcher, a Retina window, Core Audio, native text input, and the
+  whole engine, its libraries and its graphics driver inside the app.
+- **Reviewed before it ships.** Every upstream release and every dependency change is
+  security-reviewed before it is pushed ([docs/security-review.md](docs/security-review.md)).
 
 ## Known limitations
 

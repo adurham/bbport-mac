@@ -1132,7 +1132,9 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
             // draw, the GPU thread is left to prepare it (as PrepareResources does).
             vk::Format format =
                 GcnToVk::TrySurfaceFormat(buffer.GetDataFmt(), buffer.GetNumberFmt());
-            if (format == vk::Format::eUndefined) {
+            // FormatInvalid (a missing attribute, a zeroed V#) stays undefined, as before.
+            if (format == vk::Format::eUndefined &&
+                buffer.GetDataFmt() != Gcn::DataFormat::FormatInvalid) {
                 if (sel.worker) {
                     return false;
                 }

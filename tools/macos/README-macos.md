@@ -11,11 +11,10 @@ update 1.09, the one with `eboot.bin` in it.
 
 ## One-time setup
 
-Clone the repository (the main branch is `macos-0.4`; `macos-native` has the experimental native
-GPU process):
+Clone the repository (the main branch is `macos-native-0.6`):
 
 ```
-git clone --recursive -b macos-0.4 https://github.com/bmy/bbport-mac.git ~/Projects/bbport-mac/src
+git clone --recursive -b macos-native-0.6 https://github.com/bmy/bbport-mac.git ~/Projects/bbport-mac/src
 cd ~/Projects/bbport-mac/src
 ```
 
@@ -29,12 +28,20 @@ cd ~/Projects/bbport-mac/src
    bash tools/macos/setup_deps.sh
    ```
 
+3. Build the same libraries for arm64 into `deps-arm64/`, for the native GPU process (the game's
+   GPU work as native Apple Silicon code, used by default once built; without them the game
+   runs it in its own x86-64 process):
+
+   ```
+   BB_ARCH=arm64 bash tools/macos/setup_deps.sh
+   ```
+
    Run it again after it changes. It skips whatever is already built.
 
 ## Building
 
 ```
-bash tools/macos/build.sh            # the port: out/bb-probe and out/gpu/libbbgpu.dylib
+bash tools/macos/build.sh            # the port: out/bb-probe, out/gpu/libbbgpu.dylib, out/gpu-arm64/bb-gpu
 bash tools/macos/build_launcher.sh   # the launcher app: out/bbport.app
 ```
 
