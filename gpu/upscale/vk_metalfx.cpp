@@ -12,6 +12,7 @@
 // Only the C types of VK_EXT_external_memory_metal: vulkan.hpp is included without the Metal
 // platform define everywhere, and defining it here would change its inline classes (ODR).
 #include <vulkan/vulkan_metal.h>
+#include <sys/sysctl.h>
 #include "bbport_metalfx.h"
 #else
 namespace BbMetalFx {
@@ -72,6 +73,17 @@ MetalFxUpscaler::MetalFxUpscaler(const Instance& instance_, Scheduler& scheduler
         return;
     }
     std::printf("Upscaler: MetalFX available (temporal scaler on KosmicKrisp's MTLDevice)\n");
+    // Under Rosetta (the x86-64 game process) MetalFX's Neural Engine part fails to set up (an
+    // appleneuralengine "doCompileModel" error), and its work then hangs now and then until
+    // macOS stops it after about 4 s. In the arm64 GPU process neither happens.
+    int translated = 0;
+    std::size_t size = sizeof(translated);
+    if (sysctlbyname("sysctl.proc_translated", &translated, &size, nullptr, 0) == 0 &&
+        translated == 1) {
+        std::printf("Upscaler: MetalFX under Rosetta can stall for seconds and then fail (FSR 3.1 "
+                    "takes over); the native GPU process runs it properly (the default where "
+                    "it is built; this is BB_NATIVE_GPU=0 or a build without it)\n");
+    }
     SetUpEvents();
 }
 

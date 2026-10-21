@@ -2547,9 +2547,11 @@ bool TemporalUpscaler::RecordMetalFx(const MetalFxUpscaler::Input& color,
     });
     PublishMetalFxProblem(metalfx->Problem());
     if (!ok && metalfx->Fatal()) {
-        // Off rather than FSR 3.1: neither is proven on this driver. The menu shows the reason.
-        std::printf("Upscaler: MetalFX failed; upscaler off (select it again to retry)\n");
-        BbSettings::Get().upscaler = BbSettings::UpscalerOff;
+        // FSR 3.1 takes over, as for FSR 4 and DLSS (it runs on KosmicKrisp); its own failure
+        // turns the upscaler off. The menu shows MetalFX's reason.
+        std::printf("Upscaler: MetalFX failed; falling back to FSR 3.1 (select MetalFX again to "
+                    "retry)\n");
+        BbSettings::Get().upscaler = BbSettings::UpscalerFsr3;
         reset = true;
     }
     return ok;
