@@ -9,6 +9,8 @@
 #   trace-N  : gate off + Metal System Trace of bb-gpu (TRACE_SIGINT_S) + BB_PASS_TRACE armed at the
 #              same moment, so the trace's per-encoder vertex time and the port's per-encoder identity
 #              come from the same frames (tools/macos/mtl_pass_join.py)
+#   skiptrace-N / motoff-N : traced, BB_PASS_TRACE armed with the trace; motoff = BB_OBJECT_MOTION=0
+#              (env override, no ini write: the object-motion vertex stores/attachment priced)
 #   trace2560-N : trace-N at BB_UPSCALER=fsr3 BB_UPSCALE_PRESET=4 with OUT_RES=2560x1440
 #
 # Env: SECS (420), SKIP_VS (the vertex shader hashes, comma separated), TRACE_S (4), TRACE_AFTER (30),
@@ -74,11 +76,13 @@ for tag in "$@"; do
         skip-*)   arm=(BB_SKIP_VS="${SKIP_VS:?SKIP_VS not set}") ;;
         skiptrace-*) arm=(BB_SKIP_VS="${SKIP_VS:?SKIP_VS not set}")
                   trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-3} TRACE_AFTER=${TRACE_AFTER:-200}) ;;
+        motoff-*) arm=(BB_OBJECT_MOTION=0)
+                  trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-3} TRACE_AFTER=${TRACE_AFTER:-200}) ;;
         trace-*)  trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-4} TRACE_AFTER=${TRACE_AFTER:-30}) ;;
         trace2560-*) trace=(TRACE=1 TRACE_SIGINT_S=${TRACE_S:-4} TRACE_AFTER=${TRACE_AFTER:-30}); outres=2560x1440 ;;
         *) echo "unknown tag $tag"; continue ;;
     esac
-    if [[ $tag == trace* ]]; then
+    if [[ $tag == trace* || $tag == skiptrace* || $tag == motoff* ]]; then
         ptrigger=$here/out/passtrace_trigger
         rm -f "$ptrigger"
         traceenv=(BB_PASS_TRACE="$here/out/pass-$tag.txt" BB_PASS_TRACE_TRIGGER="$ptrigger" \
@@ -97,7 +101,7 @@ for tag in "$@"; do
         route=$!
         watchdog "$tag" & wd=$!
         tw=""
-        [[ $tag == trace* ]] && { trigger_watch "$ptrigger" & tw=$!; }
+        [[ $tag == trace* || $tag == skiptrace* || $tag == motoff* ]] && { trigger_watch "$ptrigger" & tw=$!; }
         wait $route; kill $wd 2>/dev/null; wait $wd 2>/dev/null
         [[ -n $tw ]] && { kill $tw 2>/dev/null; wait $tw 2>/dev/null; }
         log=$here/out/run-$tag.log
@@ -111,7 +115,7 @@ for tag in "$@"; do
         wd_kill=0; [[ -s $res/foot-$tag.warnings ]] && wd_kill=1
         echo "{\"tag\":\"$tag\",\"attempt\":$attempt,\"max_draws\":${maxd:-0},\"overlap\":${ov:-0},\"pass_lines\":$ptl,\"gcn422\":$gcn,\"pm4_203\":$pm4,\"watchdog\":$wd_kill,\"assert\":\"$(echo "$asserts" | head -1 | tr -d '"\\')\"}" >> "$res/attempts.jsonl"
         if [[ -z $asserts && ${maxd:-0} -ge 500 && ${ov:-0} -eq 0 && $wd_kill -eq 0 ]]; then
-            if [[ $tag == trace* && ${ptl:-0} -lt 1000 ]]; then
+            if [[ ( $tag == trace* || $tag == skiptrace* || $tag == motoff* ) && ${ptl:-0} -lt 1000 ]]; then
                 echo "vertex_ceiling: $tag pass trace only $ptl lines - retry"
             else
                 echo ok > "$res/$tag.done"; echo "vertex_ceiling: $tag OK (draws $maxd, pass lines $ptl)"; break
