@@ -1,0 +1,54 @@
+# metalfx quality: real frames, 1146x480 -> 3440x1440, FSR 3.1 preset 4 + RCAS vs MetalFX
+# capture: st (standing view, 8 consecutive frames, 867 draws/frame, dd9705b + capture-only dump patch)
+# MetalFX: spike_quality, RGBA8Unorm input, jitter from the port's own Dump camera lines,
+#          motionVectorScale 1.0, isDepthReversed NO, autoExposure off
+
+# MetalFX vs FSR 3.1 preset 4 + RCAS on the port's own frames (3.00x, 1146x480 -> 3440x1440)
+
+Both arms read the SAME dumped frame: the port's scene colour, its depth and the resolved motion image (BB_DUMP_TRIGGER), and both write 3440x1440. The MetalFX output is quantised to 8 bits (the port's own upscaler output format) first, so neither arm is judged on a finer grid. Each row is the mean over the last 3 dumped frames with the crop fixed; +- is the spread across them. T(0.10-0.20) and T(0.20-0.40) are the ratio of the MetalFX radial spectrum to the FSR one in that band: 1.00 = the same energy at that scale, >1 = MetalFX keeps more.
+
+
+## st: 8 frames, metrics over frames 5-7
+
+
+**whole frame (3440x1440)**
+
+| arm | mean \|grad\| | \|grad\| p95 | \|grad\| p99 | HF ratio | HF frac >=0.25cp | T(0.10-0.20) | T(0.20-0.40) |
+|---|---|---|---|---|---|---|---|
+| FSR 3.1 + RCAS | 0.00232 +-0.00001 | 0.0083 | 0.0185 | 0.0055 | 0.0201 | 1.00 | 1.00 |
+| MetalFX | 0.00233 +-0.00001 | 0.0083 | 0.0204 | 0.0054 | 0.0175 | 1.16 | 0.79 |
+| MetalFX converged (xloop0) | 0.00258 +-0.00001 | 0.0094 | 0.0233 | 0.0096 | 0.0769 | 1.61 | 3.54 |
+
+whole frame: MetalFX is +0.4% vs FSR on mean |grad|. Converged: +11.1%.
+
+**moving-edge crop** (most motion in the sequence): render (38,98) 128x72 -> output (114,294) 384x216; motion that frame: median 0.00, p99 0.00, max 0.00 px/frame
+
+
+| arm | mean \|grad\| | \|grad\| p95 | \|grad\| p99 | HF ratio | HF frac >=0.25cp | T(0.10-0.20) | T(0.20-0.40) |
+|---|---|---|---|---|---|---|---|
+| FSR 3.1 + RCAS | 0.00194 +-0.00000 | 0.0085 | 0.0199 | 0.0215 | 0.0102 | 1.00 | 1.00 |
+| MetalFX | 0.00213 +-0.00001 | 0.0096 | 0.0276 | 0.0273 | 0.0079 | 2.14 | 1.39 |
+| MetalFX converged (xloop0) | 0.00243 +-0.00000 | 0.0110 | 0.0323 | 0.0546 | 0.0325 | 2.74 | 4.38 |
+
+edge crop: MetalFX is +10.0% vs FSR on mean |grad|. Converged: +25.6%.
+
+**fine-detail crop** (busiest small-scale energy): output (1473,1060) 384x216
+
+
+| arm | mean \|grad\| | \|grad\| p95 | \|grad\| p99 | HF ratio | HF frac >=0.25cp | T(0.10-0.20) | T(0.20-0.40) |
+|---|---|---|---|---|---|---|---|
+| FSR 3.1 + RCAS | 0.00755 +-0.00009 | 0.0252 | 0.0653 | 0.0069 | 0.0068 | 1.00 | 1.00 |
+| MetalFX | 0.00819 +-0.00003 | 0.0315 | 0.0762 | 0.0070 | 0.0046 | 2.10 | 0.99 |
+| MetalFX converged (xloop0) | 0.00807 +-0.00011 | 0.0309 | 0.0747 | 0.0068 | 0.0045 | 2.10 | 1.00 |
+
+detail crop: MetalFX is +8.5% vs FSR on mean |grad|. Converged: +6.9%.
+
+**temporal**: mean |delta luma| between consecutive frames over 7 pairs -> FSR 6.829e-04, MetalFX 2.039e-03 (+199% vs FSR). Replayed so the history converges (64 encodes): 1.255e-03 (+84% vs FSR).
+
+
+# cost (GPUStart/GPUEndTime of the scale command buffer)
+MetalFX scale p50 0.675 ms (8 frames), 0.653 ms (64 encodes); sharpen CAS 0.40 = 0.30 ms
+FSR 3.1 preset 4 chain at 3440: ~1.97 ms (spike/metalfx-tail README, port traces)
+
+# convention sweep (motion scale x depth reversed): identical output on these frames (zero motion);
+# isDepthReversed YES costs ~10% of the edge energy (0.00194 vs 0.00213)
