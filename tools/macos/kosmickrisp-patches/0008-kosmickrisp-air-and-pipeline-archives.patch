@@ -1,0 +1,432 @@
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.h b/src/kosmickrisp/bridge/mtl_compiler.h
+index 37668fd..676257d 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.h
++++ b/src/kosmickrisp/bridge/mtl_compiler.h
+@@ -17,6 +17,8 @@ enum mtl_pixel_format;
+ 
+ /* Compiler */
+ mtl_compiler *mtl_new_compiler(mtl_device *device);
++/* bbport 0008: writes the BB_KK_ARCHIVE_CAPTURE archive (no-op when unset). */
++void mtl_compiler_bb_release(mtl_compiler *compiler);
+ 
+ /* Library */
+ mtl_library *
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index 1b689f1..76ec52e 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -12,6 +12,297 @@
+ #include <Metal/MTL4LibraryFunctionDescriptor.h>
+ #include <Metal/MTL4RenderPipeline.h>
+ #include <Metal/MTLDevice.h>
++#include <Metal/MTL4Archive.h>
++#include <Metal/MTL4Compiler.h>
++#include <Metal/MTL4PipelineDataSetSerializer.h>
++
++/* bbport (patch 0008): shipped AIR + Metal 4 pipeline archives, all default off.
++ *
++ *   BB_KK_AIR_DIR=<dir>        before compiling MSL source, look for <dir>/<key>.metallib (offline
++ *                              AIR, `xcrun metal`) and load it with newLibraryWithURL. <key> is the
++ *                              BLAKE3 (the hash Mesa's disk cache keys on) of a version tag, the MSL
++ *                              language version, the math mode, the fp32 function mode and the MSL
++ *                              text, in hex. A missing or unloadable file compiles the source as
++ *                              before.
++ *   BB_KK_ARCHIVES=<a>:<b>:... MTL4Archives (base first, then the player's) passed to every render
++ *                              and compute pipeline compile as MTL4CompilerTaskOptions.lookupArchives,
++ *                              so a miss compiles normally. Never archive-only creation.
++ *   BB_KK_ARCHIVE_CAPTURE=1    attach a CaptureBinaries MTL4PipelineDataSetSerializer to the compiler
++ *                              and write it as an archive: on the last compiler release, and (because
++ *                              the port's GPU process ends with _Exit, which never releases it) also
++ *                              from a background thread 5 s after the last new pipeline. The archive
++ *                              goes to $BB_KK_AIR_DIR/capture.mtl4archive (./kk-capture.mtl4archive
++ *                              without an AIR dir); any value other than 1 is taken as the path.
++ *                              With BB_KK_AIR_DIR set, every library compiled from source is also
++ *                              dumped as <dir>/<key>.metal, listed in <dir>/manifest.txt with the
++ *                              options it must be compiled with.
++ *
++ * With all three unset, bb_air() returns a state with enabled == false and every caller takes the
++ * upstream code path unchanged. CaptureDescriptors is deliberately not set: with it, macOS 27.2's
++ * serializeAsArchiveAndFlushToURL returns NO with a nil error and writes nothing. */
++#include <pthread.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <unistd.h>
++
++#include "util/mesa-blake3.h"
++
++struct bb_air_state {
++   bool enabled;              /* any of the three is set */
++   NSString *air_dir;         /* BB_KK_AIR_DIR or nil */
++   NSArray<NSString *> *archive_paths;
++   NSString *capture_path;    /* nil unless capturing */
++   /* Built once against the first device's compiler. */
++   MTL4CompilerTaskOptions *task_options;
++   id<MTL4PipelineDataSetSerializer> serializer;
++   pthread_rwlock_t capture_lock; /* compiles read, serialize writes */
++   atomic_uint_fast64_t air_hits, air_misses, air_bad, pipelines, flushed_pipelines;
++   atomic_int_fast64_t last_pipeline_ns;
++   pthread_mutex_t flush_mutex;
++};
++
++static struct bb_air_state bb_air_s;
++static pthread_once_t bb_air_once = PTHREAD_ONCE_INIT;
++
++static int64_t
++bb_air_now_ns(void)
++{
++   return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++}
++
++static void
++bb_air_init(void)
++{
++   struct bb_air_state *s = &bb_air_s;
++   const char *dir = getenv("BB_KK_AIR_DIR");
++   const char *arcs = getenv("BB_KK_ARCHIVES");
++   const char *cap = getenv("BB_KK_ARCHIVE_CAPTURE");
++   if (dir != NULL && dir[0] != '\0')
++      s->air_dir = [@(dir) retain];
++   if (arcs != NULL && arcs[0] != '\0') {
++      NSMutableArray *list = [NSMutableArray array];
++      for (NSString *p in [@(arcs) componentsSeparatedByString:@":"])
++         if (p.length)
++            [list addObject:p];
++      s->archive_paths = [list copy];
++   }
++   if (cap != NULL && cap[0] != '\0' && strcmp(cap, "0") != 0) {
++      if (strcmp(cap, "1") != 0)
++         s->capture_path = [@(cap) retain];
++      else if (s->air_dir != nil)
++         s->capture_path = [[s->air_dir stringByAppendingPathComponent:@"capture.mtl4archive"] retain];
++      else
++         s->capture_path = [@"kk-capture.mtl4archive" retain];
++   }
++   s->enabled = s->air_dir != nil || s->archive_paths.count > 0 || s->capture_path != nil;
++   if (s->enabled) {
++      pthread_rwlock_init(&s->capture_lock, NULL);
++      pthread_mutex_init(&s->flush_mutex, NULL);
++   }
++}
++
++static struct bb_air_state *
++bb_air(void)
++{
++   pthread_once(&bb_air_once, bb_air_init);
++   return &bb_air_s;
++}
++
++/* Writes the capture archive (tmp file + rename, so a reader never sees a half archive). */
++static void
++bb_air_flush(const char *why)
++{
++   struct bb_air_state *s = &bb_air_s;
++   if (s->serializer == nil)
++      return;
++   pthread_mutex_lock(&s->flush_mutex);
++   uint64_t n = atomic_load(&s->pipelines);
++   if (n == atomic_load(&s->flushed_pipelines)) {
++      pthread_mutex_unlock(&s->flush_mutex);
++      return;
++   }
++   @autoreleasepool {
++      NSString *tmp = [s->capture_path stringByAppendingString:@".tmp"];
++      int64_t t0 = bb_air_now_ns();
++      pthread_rwlock_wrlock(&s->capture_lock);
++      NSError *error = nil;
++      BOOL ok = [s->serializer serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:tmp] error:&error];
++      pthread_rwlock_unlock(&s->capture_lock);
++      double ms = (bb_air_now_ns() - t0) / 1e6;
++      if (ok && rename(tmp.UTF8String, s->capture_path.UTF8String) == 0) {
++         struct stat st = {0};
++         stat(s->capture_path.UTF8String, &st);
++         atomic_store(&s->flushed_pipelines, n);
++         fprintf(stderr, "KK archive: captured %llu pipelines into %s (%lld bytes, %.1f ms, %s)\n",
++                 (unsigned long long)n, s->capture_path.UTF8String, (long long)st.st_size, ms, why);
++      } else {
++         fprintf(stderr, "KK archive: capture serialize to %s FAILED (%s)\n", s->capture_path.UTF8String,
++                 error ? error.localizedDescription.UTF8String : "no error given");
++      }
++   }
++   pthread_mutex_unlock(&s->flush_mutex);
++}
++
++static void *
++bb_air_thread(void *arg)
++{
++   (void)arg;
++   struct bb_air_state *s = &bb_air_s;
++   uint64_t reported = 0;
++   for (;;) {
++      sleep(2);
++      uint64_t sum = atomic_load(&s->air_hits) + atomic_load(&s->air_misses) + atomic_load(&s->air_bad);
++      if (sum != reported) {
++         reported = sum;
++         fprintf(stderr, "KK air: %llu libraries from AIR, %llu compiled from MSL, %llu AIR files unusable; %llu pipelines\n",
++                 (unsigned long long)atomic_load(&s->air_hits), (unsigned long long)atomic_load(&s->air_misses),
++                 (unsigned long long)atomic_load(&s->air_bad), (unsigned long long)atomic_load(&s->pipelines));
++      }
++      if (s->serializer != nil &&
++          atomic_load(&s->pipelines) != atomic_load(&s->flushed_pipelines) &&
++          bb_air_now_ns() - atomic_load(&s->last_pipeline_ns) > 5LL * 1000000000LL)
++         bb_air_flush("5 s after the last new pipeline");
++   }
++   return NULL;
++}
++
++/* Once, for the first compiler: the archives and the serializer. */
++static void
++bb_air_setup(id<MTLDevice> dev, MTL4CompilerDescriptor *desc)
++{
++   struct bb_air_state *s = bb_air();
++   static bool done;
++   if (!s->enabled || done)
++      return;
++   done = true;
++   if (s->archive_paths.count) {
++      NSMutableArray<id<MTL4Archive>> *loaded = [NSMutableArray array];
++      for (NSString *p in s->archive_paths) {
++         int64_t t0 = bb_air_now_ns();
++         NSError *error = nil;
++         id<MTL4Archive> a = [dev newArchiveWithURL:[NSURL fileURLWithPath:p] error:&error];
++         double ms = (bb_air_now_ns() - t0) / 1e6;
++         if (a == nil) {
++            fprintf(stderr, "KK archive: cannot load %s (%s); skipped\n", p.UTF8String,
++                    error ? error.localizedDescription.UTF8String : "no error given");
++            continue;
++         }
++         [loaded addObject:a];
++         [a release];
++         fprintf(stderr, "KK archive: loaded %s in %.1f ms\n", p.UTF8String, ms);
++      }
++      if (loaded.count) {
++         s->task_options = [MTL4CompilerTaskOptions new];
++         s->task_options.lookupArchives = loaded;
++      }
++   }
++   if (s->capture_path != nil) {
++      MTL4PipelineDataSetSerializerDescriptor *sd = [[MTL4PipelineDataSetSerializerDescriptor new] autorelease];
++      sd.configuration = MTL4PipelineDataSetSerializerConfigurationCaptureBinaries;
++      s->serializer = [dev newPipelineDataSetSerializerWithDescriptor:sd];
++      desc.pipelineDataSetSerializer = s->serializer;
++      fprintf(stderr, "KK archive: capturing into %s\n", s->capture_path.UTF8String);
++   }
++   if (s->air_dir != nil)
++      fprintf(stderr, "KK air: AIR directory %s%s\n", s->air_dir.UTF8String,
++              s->capture_path ? " (misses are dumped there as <key>.metal)" : "");
++   pthread_t thread;
++   if (pthread_create(&thread, NULL, bb_air_thread, NULL) == 0)
++      pthread_detach(thread);
++}
++
++static void
++bb_air_key(const char *src, enum mtl_language_version msl_version, enum mtl_math_mode math_mode,
++           enum mtl_math_floating_point_functions math_fp_fns, char hex[BLAKE3_HEX_LEN])
++{
++   struct mesa_blake3 ctx;
++   _mesa_blake3_init(&ctx);
++   const char tag[] = "bbport-kk-air-1";
++   _mesa_blake3_update(&ctx, tag, sizeof(tag));
++   uint32_t opts[3] = {(uint32_t)msl_version, (uint32_t)math_mode, (uint32_t)math_fp_fns};
++   _mesa_blake3_update(&ctx, opts, sizeof(opts));
++   _mesa_blake3_update(&ctx, src, strlen(src));
++   blake3_hash hash;
++   _mesa_blake3_final(&ctx, hash);
++   _mesa_blake3_format(hex, hash);
++}
++
++/* The xcrun metal flags that reproduce MTLCompileOptions for this key. */
++static void
++bb_air_flags(enum mtl_language_version v, enum mtl_math_mode m, enum mtl_math_floating_point_functions f,
++             char *out, size_t size)
++{
++   snprintf(out, size, "-std=metal%u.%u -fmetal-math-mode=%s -fmetal-math-fp32-functions=%s",
++            ((unsigned)v >> 16) & 0xffff, (unsigned)v & 0xffff,
++            m == MTL_MATH_MODE_FAST ? "fast" : m == MTL_MATH_MODE_RELAXED ? "relaxed" : "safe",
++            f == MTL_MATH_FLOATING_POINT_FUNCTIONS_PRECISE ? "precise" : "fast");
++}
++
++static void
++bb_air_dump(const char *hex, const char *src, enum mtl_language_version v, enum mtl_math_mode m,
++            enum mtl_math_floating_point_functions f)
++{
++   struct bb_air_state *s = &bb_air_s;
++   static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
++   NSString *path = [s->air_dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%s.metal", hex]];
++   pthread_mutex_lock(&mutex);
++   if (access(path.UTF8String, F_OK) != 0) {
++      FILE *file = fopen(path.UTF8String, "wb");
++      if (file != NULL) {
++         fwrite(src, 1, strlen(src), file);
++         fclose(file);
++         char flags[160];
++         bb_air_flags(v, m, f, flags, sizeof(flags));
++         NSString *manifest = [s->air_dir stringByAppendingPathComponent:@"manifest.txt"];
++         FILE *mf = fopen(manifest.UTF8String, "a");
++         if (mf != NULL) {
++            fprintf(mf, "%s %s\n", hex, flags);
++            fclose(mf);
++         }
++      }
++   }
++   pthread_mutex_unlock(&mutex);
++}
++
++/* nil = not in the AIR dir (or unusable): the caller compiles the source. */
++static id<MTLLibrary>
++bb_air_library(id<MTL4Compiler> comp, const char *hex)
++{
++   struct bb_air_state *s = &bb_air_s;
++   NSString *path = [s->air_dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%s.metallib", hex]];
++   if (access(path.UTF8String, R_OK) != 0)
++      return nil;
++   NSError *error = nil;
++   id<MTLLibrary> lib = [comp.device newLibraryWithURL:[NSURL fileURLWithPath:path] error:&error];
++   if (lib == nil) {
++      atomic_fetch_add(&s->air_bad, 1);
++      fprintf(stderr, "KK air: %s unusable (%s); compiling the MSL\n", path.UTF8String,
++              error ? error.localizedDescription.UTF8String : "no error given");
++   }
++   return lib;
++}
++
++static void
++bb_air_pipeline_created(void)
++{
++   struct bb_air_state *s = &bb_air_s;
++   atomic_fetch_add(&s->pipelines, 1);
++   atomic_store(&s->last_pipeline_ns, bb_air_now_ns());
++}
++
++void
++mtl_compiler_bb_release(mtl_compiler *compiler)
++{
++   (void)compiler;
++   struct bb_air_state *s = bb_air();
++   if (s->enabled)
++      bb_air_flush("last compiler release");
++}
++
+ 
+ /* Compiler */
+ mtl_compiler *
+@@ -21,6 +312,7 @@
+       id<MTLDevice> dev = (id<MTLDevice>)device;
+ 
+       MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor new] autorelease];
++      bb_air_setup(dev, desc); /* bbport 0008: no-op unless BB_KK_AIR_DIR/ARCHIVES/ARCHIVE_CAPTURE */
+ 
+       NSError *error;
+       id<MTL4Compiler> compiler = [dev newCompilerWithDescriptor:desc error:&error];
+@@ -42,6 +334,17 @@
+ {
+    @autoreleasepool {
+       id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
++      /* bbport 0008: shipped AIR first (BB_KK_AIR_DIR); nothing changes when it is unset. */
++      struct bb_air_state *bb = bb_air();
++      char bb_key[BLAKE3_HEX_LEN] = {0};
++      if (bb->air_dir != nil) {
++         bb_air_key(src, msl_version, math_mode, math_fp_fns, bb_key);
++         id<MTLLibrary> air = bb_air_library(comp, bb_key);
++         if (air != nil) {
++            atomic_fetch_add(&bb->air_hits, 1);
++            return air;
++         }
++      }
+       NSString *ns_src = [NSString stringWithCString:src encoding:NSASCIIStringEncoding];
+ 
+       MTLCompileOptions *opts = [[MTLCompileOptions new] autorelease];
+@@ -54,7 +357,16 @@
+       desc.options = opts;
+ 
+       NSError *error;
++      if (bb->serializer != nil)
++         pthread_rwlock_rdlock(&bb->capture_lock);
+       id<MTLLibrary> lib = [comp newLibraryWithDescriptor:desc error:&error];
++      if (bb->serializer != nil)
++         pthread_rwlock_unlock(&bb->capture_lock);
++      if (bb->air_dir != nil && lib != nil) {
++         atomic_fetch_add(&bb->air_misses, 1);
++         if (bb->capture_path != nil)
++            bb_air_dump(bb_key, src, msl_version, math_mode, math_fp_fns);
++      }
+ 
+       if (lib == nil) {
+          fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
+@@ -92,8 +404,17 @@
+       desc.maxTotalThreadsPerThreadgroup = max_total_threads_per_threadgroup;
+ 
+       NSError *error;
+-      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
++      /* bbport 0008: lookupArchives (BB_KK_ARCHIVES) - a miss compiles; nil when unset. */
++      struct bb_air_state *bb = bb_air();
++      if (bb->serializer != nil)
++         pthread_rwlock_rdlock(&bb->capture_lock);
++      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc
++                                                                     compilerTaskOptions:bb->task_options
+                                                                                    error:&error];
++      if (bb->serializer != nil)
++         pthread_rwlock_unlock(&bb->capture_lock);
++      if (bb->enabled && pipeline != nil)
++         bb_air_pipeline_created();
+ 
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLComputePipelineState: %s\n", [error.localizedDescription UTF8String]);
+@@ -212,8 +533,17 @@
+       MTL4RenderPipelineDescriptor *desc = (MTL4RenderPipelineDescriptor *)descriptor;
+ 
+       NSError *error = nil;
+-      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
++      /* bbport 0008: lookupArchives (BB_KK_ARCHIVES) - a miss compiles; nil when unset. */
++      struct bb_air_state *bb = bb_air();
++      if (bb->serializer != nil)
++         pthread_rwlock_rdlock(&bb->capture_lock);
++      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc
++                                                                   compilerTaskOptions:bb->task_options
+                                                                                  error:&error];
++      if (bb->serializer != nil)
++         pthread_rwlock_unlock(&bb->capture_lock);
++      if (bb->enabled && pipeline != nil)
++         bb_air_pipeline_created();
+ 
+       if (pipeline == nil) {
+          fprintf(stderr, "Failed to create MTLRenderPipelineState: %s\n", [error.localizedDescription UTF8String]);
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_compiler.c b/src/kosmickrisp/bridge/stubs/mtl_compiler.c
+index 6cde687..6a54fb7 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_compiler.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_compiler.c
+@@ -15,6 +15,11 @@ mtl_new_compiler(mtl_device *device)
+    return NULL;
+ }
+ 
++void
++mtl_compiler_bb_release(mtl_compiler *compiler)
++{
++}
++
+ /* Library */
+ mtl_library *
+ mtl_new_library(mtl_compiler *compiler, const char *src,
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 446cf53..c57c746 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -202,6 +202,7 @@ kk_release_compiler(struct kk_device *dev)
+    /* KK_WORKAROUND_11 */
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+    if (pdev->settings.disabled_workarounds & BITFIELD64_BIT(11)) {
++      mtl_compiler_bb_release(dev->mtl_compiler_handle); /* bbport 0008 */
+       mtl_release(dev->mtl_compiler_handle);
+       return;
+    }
+@@ -216,6 +217,7 @@ kk_release_compiler(struct kk_device *dev)
+ 
+       if (compiler->refcount == 0) {
+          _mesa_hash_table_remove(&compilers_ht, ent);
++         mtl_compiler_bb_release(compiler->handle); /* bbport 0008 */
+          mtl_release(compiler->handle);
+          ralloc_free(compiler);
+       }

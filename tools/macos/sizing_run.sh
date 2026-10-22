@@ -84,10 +84,13 @@ route=$!
 # free+inactive under 4 GiB, means the renderer is about to take the machine with it.
 (
     while kill -0 $route 2>/dev/null; do
-        pid=$(pgrep -x bb-probe | head -1)
+        # bb-gpu (the native renderer) is the process that holds the graphics memory; bb-probe is
+        # watched only while bb-gpu does not exist yet.
+        pid=$(pgrep -x bb-gpu | head -1)
+        [[ -n ${pid:-} ]] || pid=$(pgrep -x bb-probe | head -1)
         stamp=$(date +%T)
         if [[ -n ${pid:-} ]]; then
-            foot=$(footprint "$pid" 2>/dev/null | sed -n 's/.*Footprint: \([0-9.]*\)\([KMG]\)B.*/\1 \2/p' | head -1)
+            foot=$(footprint "$pid" 2>/dev/null | sed -n 's/.*Footprint: \([0-9.]*\) *\([KMG]\)B.*/\1 \2/p' | head -1)
             free_inactive=$(vm_stat | awk '/Pages free|Pages inactive/ {gsub(/\./,"",$3); sum+=$3} END {printf "%.2f", sum*16384/1073741824}')
             echo "$stamp pid=$pid footprint=$foot free_inactive_gib=$free_inactive" >>"$dir/mem.txt"
             foot_gib=$(awk -v f="${foot:-0 M}" 'BEGIN{split(f,a," "); v=a[1]+0; if (a[2]=="M") v/=1024; if (a[2]=="K") v/=1073741824; print v}')
