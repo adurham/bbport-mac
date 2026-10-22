@@ -146,3 +146,32 @@ MiB` counter is the authoritative live number (a sum over every allocator ever s
 `BB_KK_ALLOC_LOG` file double-counts dead ones and overstated the 8 KB run by ~60x), and cross-run
 frame rates on this machine are not comparable while other work is running - only the memory figures
 are solid.
+
+## The last two attempts: shared buffer, and folding compute into it (measured dead)
+
+**1. One command buffer per VkCommandBuffer (`BB_KK_ONE_CMDBUF`).** Implemented in the probe driver:
+render passes share one `MTL4CommandBuffer`, ended early whenever compute must interleave. Measured
+A/B, same dylib, same route: gate on gives **max 50 command buffers per recording** against 56 off,
+gfx allocator median 76.0 MB against 104.8 MB, totals 5 712 MB against 6 087 MB (**6%**), frame rate
+identical (43.0 vs 42.8 fps), `order violations 0`. Why it cannot win: a Metal 4 command buffer is
+linear and can only encode commands allocated from its own allocator, while pre-gfx compute is
+discovered inside an open render pass and must execute before it.
+
+**2. Folding those compute encoders into the shared buffer (`BB_KK_FLUSH_LOG` histogram first).** A
+`BB_KK_FLUSH_LOG` run counted 32 493 early ends: 22 282 `compute_before_pass` with the render encoder
+closed (the cheap case), 5 998 normal ends, 3 561 `draw_split` (only 368 with an encoder open), 652
+`compute_before_append`. On that basis the compute-fold was built: when a pre/post compute encoder is
+requested with no render encoder open, it is created on the shared buffer instead of its own.
+Measured in gameplay: **`early ends for in-pass compute 540 197`** - the compute that dominates real
+frames is started *inside* render passes (post-gfx query writes, event sets, heap resets), which can
+never be folded. gfx allocator ended at **53 quanta / 125.2 MB** per buffer, block still **9.2 GB**,
+`order violations 0`. The 22 k cheap events were a title/load artefact, not the gameplay shape.
+
+So the entire lifetime/capacity/segmentation/sharing family is now measured dead on this driver. The
+only route left that the reference model sanctions is **structural: deferred command recording** -
+record a render pass into a driver-side list and emit at `vkCmdEndRendering` (variant A), or replay
+the whole queue at submit via Mesa's `vk_cmd_enqueue` (variant B). Both put the commands in one
+buffer because nothing is encoded until the pass is closed; both are multi-day changes to the
+submission path, and both must be gated and proved against the same bar: <= 1 Metal command buffer
+per recording, allocator median <= 2 quanta, total allocator bytes <= ~500 MB, footprint <= 9 GiB
+flat for 10 minutes, fps >= 41, zero order violations, and a pixel-identical capture set.
