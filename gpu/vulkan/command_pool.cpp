@@ -62,6 +62,18 @@ bool TrimOn() {
     return on;
 }
 
+/// BB_CMDBUF_LIFO=1: Commit hands out the most recently used free buffer (a stack) instead of the
+/// next one in turn (read once). The round-robin rotates every buffer, so no entry is ever idle for
+/// the release gate to take (measured: 64 live, all reused within a second, nothing released); with
+/// LIFO the buffers a load grew fall out of use, stay cold, and the idle release can free them.
+bool LifoOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_CMDBUF_LIFO");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
 /// The pools alive right now. The per-frame hook owns none of the recording threads' pools, so the
 /// stats line and the release sweep can only reach them through this list; with both gates off
 /// nothing is tracked and the list stays empty.
@@ -175,6 +187,33 @@ vk::CommandBuffer CommandPool::Commit() {
     const bool stats = StatsOn();
     if (stats) {
         counts.commits.fetch_add(1, std::memory_order_relaxed);
+    }
+    // BB_CMDBUF_LIFO=1: take the most recently used buffer the GPU is done with (a stack) instead
+    // of the round-robin's next in turn, so the buffers a load grew stop being rotated through,
+    // stay cold, and BB_CMDBUF_RELEASE_IDLE has something to free. Same predicate and same retry
+    // as the searches below (ask the GPU once between the two passes); if no buffer is free it
+    // falls through to them unchanged, so a miss still grows exactly as it does with the gate off.
+    if (LifoOn()) {
+        for (int attempt = 0; attempt < 2 && !entries.empty(); ++attempt) {
+            if (attempt == 1) {
+                timeline->Refresh();
+            }
+            const u64 done = timeline->KnownGpuTick();
+            size_t best = entries.size(); // no free buffer yet
+            for (size_t i = 0; i < entries.size(); ++i) {
+                if (entries[i].tick > done) {
+                    continue;
+                }
+                // On a tie the earliest entry wins: the comparison is strict, so the first index
+                // holding the newest last_use is the one kept.
+                if (best == entries.size() || entries[i].last_use > entries[best].last_use) {
+                    best = i;
+                }
+            }
+            if (best != entries.size()) {
+                return take(best);
+            }
+        }
     }
     // From where the last one was taken to the end, again after asking the GPU, then from the
     // start; else a new one.

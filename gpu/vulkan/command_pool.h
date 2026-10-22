@@ -21,7 +21,8 @@ public:
     CommandPool(const Instance& instance, Semaphore* timeline);
     ~CommandPool();
 
-    /// A command buffer free for the current submission.
+    /// A command buffer free for the current submission. BB_CMDBUF_LIFO=1 makes it the most
+    /// recently used of the free ones (a stack) instead of the next one in turn.
     vk::CommandBuffer Commit();
 
     /// BB_CMDBUF_RELEASE_IDLE: asks this pool to free its idle command buffers at its next Commit.
@@ -58,7 +59,8 @@ private:
     Semaphore* timeline;
     vk::UniqueCommandPool pool;
     std::vector<Entry> entries;
-    size_t next = 0; ///< where the search starts: buffers are reused in turn
+    size_t next = 0; ///< where the search starts: buffers are reused in turn (BB_CMDBUF_LIFO=1
+                     ///< picks by last_use instead; the cursor then only keeps the fallback in range)
     std::atomic<bool> release_requested{false}; ///< a release is pending (set by the frame hook)
     std::array<std::atomic<u64>, 4> idle_buckets{}; ///< published by Commit, read by the stats line
 };
