@@ -2200,6 +2200,21 @@ void TemporalUpscaler::RunScaled() {
                 DumpImages(instance, scheduler, dump_cmdbuf, dump,
                            {{object, w, h, 16, "objects", "rgba32f"}});
             }
+            // bbport (metalfx-quality capture, env-gated by BB_DUMP_TRIGGER like the rest): the
+            // colour the upscaler consumes and the display-resolution output it produces, so
+            // MetalFX can be run on the same real frame offline (docs/METALFX_QUALITY.md).
+            {
+                const bool in_bgra = color.info.pixel_format == vk::Format::eB8G8R8A8Unorm ||
+                                     color.info.pixel_format == vk::Format::eB8G8R8A8Srgb;
+                const bool out_bgra = ui_format == vk::Format::eB8G8R8A8Unorm ||
+                                      ui_format == vk::Format::eB8G8R8A8Srgb;
+                DumpImages(instance, scheduler, dump_cmdbuf, dump,
+                           {{color_image, source_width, source_height, 4, "input",
+                             in_bgra ? "bgra" : "rgba"}});
+                DumpImages(instance, scheduler, dump_cmdbuf, dump,
+                           {{vk::Image(ui_image), ow, oh, 4, "output",
+                             out_bgra ? "bgra" : "rgba"}});
+            }
         }
     }
     barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eGeneral, all,

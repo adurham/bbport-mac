@@ -549,6 +549,14 @@ GraphicsPipeline::GraphicsPipeline(
         }
         color_formats[i] = format;
     }
+    if (key.motion_vectors && std::getenv("BB_MOTION_FMT_LOG")) { // probe/motion-correctness
+        static std::atomic<u32> n{0};
+        if (n.fetch_add(1) < 12) {
+            std::string s;
+            for (u32 i = 0; i < key.num_color_attachments; ++i) s += fmt::format(" [{}]{}/d{}n{}", i, vk::to_string(color_formats[i]), u32(key.color_buffers[i].data_format), u32(key.color_buffers[i].num_format));
+            std::printf("Motion fmt: mrt %02x n %u:%s\n", key.mrt_mask, key.num_color_attachments, s.c_str());
+        }
+    }
     std::array<vk::SampleCountFlagBits, Gcn::NUM_COLOR_BUFFERS> color_samples;
     std::ranges::transform(key.color_samples, color_samples.begin(), [&instance](u8 samples) {
         return samples ? GcnToVk::NumSamples(samples, instance.GetColorSampleCounts())

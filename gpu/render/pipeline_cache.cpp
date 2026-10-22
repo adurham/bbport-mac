@@ -1141,6 +1141,12 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
 
     if (sel.motion) {
         constexpr u32 mv = Shader::MotionVectors::Output;
+        // probe/motion-correctness (BB_MOTION_SLOT_FIX=1): the loop above clears unwritten slots
+        // only below the FS's own bit_width(mrt_mask); raising the count to mv + 1 here exposed a
+        // bound-but-unwritten target's stale format (slot 6, RGBA16F) with no texture in the pass,
+        // which displaces the motion output by 8 bytes on Metal (x,y land in z,w).
+        static const bool slot_fix = std::getenv("BB_MOTION_SLOT_FIX") != nullptr;
+        for (u32 cb = key.num_color_attachments; slot_fix && cb < mv; ++cb) key.color_buffers[cb] = {}, key.write_masks[cb] = {};
         key.motion_vectors = sel.still ? 2 : 1;
         key.mrt_mask |= 1u << mv;
         key.num_color_attachments = mv + 1;
