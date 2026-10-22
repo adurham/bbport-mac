@@ -98,3 +98,29 @@ The shipped Mesa shader cache is keyed on the driver's LC_UUID, so with `F324F17
 (`Mesa cache skipped: built for driver C5B640F8, this driver is F324F17F`) until refilled with this
 build (step 3 of `KK_PRELOAD_ARTEFACTS.md`). The AIR libraries and the MTL4 archive are keyed on the
 generated MSL, which `0009` does not change, so they keep working.
+
+## The probe log: what the block actually is (2026-10-22, later)
+
+BB_KK_ALLOC_LOG (instrumented side-slot driver, deps-arm64-probe, app driver untouched) writes one
+line per allocator reset: identity, kind, age in resets, `allocatedSize` before and after. One
+602 136-line run at the owner's settings:
+
+| kind | allocators | median | sum |
+|---|---|---|---|
+| gfx | 86 | **122.7 MB** | **10 072 MB** |
+| pre | 86 | 13.2 MB | 1 007 MB |
+| post | 86 | 13.2 MB | 1 007 MB |
+
+- Capacity is a **ratchet, not an append**: over 2 076 resets of one allocator it increased 16 times,
+  the increases clustering at the area load (0 -> 74 -> 122 MB in ~670 resets, then flat for 1 200).
+- The uniformity across all 86 buffers is the signature of one huge load frame spread evenly over the
+  pool, then frozen.
+- **Compaction (BB_KK_COMPACT_AT, one generation bump): measured and dead.** At 90 s it rebuilt 68
+  buffers, releasing 204 allocators holding **8 721 MiB**; one stats window later the recreated
+  allocators held **9 412 MiB**. They regrow immediately: the write is real, not stale capacity.
+  This is the no-go branch the reference model named.
+
+So neither lifetime nor capacity can fix it. The only remaining lever is **what the driver writes
+per draw**: 122 MB for one buffer's share of a ~1 500-draw frame is tens of KB per draw, three orders
+of magnitude above what Metal command encoding should need. The next investigation is the gfx
+encoder path in `kk_cmd_buffer.c` / the argument and descriptor emission, priced in bytes per draw.
