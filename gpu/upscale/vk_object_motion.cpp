@@ -226,6 +226,7 @@ ObjectMotion::Target& ObjectMotion::GetTarget(u32 width, u32 height) {
         .format = vk::Format::eR32G32B32A32Sfloat,
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }));
+    Scheduler::NoteMotionView(*slot->view); // BB_MOTION_ATTACH_PROBE
     slot->width = width;
     slot->height = height;
     slot->written = false;

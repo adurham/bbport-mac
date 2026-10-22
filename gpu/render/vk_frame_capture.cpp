@@ -142,6 +142,7 @@ struct PassLine {
     u32 width{}, height{}, num_colors{};
     std::string color0, color1, depth;   ///< vk::Format names, "-" when absent
     u32 draws{}, samplers{};
+    u32 motion_moving{}, motion_still{};
     u64 indices{}, instances{};
     std::vector<u64> vs, ps;
     u64 t0{};           ///< steady-clock ns at the encoder's begin, relative to the window's first
@@ -257,7 +258,8 @@ void PassTraceFlush() {
     if (l.ps.empty()) {
         std::fprintf(pass_trace_file, "-");
     }
-    std::fprintf(pass_trace_file, " t=%llu\n", static_cast<unsigned long long>(l.t0));
+    std::fprintf(pass_trace_file, " t=%llu mv=%u ms=%u\n", static_cast<unsigned long long>(l.t0),
+                 l.motion_moving, l.motion_still);
     std::fflush(pass_trace_file);
 }
 
@@ -376,6 +378,13 @@ void FrameCapture::PassTraceDraw(u64 vs_hash, u64 ps_hash, u32 num_indices, u32 
     if (ps_hash && l.ps.size() < 4 && std::ranges::find(l.ps, ps_hash) == l.ps.end()) {
         l.ps.push_back(ps_hash);
     }
+}
+
+void FrameCapture::PassTraceMotion(bool moving) {
+    if (!pass_trace_enabled || !pass_trace_open || !pass_trace_in_pass) {
+        return;
+    }
+    ++(moving ? pass_trace_line.motion_moving : pass_trace_line.motion_still);
 }
 
 void FrameCapture::PassTraceEnd() {

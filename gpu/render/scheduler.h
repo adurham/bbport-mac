@@ -101,6 +101,10 @@ using SubmitFunc = Common::UniqueFunction<void, SubmitInfo&>;
 
 class Scheduler {
 public:
+    /// BB_MOTION_ATTACH_PROBE (bench/motion-attachment, default off): the object-motion images'
+    /// views (ObjectMotion registers each one it creates), so BeginRendering can tell the motion
+    /// attachment apart from the guest's own targets.
+    static void NoteMotionView(vk::ImageView view);
     /// `threaded_recording`: commands passed to Record() are recorded by recording threads.
     explicit Scheduler(const Instance& instance, bool threaded_recording = false);
     ~Scheduler();

@@ -3,6 +3,9 @@
 #include "render/scheduler.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <string_view>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +29,29 @@
 #include "vulkan/instance.h"
 
 namespace Vulkan {
+
+namespace {
+// BB_MOTION_ATTACH_PROBE: the object-motion views (at most ObjectMotion::MaxTargets live, plus
+// replaced ones; a small ring is enough to recognise them).
+std::array<VkImageView, 16> motion_views{};
+std::atomic<u32> motion_view_count{0};
+bool IsMotionView(vk::ImageView view) {
+    const u32 n = std::min<u32>(motion_view_count.load(std::memory_order_acquire), 16u);
+    for (u32 i = 0; i < n; ++i) {
+        if (motion_views[i] == static_cast<VkImageView>(view)) {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+void Scheduler::NoteMotionView(vk::ImageView view) {
+    const u32 i = motion_view_count.load(std::memory_order_relaxed);
+    motion_views[i % 16] = static_cast<VkImageView>(view);
+    motion_view_count.store(i + 1, std::memory_order_release);
+}
+
 
 std::mutex Scheduler::submit_mutex;
 
@@ -208,6 +234,21 @@ void Scheduler::BeginRendering(const RenderState& state) {
             probe_broken_states.push_back(state);
         }
     }
+    // BB_MOTION_ATTACH_PROBE (bench/motion-attachment): TIMING PROBE ONLY - the motion image is
+    // expected to be wrong with it. load = the object-motion attachment is not loaded back when a
+    // G-buffer encoder begins (loadOp DONT_CARE unless it is the frame's clear); store = it is
+    // never stored (storeOp DONT_CARE); both = both. Prices the attachment's per-encoder tile
+    // load and store apart from its presence. Gate off: one cached false check, nothing changes.
+    static const int motion_attach_probe = [] {
+        const char* env = std::getenv("BB_MOTION_ATTACH_PROBE");
+        if (!env || !*env || env[0] == '0') {
+            return 0;
+        }
+        const std::string_view v{env};
+        const int mode = v == "load" ? 1 : v == "store" ? 2 : v == "both" ? 3 : 0;
+        std::printf("Motion attach probe: %s (timing only)\n", mode ? env : "unknown value, off");
+        return mode;
+    }();
     resume_rendering = false;
     EndRendering();
     CarrySuspend(false);
@@ -247,6 +288,14 @@ void Scheduler::BeginRendering(const RenderState& state) {
             .storeOp = store,
             .clearValue = {.color = {.uint32 = color.clear_value}},
         };
+        if (motion_attach_probe && color.image_view && IsMotionView(color.image_view)) {
+            if ((motion_attach_probe & 1) && pass.colors[i].loadOp == vk::AttachmentLoadOp::eLoad) {
+                pass.colors[i].loadOp = vk::AttachmentLoadOp::eDontCare;
+            }
+            if (motion_attach_probe & 2) {
+                pass.colors[i].storeOp = vk::AttachmentStoreOp::eDontCare;
+            }
+        }
     }
     const auto& ds = state.depth_stencil_attachment;
     pass.depth = {

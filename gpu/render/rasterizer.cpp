@@ -405,6 +405,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     // BB_PASS_TRACE (bench/vertex-passes): the same draw, counted against its encoder's identity.
     FrameCapture::PassTraceDraw(vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0, num_indices,
                                         num_instances);
+    if (motion_draw) {
+        FrameCapture::PassTraceMotion(push_data.motion_param != 0);
+    }
     if (FrameCapture::Active()) {
         const auto* ps = ps_info;
         if (const auto& bc = regs.blend_control[0]; bc.enable && regs.color_buffers[0]) {

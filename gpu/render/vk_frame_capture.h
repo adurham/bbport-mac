@@ -54,6 +54,9 @@ public:
     /// encoder begins here.
     static void PassTraceBegin(u32 width, u32 height, u32 num_colors);
     static void PassTraceDraw(u64 vs_hash, u64 ps_hash, u32 num_indices, u32 num_instances);
+    /// A motion-pipeline draw in the open encoder (bench/motion-attachment): `moving` = it got
+    /// history (motion_param != 0), else still. Counted as mv= / ms= on the encoder's line.
+    static void PassTraceMotion(bool moving);
     /// Scheduler::EndRendering: the encoder ends, its line goes out.
     static void PassTraceEnd();
     /// VideoOut, per flip: the recording window's frame count and trigger file.
