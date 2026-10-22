@@ -246,8 +246,9 @@ After an update, the first launch compiles shaders again.
 - **"No eboot.bin in the folder"**: choose the folder that directly contains `eboot.bin`.
 - **The game crashes or freezes**: note what you were doing, then see *Reporting a problem*. If
   it happens again at the same place, try *Two-stage GPU pipeline: Off* under Performance.
-- **Some effects are missing.** Metal has no geometry shaders, so a few effects that need them
-  aren't drawn yet (see *Known limitations* on the front page).
+- **An effect looks wrong** (odd colours or shapes, often when something is hit): the driver
+  emulates geometry shaders, which a few effects use. Add `BB_GEOMETRY_SHADERS=0` to *Extra
+  variables* to skip those effects instead, and report it with the log.
 
 ## Reporting a problem
 

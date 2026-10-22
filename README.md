@@ -54,8 +54,8 @@ the controls, where saves live and what to do when something goes wrong. Recomme
 
 ## Known limitations
 
-- **A few effects are missing.** Metal has no geometry shaders, so draws that need one are
-  skipped.
+- **Geometry shaders are emulated.** Metal has none: the driver runs them as compute passes. If an
+  effect looks wrong, `BB_GEOMETRY_SHADERS=0` skips those draws instead.
 - **The first launch compiles shaders**: a few minutes of black screen and some stutter, and
   short pauses when a new area loads. Later launches are quick.
 - **Occasional pop-in** while an area streams in.
