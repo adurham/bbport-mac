@@ -1,0 +1,315 @@
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index ad0e081..8a30d84 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -70,12 +70,13 @@ kk_destroy_encoder_state(struct kk_encoder_state *es)
+    assert(es->encoder == NULL);
+    assert(es->cmd_buf == NULL);
+ 
++   /* bbport (0009): NULL after a reset with RELEASE_RESOURCES_BIT. */
+    if (es->allocator) {
+       kk_bbstat_add(KK_BBSTAT_ALLOCATORS, -1);
+       kk_bbstat_add(KK_BBSTAT_ALLOCATOR_BYTES, -(int64_t)es->bb_allocated_B);
++      mtl_release(es->allocator);
+    }
+    es->bb_allocated_B = 0u;
+-   mtl_release(es->allocator);
+    es->allocator = NULL;
+ 
+    util_dynarray_fini(&es->ts_resolves);
+@@ -106,15 +107,33 @@ kk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
+    vk_free(&pool->vk.alloc, cmd);
+ }
+ 
+-static bool
+-kk_init_encoder_state(struct kk_encoder_state *es, mtl_device *handle)
++/* bbport (0009): the one place an encoder state's MTL4CommandAllocator is
++ * created and handed out. Used at command buffer creation, by
++ * kk_BeginCommandBuffer after a reset that released the allocators, and by
++ * every mtl_begin_command_buffer site. Returns NULL only if Metal fails. */
++static mtl_command_allocator *
++kk_encoder_state_allocator(struct kk_cmd_buffer *cmd,
++                           struct kk_encoder_state *es)
+ {
+-   es->allocator = mtl_new_command_allocator(handle);
++   if (likely(es->allocator != NULL))
++      return es->allocator;
++
++   es->allocator =
++      mtl_new_command_allocator(kk_cmd_buffer_device(cmd)->mtl_handle);
+    es->bb_allocated_B = 0u;
+-   if (es->allocator)
++   if (es->allocator) {
+       kk_bbstat_add(KK_BBSTAT_ALLOCATORS, 1);
++      if (cmd->bb_mtl_released)
++         kk_bbstat_add(KK_BBSTAT_ALLOCATORS_RECREATED, 1);
++   }
++   return es->allocator;
++}
++
++static bool
++kk_init_encoder_state(struct kk_cmd_buffer *cmd, struct kk_encoder_state *es)
++{
+    es->ts_resolves = UTIL_DYNARRAY_INIT;
+-   return es->allocator != NULL;
++   return kk_encoder_state_allocator(cmd, es) != NULL;
+ }
+ 
+ static VkResult
+@@ -144,13 +163,13 @@ kk_create_cmd_buffer(struct vk_command_pool *vk_pool,
+ 
+    cmd->pre_gfx = &cmd->cmp[0];
+    cmd->post_gfx = &cmd->cmp[1];
+-   if (!kk_init_encoder_state(cmd->pre_gfx, dev->mtl_handle))
++   if (!kk_init_encoder_state(cmd, cmd->pre_gfx))
+       goto pre_gfx_allocator_fail;
+ 
+-   if (!kk_init_encoder_state(&cmd->gfx, dev->mtl_handle))
++   if (!kk_init_encoder_state(cmd, &cmd->gfx))
+       goto gfx_allocator_fail;
+ 
+-   if (!kk_init_encoder_state(cmd->post_gfx, dev->mtl_handle))
++   if (!kk_init_encoder_state(cmd, cmd->post_gfx))
+       goto post_gfx_allocator_fail;
+ 
+    {
+@@ -222,13 +241,126 @@ kk_reset_cmd_buffer_internal(struct kk_cmd_buffer *cmd)
+    cmd->uses_heap = false;
+ }
+ 
++/* bbport (0009): VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT. Without it,
++ * each live command buffer keeps three MTL4CommandAllocators whose reset keeps
++ * their memory, so a pool's load-spike high-water stays resident forever.
++ *
++ * Releases the encoder states' Metal objects in dependency order: the three
++ * encoders, then the three MTL4CommandBuffers, then the three
++ * MTL4CommandAllocators, and NULLs every pointer. It runs after
++ * kk_reset_cmd_buffer_internal, whose two cs_end() calls have already ended
++ * every encoder and moved every MTL4CommandBuffer into submit_cmd_bufs, which
++ * kk_cmd_release_resources then released; so the encoder and command buffer
++ * steps only enforce that invariant, and no command buffer that was encoded
++ * from these allocators is still referenced when they go.
++ *
++ * SAFETY: called ONLY from kk_reset_cmd_buffer_release, i.e. only when the
++ * caller of the reset passed RELEASE_RESOURCES_BIT. Every such caller is an
++ * application entry point (vkResetCommandBuffer, vkResetCommandPool with
++ * VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT, and the common runtime's
++ * recycle on vkFreeCommandBuffers / a failed vkAllocateCommandBuffers) whose
++ * valid usage forbids a command buffer in the pending state: the application
++ * has synchronised with every submission of this buffer, so nothing encoded
++ * from these allocators is in flight. That is the same guarantee the plain
++ * reset already relies on for -[MTL4CommandAllocator reset]. Driver-internal
++ * paths (the queue's re-record recycling and its pool reset, submit, destroy,
++ * trim) never pass the flag and must never call this: no sweep, no timer. */
++static void
++kk_cmd_buffer_release_mtl(struct kk_cmd_buffer *cmd)
++{
++   struct kk_encoder_state *const states[] = {cmd->pre_gfx, &cmd->gfx,
++                                              cmd->post_gfx};
++
++   if (cmd->bb_mtl_released)
++      return; /* double reset-with-release: no-op */
++
++   /* 1. encoders */
++   for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
++      struct kk_encoder_state *es = states[i];
++      assert(es->encoder == NULL);
++      if (es->encoder) {
++         mtl_end_encoding(es->encoder);
++         mtl_release(es->encoder);
++         es->encoder = NULL;
++      }
++   }
++   /* 2. MTL4CommandBuffers */
++   for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
++      struct kk_encoder_state *es = states[i];
++      assert(es->cmd_buf == NULL);
++      if (es->cmd_buf) {
++         mtl_release(es->cmd_buf);
++         kk_bbstat_add(KK_BBSTAT_MTL_CMD_BUFS_RELEASED, 1);
++         es->cmd_buf = NULL;
++      }
++   }
++   /* 3. MTL4CommandAllocators */
++   for (unsigned i = 0; i < ARRAY_SIZE(states); i++) {
++      struct kk_encoder_state *es = states[i];
++      if (es->allocator) {
++         /* What the allocator still holds after its reset (reset keeps the
++          * allocation), i.e. what this release returns. The "holding" total
++          * drops by its own last sample (bb_allocated_B, BB_KK_STATS=1). */
++         const uint64_t held_B = mtl_command_allocator_allocated_size(es->allocator);
++         kk_bbstat_add(KK_BBSTAT_ALLOCATORS, -1);
++         kk_bbstat_add(KK_BBSTAT_ALLOCATOR_BYTES, -(int64_t)es->bb_allocated_B);
++         kk_bbstat_add(KK_BBSTAT_ALLOCATORS_RELEASED, 1);
++         kk_bbstat_add(KK_BBSTAT_ALLOCATOR_RELEASED_BYTES, held_B);
++         mtl_release(es->allocator);
++         es->allocator = NULL;
++      }
++      es->bb_allocated_B = 0u;
++   }
++   cmd->bb_mtl_released = true;
++}
++
++/* bbport (0009): recreate what kk_cmd_buffer_release_mtl released, at begin.
++ * The MTL4CommandBuffers need nothing here: every encoder start creates its
++ * own (cs_start_render, kk_start_compute_encoder). */
++static bool
++kk_cmd_buffer_recreate_mtl(struct kk_cmd_buffer *cmd)
++{
++   if (!kk_encoder_state_allocator(cmd, cmd->pre_gfx) ||
++       !kk_encoder_state_allocator(cmd, &cmd->gfx) ||
++       !kk_encoder_state_allocator(cmd, cmd->post_gfx))
++      return false;
++   cmd->bb_mtl_released = false;
++   return true;
++}
++
++/* bbport (0009): reset with VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT:
++ * the ordinary reset, then release the allocators. A buffer whose allocators
++ * are already released has recorded nothing since (kk_BeginCommandBuffer
++ * recreates them before anything can be recorded), so it is already in the
++ * fully reset state and a second reset-with-release is a no-op. */
++static void
++kk_reset_cmd_buffer_release(struct kk_cmd_buffer *cmd)
++{
++   if (cmd->bb_mtl_released)
++      return;
++
++   vk_command_buffer_reset(&cmd->vk);
++   kk_reset_cmd_buffer_internal(cmd);
++   kk_cmd_buffer_release_mtl(cmd);
++   cmd->submitted = false;
++   cmd->one_time_submit = false;
++}
++
+ static void
+ kk_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
+-                    UNUSED VkCommandBufferResetFlags flags)
++                    VkCommandBufferResetFlags flags)
+ {
+    struct kk_cmd_buffer *cmd =
+       container_of(vk_cmd_buffer, struct kk_cmd_buffer, vk);
+ 
++   /* bbport (0009): the only caller of the release; see
++    * kk_cmd_buffer_release_mtl for why it is safe here. Without the flag the
++    * reset below is unchanged. */
++   if (unlikely(flags & VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT)) {
++      kk_reset_cmd_buffer_release(cmd);
++      return;
++   }
++
+    vk_command_buffer_reset(&cmd->vk);
+    kk_reset_cmd_buffer_internal(cmd);
+    cmd->submitted = false;
+@@ -241,12 +373,34 @@ const struct vk_command_buffer_ops kk_cmd_buffer_ops = {
+    .destroy = kk_destroy_cmd_buffer,
+ };
+ 
++/* bbport (0009): vk_common_ResetCommandBuffer, except that a reset with
++ * RELEASE_RESOURCES_BIT also reaches a command buffer in the initial state that
++ * still holds its allocators (e.g. one reset without the flag earlier). Without
++ * the flag this is exactly the common implementation. */
++VKAPI_ATTR VkResult VKAPI_CALL
++kk_ResetCommandBuffer(VkCommandBuffer commandBuffer,
++                      VkCommandBufferResetFlags flags)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++
++   if (cmd->vk.state != MESA_VK_COMMAND_BUFFER_STATE_INITIAL ||
++       ((flags & VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) &&
++        !cmd->bb_mtl_released))
++      kk_cmd_buffer_ops.reset(&cmd->vk, flags);
++
++   return VK_SUCCESS;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
+                       const VkCommandBufferBeginInfo *pBeginInfo)
+ {
+    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
+ 
++   /* bbport (0009): a reset with RELEASE_RESOURCES_BIT released the
++    * allocators; recreate them before the reset below, which uses them. */
++   if (unlikely(cmd->bb_mtl_released) && !kk_cmd_buffer_recreate_mtl(cmd))
++      return vk_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    kk_reset_cmd_buffer(&cmd->vk, 0u);
+    vk_command_buffer_begin(&cmd->vk, pBeginInfo);
+    /* bbport (BB_KK_BARRIER=lite): Metal 4 adds no synchronisation between
+@@ -341,7 +495,8 @@ cs_start_render(struct kk_cmd_buffer *cmd)
+ 
+    cmd->gfx.cmd_buf = mtl_new_command_buffer(dev->mtl_handle);
+    kk_bbstat_add(KK_BBSTAT_MTL_CMD_BUFS_CREATED, 1);
+-   mtl_begin_command_buffer(cmd->gfx.cmd_buf, cmd->gfx.allocator);
++   mtl_begin_command_buffer(cmd->gfx.cmd_buf,
++                            kk_encoder_state_allocator(cmd, &cmd->gfx));
+    cmd->gfx.encoder = mtl_new_render_command_encoder_with_descriptor(
+       cmd->gfx.cmd_buf, state->render_pass_descriptor);
+ 
+@@ -422,7 +577,7 @@ kk_start_compute_encoder(struct kk_cmd_buffer *cmd, bool pre_gfx)
+ 
+    es->cmd_buf = mtl_new_command_buffer(kk_cmd_buffer_device(cmd)->mtl_handle);
+    kk_bbstat_add(KK_BBSTAT_MTL_CMD_BUFS_CREATED, 1);
+-   mtl_begin_command_buffer(es->cmd_buf, es->allocator);
++   mtl_begin_command_buffer(es->cmd_buf, kk_encoder_state_allocator(cmd, es));
+    es->encoder = mtl_new_compute_command_encoder(es->cmd_buf);
+ 
+    /* Argument table won't ever change */
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index b5f8bdd..4a1d4cd 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -277,6 +277,11 @@ struct kk_cmd_buffer {
+     * cs_start_render opens a new Vulkan render pass (else it restarts one). */
+    uint32_t bb_pending_before;
+    bool bb_new_pass;
++   /* bbport (0009): a reset with VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT
++    * released the three MTL4CommandAllocators of the encoder states. The next
++    * kk_BeginCommandBuffer recreates them (kk_encoder_state_allocator); a
++    * second reset-with-release while this is set is a no-op. */
++   bool bb_mtl_released;
+ };
+ 
+ VK_DEFINE_HANDLE_CASTS(kk_cmd_buffer, vk.base, VkCommandBuffer,
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index c57c746..7571bdb 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -110,7 +110,8 @@ kk_bbstats_maybe_print(void)
+            "KosmicKrisp: heaps %lld live, %lld MiB (created %lld, destroyed %lld; "
+            "upload blocks %lld/%lld, large uploads %lld/%lld); "
+            "Metal command buffers %lld live (%lld created); "
+-           "command allocators %lld holding %lld MiB; "
++           "command allocators %lld holding %lld MiB "
++           "(released by reset %lld holding %lld MiB before release, recreated %lld); "
+            "images %lld, image views %lld, buffer views %lld, buffers %lld, "
+            "samplers %lld, shaders %lld, timelines %lld; "
+            "Metal commits %lld (re-recorded %lld); "
+@@ -123,6 +124,9 @@ kk_bbstats_maybe_print(void)
+            s[KK_BBSTAT_MTL_CMD_BUFS_CREATED] - s[KK_BBSTAT_MTL_CMD_BUFS_RELEASED],
+            s[KK_BBSTAT_MTL_CMD_BUFS_CREATED],
+            s[KK_BBSTAT_ALLOCATORS], s[KK_BBSTAT_ALLOCATOR_BYTES] >> 20,
++           s[KK_BBSTAT_ALLOCATORS_RELEASED],
++           s[KK_BBSTAT_ALLOCATOR_RELEASED_BYTES] >> 20,
++           s[KK_BBSTAT_ALLOCATORS_RECREATED],
+            s[KK_BBSTAT_IMAGES], s[KK_BBSTAT_IMAGE_VIEWS], s[KK_BBSTAT_BUFFER_VIEWS],
+            s[KK_BBSTAT_BUFFERS], s[KK_BBSTAT_SAMPLERS], s[KK_BBSTAT_SHADERS],
+            s[KK_BBSTAT_TIMELINES], s[KK_BBSTAT_COMMITS], s[KK_BBSTAT_RERECORDS],
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index 2d0e78c..1ceb83e 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -171,6 +171,13 @@ enum kk_bbstat {
+    KK_BBSTAT_ENC_RENDER_WAITS_ALL,
+    KK_BBSTAT_VTX_FROM_MEMORY,
+    KK_BBSTAT_VTX_FROM_IMAGE,
++   /* bbport (0009): command allocators released by an application reset with
++    * VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT, the allocated size they
++    * held at the release (summed, bytes), and allocators recreated by the next
++    * kk_BeginCommandBuffer. */
++   KK_BBSTAT_ALLOCATORS_RELEASED,
++   KK_BBSTAT_ALLOCATOR_RELEASED_BYTES,
++   KK_BBSTAT_ALLOCATORS_RECREATED,
+    KK_BBSTAT_COUNT,
+ };
+ extern int64_t kk_bbstats[KK_BBSTAT_COUNT];
