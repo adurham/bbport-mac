@@ -74,6 +74,24 @@ bool LifoOn() {
     return on;
 }
 
+/// BB_CMDBUF_LIFO=1: the index of the free entry that was used most recently, or entries.size()
+/// when the GPU is not done with any of them. An entry never handed out has tick 0, so it is free.
+template <typename Entries>
+size_t NewestFreeIndex(const Entries& entries, u64 done) {
+    size_t best = entries.size(); // no free buffer yet
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].tick > done) {
+            continue;
+        }
+        // On a tie the earliest entry wins: the comparison is strict, so the first index holding
+        // the newest last_use is the one kept.
+        if (best == entries.size() || entries[i].last_use > entries[best].last_use) {
+            best = i;
+        }
+    }
+    return best;
+}
+
 /// The pools alive right now. The per-frame hook owns none of the recording threads' pools, so the
 /// stats line and the release sweep can only reach them through this list; with both gates off
 /// nothing is tracked and the list stays empty.
@@ -222,6 +240,18 @@ vk::CommandBuffer CommandPool::Commit() {
             timeline->Refresh();
         }
         const u64 done = timeline->KnownGpuTick();
+        // BB_CMDBUF_LIFO=1: the pre-pass's selection, asked of the retry after this Refresh instead
+        // of the rotation: the most recently used buffer the Refresh shows the GPU is done with,
+        // not the next one in turn. The rotation here is what kept the whole pool hot (measured:
+        // 58 of 64 buffers idle <= 1 s) and left BB_CMDBUF_RELEASE_IDLE nothing to age. Only when
+        // no buffer at all is free do the searches below run, so a reuse stays a reuse and a miss
+        // still grows exactly as it does with the gate off.
+        if (attempt == 1 && LifoOn()) {
+            const size_t best = NewestFreeIndex(entries, done);
+            if (best != entries.size()) {
+                return take(best);
+            }
+        }
         for (size_t i = next; i < entries.size(); ++i) {
             if (entries[i].tick <= done) {
                 return take(i);
