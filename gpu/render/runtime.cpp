@@ -147,6 +147,7 @@ Runtime::~Runtime() = default;
 
 void Runtime::TickFrame() {
     staging_pool.TickFrame();
+    ReportCommandBufferPools(); // BB_CMDBUF_STATS: one line per 10 s window
 }
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* buffer, u64 offset, u64 size,

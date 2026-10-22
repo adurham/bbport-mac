@@ -35,4 +35,8 @@ private:
     size_t next = 0; ///< where the search starts: buffers are reused in turn
 };
 
+/// BB_CMDBUF_STATS=1: one line per 10 s window on the pools (commits, reuse, growth, live
+/// buffers). Prints nothing while the gate is off.
+void ReportCommandBufferPools();
+
 } // namespace Vulkan
