@@ -57,6 +57,11 @@ if [[ -f $owner_ini ]]; then
 elif [[ -f $here/bbport.ini ]]; then
     cp "$here/bbport.ini" "$dir/bbport.ini"
 fi
+# INI_SET="key=value ...": keys appended to the run's own copy of bbport.ini (a settings-only path,
+# e.g. kk_preload=1, proven without an env var). The owner's file is only ever read.
+for kv in ${INI_SET:-}; do
+    echo "$kv" >>"$dir/bbport.ini"
+done
 
 : >"$dir/pipe.txt"
 : >"$dir/kk.txt"

@@ -78,4 +78,55 @@ version=$(cat .version 2>/dev/null || git log -1 --format='%h' 2>/dev/null || ec
 # Paths in the log as ~/…, so a log shared in a report doesn't show the account name.
 tilde() { [[ -n ${HOME:-} && $1 == "$HOME"/* ]] && printf '~/%s' "${1#"$HOME"/}" || printf '%s' "$1"; }
 echo "macOS run: $(sw_vers -productVersion), bbport $version, game $(tilde "$BB_GAME_DIR"), fps ${BB_FPS:-menu}, upscaler ${BB_UPSCALER:-from $(tilde "$ini")}"
+# KosmicKrisp preload (patch 0008, docs/KK_AIR_ARCHIVE.md "Shipping"): precompiled AIR libraries,
+# Metal 4 pipeline archives and a Mesa shader cache, so a first visit to an area does not compile its
+# pipelines. OFF unless bbport.ini has kk_preload=1 (BB_KK_PRELOAD=0/1 overrides for one run). The
+# artefacts live in BB_KK_PRELOAD_DIR (default ~/Games/Bloodborne/kk-artefacts, filled by
+# tools/macos/kk_preload_install.sh). With it off nothing below sets anything: the driver sees none of
+# BB_KK_AIR_DIR / BB_KK_ARCHIVES / MESA_SHADER_CACHE_DIR and takes its upstream path.
+kk_preload=${BB_KK_PRELOAD:-}
+if [[ -z $kk_preload && -f $ini ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ $line =~ ^kk_preload=([01])$ ]] && kk_preload=${BASH_REMATCH[1]}
+    done < "$ini"
+fi
+if [[ $kk_preload == 1 ]]; then
+    kkp=${BB_KK_PRELOAD_DIR:-$HOME/Games/Bloodborne/kk-artefacts}
+    kk_air=0 kk_seg=0
+    if [[ -d $kkp/air ]]; then
+        for f in "$kkp"/air/*.metallib; do [[ -f $f ]] && kk_air=$((kk_air + 1)); done
+    fi
+    if [[ -d $kkp/archive ]]; then
+        for f in "$kkp"/archive/*.mtl4archive; do [[ -f $f ]] && kk_seg=$((kk_seg + 1)); done
+    fi
+    # The Mesa cache is keyed on the driver's build-id (its LC_UUID): only point the driver at the
+    # shipped one when the driver bb-gpu loads is the build the cache was filled by.
+    kk_dylib=${BB_GPU_DEPS:-$PWD/deps-arm64}/lib/kosmickrisp/libvulkan_kosmickrisp.dylib
+    [[ -f .packaged ]] && kk_dylib=$PWD/lib/kosmickrisp/libvulkan_kosmickrisp.dylib
+    kk_uuid=$(otool -l "$kk_dylib" 2>/dev/null | awk '/LC_UUID/ {f=1} f && $1 == "uuid" {print $2; exit}')
+    kk_want=$(cat "$kkp/DRIVER_UUID" 2>/dev/null || true)
+    kk_mesa="not used"
+    if [[ -d $kkp/mesa/mesa_shader_cache && -n $kk_uuid && $kk_uuid == "$kk_want" ]]; then
+        # The driver writes into its cache: it gets its own copy in the data dir (an APFS clone,
+        # made once per driver build), so the shipped one stays as shipped and the player's own
+        # pipelines are kept on top of it from then on.
+        kk_cache=$data/out/kk-mesa-$kk_uuid
+        if [[ ! -d $kk_cache/mesa_shader_cache ]]; then
+            rm -rf "$kk_cache.tmp" && mkdir -p "$kk_cache.tmp" &&
+                cp -cR "$kkp/mesa/mesa_shader_cache" "$kk_cache.tmp/" && mv "$kk_cache.tmp" "$kk_cache"
+        fi
+        if [[ -d $kk_cache/mesa_shader_cache ]]; then
+            export MESA_SHADER_CACHE_DIR=$kk_cache
+            kk_mesa="Mesa cache $(tilde "$kk_cache") (seeded from $(tilde "$kkp/mesa"), driver $kk_uuid)"
+        else
+            kk_mesa="Mesa cache: copying $(tilde "$kkp/mesa") to $(tilde "$kk_cache") failed; not used"
+        fi
+    elif [[ -d $kkp/mesa/mesa_shader_cache ]]; then
+        kk_mesa="Mesa cache skipped: built for driver ${kk_want:-unknown}, this driver is ${kk_uuid:-unknown}"
+    fi
+    if ((kk_air > 0)); then export BB_KK_AIR_DIR=$kkp/air; fi
+    if ((kk_seg > 0)); then export BB_KK_ARCHIVES=$kkp/archive; fi
+    echo "KK preload: on (kk_preload=1), $(tilde "$kkp"): $kk_air AIR libraries, $kk_seg archive segments, $kk_mesa"
+    ((kk_air > 0 || kk_seg > 0)) || echo "KK preload: nothing found in $(tilde "$kkp"); run tools/macos/kk_preload_install.sh"
+fi
 exec bash run.sh "$@"

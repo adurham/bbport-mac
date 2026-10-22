@@ -26,7 +26,11 @@ shift 3
 case $driver in
     base) deps=$here/deps-arm64-base ;;
     0008) deps=$here/deps-arm64 ;;
-    *) echo "DRIVER must be base or 0008" >&2; exit 2 ;;
+    # the native line's own driver (bbport-mac-native/deps-arm64), and today's driver before 0008 was
+    # installed there (deps-arm64-today: a symlink farm onto its backup, see docs/KK_AIR_ARCHIVE.md)
+    native) deps=${BB_NATIVE_DEPS:-$HOME/repos/bbport-mac-native/deps-arm64} ;;
+    today) deps=$here/deps-arm64-today ;;
+    *) echo "DRIVER must be base, 0008, native or today" >&2; exit 2 ;;
 esac
 out=$here/out/kkair/$tag
 mkdir -p "$here/out/kkair"
@@ -56,7 +60,7 @@ mkdir -p "$mesa"
 if [[ -n ${MESA_SEED:-} ]]; then
     cp -cR "$MESA_SEED"/. "$mesa"/
 fi
-echo "kkair $tag: driver=$driver deps=$deps metal=${METAL:-cold} mesa=$mesa seed=${MESA_SEED:-none} store=${STORE:-empty} env: $*" | tee "$out/config.txt"
+echo "kkair $tag: driver=$driver ($(otool -l "$deps/lib/kosmickrisp/libvulkan_kosmickrisp.dylib" | awk '/LC_UUID/ {f=1} f && $1 == "uuid" {print $2; exit}')) deps=$deps ini_set=${INI_SET:-} metal=${METAL:-cold} mesa=$mesa seed=${MESA_SEED:-none} store=${STORE:-empty} env: $*" | tee "$out/config.txt"
 du -sk "$mesa" "$metal_cache" 2>/dev/null | tee -a "$out/config.txt"
 
 trigger=$out/trigger

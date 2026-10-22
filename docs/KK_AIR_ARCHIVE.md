@@ -158,3 +158,28 @@ de-duplicated set (`base.archive.dedup.d`, 14 segments, 12 MB) measured the same
   0.049 / 18.3% and 0.024 / 6.8%. The first pair is above the floor and the second inside it. The
   first proof capture is the darker frame (luma 0.038 vs 0.044), a different moment of the walk. No
   corruption was seen, but this is not a pixel proof.
+
+## Shipping: the `kk_preload` switch (2026-10-22, branch feat/kk-preload-ship)
+
+- **Driver.** The native line's KosmicKrisp (`bbport-mac-native/deps-arm64/src/mesa-kosmickrisp`) now
+  carries the whole series 0001-0008, applied in order to a clean Mesa dc41592 (`git apply --check`
+  of every patch passes; the result is file-identical to this worktree's `kk-src`) and rebuilt with
+  the incremental recipe of `KK_GPU_WALL.md` (0 errors). The installed dylib is the capture driver
+  itself (UUID C5B640F8-..., built from the same source), because the shipped Mesa cache is keyed on
+  that build-id; a fresh build of the same source gets a new UUID (82EB0460-... here) and would miss
+  every Mesa entry. Today's driver is kept in `deps-arm64/lib/kosmickrisp.backup-20261022/`
+  (UUID 43D6ABE8-..., built from 0001-0004 only: its stamp `5b955b1a52cce246` is the hash of 0001-0004,
+  so 0005/0006 were in the patch directory but never in the driver until now).
+  Restore: `cp deps-arm64/lib/kosmickrisp.backup-20261022/{libvulkan_kosmickrisp.dylib,kosmickrisp_mesa_icd.json,.bbport-patches} deps-arm64/lib/kosmickrisp/`.
+  `setup_deps.sh` in a checkout whose patch directory lacks 0007/0008 sees a different stamp and
+  rebuilds the driver from its own patches: merge this branch before running it there.
+- **Switch.** One ini key, `kk_preload=1` in `bbport.ini` (default absent = off; `BB_KK_PRELOAD=0/1`
+  for one run). `tools/macos/run.sh` reads it with bash builtins, so the app bootstrap
+  (`bb_game_launcher.swift`, which sets `BB_CONFIG` to the app's ini and execs run.sh) needs no change.
+  `BbSettings::Save()` keeps keys it does not know, so the in-game menu never drops it.
+- **Artefacts.** `~/Games/Bloodborne/kk-artefacts/{air,archive,mesa}` + `DRIVER_UUID`, installed by
+  `tools/macos/kk_preload_install.sh`, described in `docs/KK_PRELOAD_ARTEFACTS.md` (copied beside them as
+  README.md). Not committed: 36 MB of driver-build-specific binaries.
+- **Harness.** `kkair_run.sh` drivers `native` (the native line's deps-arm64) and `today`
+  (`deps-arm64-today`, a symlink farm onto the backup), and `INI_SET="key=value"` appends to the run's
+  own ini copy (sizing_run.sh), so the switch is proven through the settings path with no `BB_KK_*` env.
