@@ -124,3 +124,25 @@ So neither lifetime nor capacity can fix it. The only remaining lever is **what 
 per draw**: 122 MB for one buffer's share of a ~1 500-draw frame is tens of KB per draw, three orders
 of magnitude above what Metal command encoding should need. The next investigation is the gfx
 encoder path in `kk_cmd_buffer.c` / the argument and descriptor emission, priced in bytes per draw.
+
+## Segment size: a real dial, not the fix (2026-10-22, measured)
+
+`BB_VK_SEGMENT_KB` (default 64; `scheduler.cpp:124-125`) sets how many bytes of closures go into one
+recording segment, and therefore how many render passes each Metal command buffer holds. Measured on
+the probe driver, hidden runs, same save:
+
+| BB_VK_SEGMENT_KB | command buffers | allocators held | frame rate (indicative, load-contaminated) |
+|---|---|---|---|
+| 8 | 147 | **20 847 MiB** | 10 fps |
+| 64 (default) | 86 | **~10 000 MiB** | 42 fps |
+| 256 | 105 | **5 812 MiB** | 21 fps |
+
+So the block moves with segmentation in both directions - smaller segments multiply the buffers and
+explode the block, larger ones halve it - but the frame-rate cost goes the other way, and none of
+these settings is a fix. The trade is buffer count against slabs per buffer.
+
+Two data-quality notes, both learned the hard way here: the driver's `command allocators N holding M
+MiB` counter is the authoritative live number (a sum over every allocator ever seen in the
+`BB_KK_ALLOC_LOG` file double-counts dead ones and overstated the 8 KB run by ~60x), and cross-run
+frame rates on this machine are not comparable while other work is running - only the memory figures
+are solid.
