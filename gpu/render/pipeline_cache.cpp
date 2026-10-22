@@ -1079,6 +1079,19 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
 
     if (sel.motion) {
         constexpr u32 mv = Shader::MotionVectors::Output;
+        // bbport 2026-10-21 (was BB_MOTION_SLOT_FIX): the loop above clears the formats of
+        // unwritten targets only below the fragment shader's own count. The motion block below raises
+        // the count to mv + 1, which exposed a bound-but-unwritten target's stale format (slot 6,
+        // RGBA16F) with no texture bound in the pass; Metal then writes the attachment-7 output 8
+        // bytes off, so the object's vector landed in z,w and its validity flag and depth were lost —
+        // FSR's compose pass accepted 0 pixels and every moving object was warped by the CAMERA's
+        // vector alone (docs/MOTION_CORRECTNESS_2026-10-21.md). Clearing those slots fixes it:
+        // moving-object pixels with a correct vector went 0.01% -> 100%, warp residual 0.0192 ->
+        // 0.0092, FSR output edge gradient +5.5%.
+        for (u32 cb = key.num_color_attachments; cb < mv; ++cb) {
+            key.color_buffers[cb] = {};
+            key.write_masks[cb] = {};
+        }
         key.motion_vectors = 1;
         key.mrt_mask |= 1u << mv;
         key.num_color_attachments = mv + 1;
