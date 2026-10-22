@@ -1,0 +1,20 @@
+== 1146 480 3440 1440
+MetalFX cmdbuf on KK's own textures, GPU ms: p50 0.491 p10 0.486 p90 0.510
+Vulkan pre -> MetalFX -> Vulkan post, submit-to-signal wall ms: p50 1.730 p10 1.676 p90 1.821
+RESULT: zero-copy OK (usage ok, content round-trips, no copies encoded anywhere)
+== 1147 480 3440 1440
+MetalFX cmdbuf on KK's own textures, GPU ms: p50 0.488 p10 0.483 p90 0.498
+Vulkan pre -> MetalFX -> Vulkan post, submit-to-signal wall ms: p50 1.735 p10 1.669 p90 1.837
+RESULT: zero-copy OK (usage ok, content round-trips, no copies encoded anywhere)
+== 1720 720 3440 1440
+MetalFX cmdbuf on KK's own textures, GPU ms: p50 0.649 p10 0.639 p90 0.697
+Vulkan pre -> MetalFX -> Vulkan post, submit-to-signal wall ms: p50 2.274 p10 2.230 p90 2.433
+RESULT: zero-copy OK (usage ok, content round-trips, no copies encoded anywhere)
+== 2294 960 3440 1440
+MetalFX cmdbuf on KK's own textures, GPU ms: p50 0.798 p10 0.786 p90 0.879
+Vulkan pre -> MetalFX -> Vulkan post, submit-to-signal wall ms: p50 2.533 p10 2.481 p90 2.735
+RESULT: zero-copy OK (usage ok, content round-trips, no copies encoded anywhere)
+== 854 480 2560 1440
+MetalFX cmdbuf on KK's own textures, GPU ms: p50 0.365 p10 0.362 p90 0.369
+Vulkan pre -> MetalFX -> Vulkan post, submit-to-signal wall ms: p50 1.424 p10 1.344 p90 1.568
+RESULT: zero-copy OK (usage ok, content round-trips, no copies encoded anywhere)

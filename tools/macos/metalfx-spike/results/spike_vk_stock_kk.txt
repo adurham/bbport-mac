@@ -1,0 +1,4 @@
+Vulkan device: Apple M4 Max (driver 26.2.99)
+VK_EXT_metal_objects advertised: yes
+export: MTLDevice NULL; textures color 0x0 depth 0x0 motion 0x0 output 0x0
+RESULT: export returned NULL (driver lacks patch 0007)

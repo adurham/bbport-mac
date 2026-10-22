@@ -1,0 +1,22 @@
+Vulkan device: Apple M4 Max (driver 26.2.99)
+VK_EXT_metal_objects advertised: yes
+output: private MTLTexture 0x74bd208280 imported as VkImage
+export: MTLDevice Apple M4 Max; textures color 0x100928440 depth 0x10092b7e0 motion 0x10092ca60 output 0x74bd208280
+  color  1146x480 fmt 115 storage 0 hazard 1 usage 0x7 heap yes gpuOptimized 1
+  depth  1146x480 fmt 260 storage 0 hazard 1 usage 0x17 heap yes gpuOptimized 1
+  motion 1146x480 fmt 65 storage 0 hazard 1 usage 0x7 heap yes gpuOptimized 1
+  output 3440x1440 fmt 115 storage 2 hazard 2 usage 0x7 heap no gpuOptimized 1
+  usage color  needs 0x1 has 0x7 -> ok
+  usage depth  needs 0x1 has 0x17 -> ok
+  usage motion needs 0x1 has 0x7 -> ok
+  usage output needs 0x7 has 0x7 -> ok
+  output storage private required by the header; exported output is private
+timeline MTLSharedEvent: 0x74bd024940
+  frame 0: vulkan wrote r=0.375; vulkan read back MetalFX output centre = 0.375 0.500 0.750 1.000
+  frame 1: vulkan wrote r=0.250; vulkan read back MetalFX output centre = 0.250 0.500 0.750 1.000
+  frame 329: vulkan wrote r=0.250; vulkan read back MetalFX output centre = 0.250 0.500 0.750 1.000
+render 1146x480 -> output 3440x1440, 300 timed frames
+MetalFX cmdbuf on KK's own textures, GPU ms: p50 0.492 p10 0.487 p90 0.499
+Vulkan pre -> MetalFX -> Vulkan post, submit-to-signal wall ms: p50 1.774 p10 1.689 p90 1.873
+  breakdown p50: submit->MetalFX GPU start 0.484 ms (Vulkan scene + cross-queue wake), MetalFX GPU end->Vulkan post done 0.796 ms
+RESULT: zero-copy OK (usage ok, content round-trips, no copies encoded anywhere)

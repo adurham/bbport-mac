@@ -1,0 +1,26 @@
+device Apple M4 Max, MetalFX temporal supported=1, scale range 1.00..3.00
+render 1146x480 -> output 3440x1440 (3.00x), 300 timed frames after 30 warm
+A1 private inputs, private output (ceiling)
+    readback centre px: 0.250 0.500 0.750 1.000
+    scale cmdbuf GPU ms  p50 0.496  p10 0.492  p90 0.501  mean 0.496
+    whole chain GPU ms   p50 0.496  p10 0.492  p90 0.501  mean 0.496
+A2 KK-style inputs (D32), private output
+    readback centre px: 0.250 0.500 0.750 1.000
+    scale cmdbuf GPU ms  p50 0.494  p10 0.490  p90 0.499  mean 0.494
+    whole chain GPU ms   p50 0.494  p10 0.490  p90 0.499  mean 0.494
+A3 KK-style inputs (D32S8), private output
+    readback centre px: 0.250 0.500 0.750 1.000
+    scale cmdbuf GPU ms  p50 0.499  p10 0.494  p90 0.505  mean 0.500
+    whole chain GPU ms   p50 0.499  p10 0.494  p90 0.505  mean 0.500
+A4 KK-style inputs, private output + blit to KK-shared
+    readback centre px: 0.250 0.500 0.750 1.000
+    scale cmdbuf GPU ms  p50 0.498  p10 0.492  p90 0.505  mean 0.502
+    whole chain GPU ms   p50 1.264  p10 1.242  p90 1.342  mean 1.283
+A5 KK-style inputs, KK-shared output directly
+    readback centre px: 0.250 0.500 0.750 1.000
+    scale cmdbuf GPU ms  p50 0.497  p10 0.493  p90 0.502  mean 0.497
+    whole chain GPU ms   p50 0.497  p10 0.493  p90 0.502  mean 0.497
+A6 today's path GPU side: 3 buf->tex uploads + scale + tex->buf
+    readback centre px: 0.000 0.000 0.000 1.000
+    scale cmdbuf GPU ms  p50 0.485  p10 0.479  p90 0.494  mean 0.489
+    whole chain GPU ms   p50 1.567  p10 1.471  p90 1.734  mean 1.626

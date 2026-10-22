@@ -1,0 +1,63 @@
+--- a/src/kosmickrisp/vulkan/kk_image.h
++++ b/src/kosmickrisp/vulkan/kk_image.h
+@@ -53,6 +53,10 @@
+    /* Forces alpha value to be one when creating views. Needed for WSI */
+    bool wsi_opaque_alpha;
+ 
++   /* bbport 0008: plane 0 is a caller-owned MTLTexture (VkImportMetalTextureInfoEXT); no
++    * VkDeviceMemory backs it and binds are no-ops. */
++   bool imported_mtl;
++
+    uint8_t plane_count;
+    struct kk_image_plane planes[3];
+ };
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -594,6 +594,9 @@
+ kk_image_finish(struct kk_device *dev, struct kk_image *image,
+                 const VkAllocationCallbacks *pAllocator)
+ {
++   if (image->imported_mtl && image->planes[0].mtl_handle)
++      kk_device_remove_buffer_from_residency_set(
++         dev, (mtl_buffer *)image->planes[0].mtl_handle);
+    for (uint8_t plane = 0; plane < image->plane_count; plane++) {
+       kk_image_plane_finish(dev, &image->planes[plane], image->vk.create_flags,
+                             pAllocator);
+@@ -626,6 +629,26 @@
+       return result;
+    }
+ 
++   /* bbport 0008 (spike/metalfx-tail): VK_EXT_metal_objects import. The image is the given
++    * MTLTexture (e.g. a private texture MetalFX writes, which a KosmicKrisp heap texture can
++    * never be: every KK heap is MTLStorageModeShared). Same shape as the WSI drawable bind
++    * (kk_wsi.c kk_bind_drawable_to_vkimage), plus residency for KK's MTL4 queue. */
++   const VkImportMetalTextureInfoEXT *import_tex =
++      vk_find_struct_const(pCreateInfo->pNext, IMPORT_METAL_TEXTURE_INFO_EXT);
++   if (import_tex && import_tex->mtlTexture) {
++      if (image->plane_count != 1) {
++         kk_image_finish(dev, image, pAllocator);
++         vk_free2(&dev->vk.alloc, pAllocator, image);
++         return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
++      }
++      struct kk_image_plane *plane = &image->planes[0];
++      plane->mtl_handle = mtl_retain((mtl_texture *)import_tex->mtlTexture);
++      plane->addr = mtl_texture_get_gpu_resource_id(plane->mtl_handle);
++      image->imported_mtl = true;
++      kk_device_add_buffer_to_residency_set(dev, (mtl_buffer *)plane->mtl_handle);
++      kk_bbstat_add(KK_BBSTAT_IMAGES, 1);
++   }
++
+    *pImage = kk_image_to_handle(image);
+ 
+    return VK_SUCCESS;
+@@ -928,6 +951,10 @@
+       return VK_SUCCESS;
+    }
+ #endif
++
++   /* bbport 0008: an imported MTLTexture is already the image's storage. */
++   if (image->imported_mtl)
++      return VK_SUCCESS;
+ 
+    uint64_t offset_B = info->memoryOffset;
+    if (image->disjoint) {

@@ -1,0 +1,15 @@
+2026-10-21 20:45:02.468 spike_vk[86179:6247551] Metal API Validation Enabled
+/AppleInternal/Library/BuildRoots/4~CZ-OugAkBDdLGCAEOB6qGKO69enBnjcLBLD-dLI/Library/Caches/com.apple.xbs/TemporaryDirectory.N6eU3w/Sources/MetalFX/Framework/MetalFXTemporalScalingEffectV4.mm:627: failed assertion `outputTexture must have private storage mode'
+Vulkan device: Apple M4 Max (driver 26.2.99)
+VK_EXT_metal_objects advertised: yes
+export: MTLDevice Apple M4 Max; textures color 0x762eccdb80 depth 0x762ecce1c0 motion 0x762ecce6c0 output 0x762ecced00
+  color  1146x480 fmt 115 storage 0 hazard 1 usage 0x7 heap yes gpuOptimized 1
+  depth  1146x480 fmt 260 storage 0 hazard 1 usage 0x17 heap yes gpuOptimized 1
+  motion 1146x480 fmt 65 storage 0 hazard 1 usage 0x7 heap yes gpuOptimized 1
+  output 3440x1440 fmt 115 storage 0 hazard 1 usage 0x7 heap yes gpuOptimized 1
+  usage color  needs 0x1 has 0x7 -> ok
+  usage depth  needs 0x1 has 0x17 -> ok
+  usage motion needs 0x1 has 0x7 -> ok
+  usage output needs 0x7 has 0x7 -> ok
+  output storage private required by the header; exported output is SHARED (not private)
+timeline MTLSharedEvent: 0x762ebcf8d0
