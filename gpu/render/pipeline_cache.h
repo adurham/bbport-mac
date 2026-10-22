@@ -119,6 +119,20 @@ struct PrepWorker {
 struct PreparedDraw;
 class PipelineCompiler;
 
+/// Why the background compiler declined a pipeline: the first gate that said no, so the sizing
+/// measurement (BB_PIPE_TIMING) can say which one keeps a hitch on the drawing thread.
+enum class AsyncDecline : u8 {
+    None = 0,      ///< it did not decline: the pipeline compiles in the background
+    Disabled,      ///< BB_ASYNC_PIPELINES=0
+    NoVertexInput, ///< no VK_EXT_vertex_input_dynamic_state and not BB_ASYNC_STATIC_VI=1
+    FrameDraws,    ///< the frame before had fewer than the policy's draw floor
+    Indirect,      ///< an indirect draw (its size is unknown here)
+    FullScreen,    ///< a full-screen pass (one triangle or quad)
+    NoTarget,      ///< the draw has no render target
+    TargetStreak,  ///< the target was not drawn to in each of the policy's frames
+};
+const char* AsyncDeclineName(AsyncDecline reason);
+
 class PipelineCache {
 public:
     explicit PipelineCache(const Instance& instance, Scheduler& scheduler,
@@ -242,7 +256,8 @@ private:
         u32 frames = 0;
     };
     void NoteDrawTarget(const Gcn::Regs& regs);
-    bool AsyncSkippable(const PipelineSelection& sel, bool indirect);
+    bool AsyncSkippable(const PipelineSelection& sel, bool indirect,
+                        AsyncDecline* why = nullptr);
     const GraphicsPipeline* CompileInBackground(const PipelineSelection& sel);
     const GraphicsPipeline* FinishPipeline(const GraphicsPipelineKey& key, PendingPipeline& job);
     tsl::robin_map<GraphicsPipelineKey, std::shared_ptr<PendingPipeline>> pending_graphics;

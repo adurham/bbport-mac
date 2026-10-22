@@ -1,0 +1,149 @@
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 3559865..a390ba4 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -24,6 +24,50 @@
+ #include "nir_builder.h"
+ #include "nir_lower_blend.h"
+ 
++/* bbport (BB_KK_TIMING): the driver's own layers, per pipeline, on stderr.
++ *
++ * A graphics pipeline the port creates costs three separate things here: SPIR-V->NIR->MSL (skipped
++ * when the driver's on-disk shader cache holds it), Metal's MTLLibrary for the generated MSL (never
++ * cached: MSL is source text), and Metal's render pipeline state (never cached either). One line
++ * per graphics pipeline, so the port's own per-pipeline line (BB_PIPE_TIMING) can be split by
++ * layer. Off unless BB_KK_TIMING names a file; it reads the clock and prints, nothing else. */
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include "util/os_time.h"
++
++static _Thread_local int64_t kk_t_nir_msl_ns; /* the MSL compile that preceded this pipeline */
++static _Thread_local int kk_t_cache_hit;      /* the shader came back from the disk cache */
++
++static FILE *
++kk_timing_file(void)
++{
++   static FILE *file;
++   static bool tried;
++   if (!tried) {
++      tried = true;
++      const char *path = getenv("BB_KK_TIMING");
++      if (path != NULL && path[0] != '\0')
++         file = fopen(path, "a");
++   }
++   return file;
++}
++
++static void
++kk_timing_report(int64_t lib_ns, int64_t pso_ns)
++{
++   FILE *file = kk_timing_file();
++   if (file == NULL)
++      return;
++   fprintf(file, "KKPIPE tid=%lu hit=%d nir_msl_us=%.1f lib_us=%.1f pso_us=%.1f\n",
++           (unsigned long)pthread_self(), kk_t_cache_hit, kk_t_nir_msl_ns / 1000.0,
++           lib_ns / 1000.0, pso_ns / 1000.0);
++   fflush(file);
++   kk_t_cache_hit = 0;
++   kk_t_nir_msl_ns = 0;
++}
++
+ #include "poly/nir/poly_nir.h"
+ 
+ #include "vk_blend.h"
+@@ -857,6 +901,7 @@ kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+    ralloc_free((void *)data->code);
+ 
+    vk_shader_free(&dev->vk, pAllocator, &shader->vk);
++   kk_bbstat_add(KK_BBSTAT_SHADERS, -1);
+ }
+ 
+ static bool
+@@ -993,6 +1038,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+       ralloc_free(nir);
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+    }
++   kk_bbstat_add(KK_BBSTAT_SHADERS, 1);
+ 
+    gather_shader_info(shader, nir, state);
+ 
+@@ -1438,9 +1484,11 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+    }
+ 
+    const struct msl_compile_data *vs_data = &vs->msl_data[vs_stage];
++   int64_t kk_t0 = os_time_get_nano();
+    mtl_library *vertex_library = mtl_new_library(
+       device->mtl_compiler_handle, vs_data->code, pdev->info.msl_version,
+       MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
++   int64_t kk_lib_ns = os_time_get_nano() - kk_t0;
+    if (vertex_library == NULL)
+       return VK_ERROR_INVALID_SHADER_NV;
+ 
+@@ -1449,9 +1497,11 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+                                           vs_data->entrypoint_name);
+ 
+    const struct msl_compile_data *fs_data = &vs->msl_data[MESA_SHADER_FRAGMENT];
++   kk_t0 = os_time_get_nano();
+    mtl_library *fragment_library = mtl_new_library(
+       device->mtl_compiler_handle, fs_data->code, pdev->info.msl_version,
+       MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
++   kk_lib_ns += os_time_get_nano() - kk_t0;
+    if (fragment_library == NULL) {
+       result = VK_ERROR_INVALID_SHADER_NV;
+       goto destroy_vertex;
+@@ -1500,11 +1550,15 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+          pipeline_descriptor, vs->info.vs.has_alpha_to_one_enabled);
+    }
+ 
++   kk_t0 = os_time_get_nano();
+    pipe->gfx.render =
+       mtl_new_render_pipeline(device->mtl_compiler_handle, pipeline_descriptor);
++   int64_t kk_pso_ns = os_time_get_nano() - kk_t0;
+    if (pipe->gfx.render == NULL)
+       result = VK_ERROR_INVALID_SHADER_NV;
+ 
++   kk_timing_report(kk_lib_ns, kk_pso_ns);
++
+    mtl_release(pipeline_descriptor);
+    mtl_release(fragment_function);
+    mtl_release(fragment_library);
+@@ -1527,6 +1581,9 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+    struct kk_device *dev = container_of(device, struct kk_device, vk);
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+ 
++   /* bbport (BB_KK_TIMING): the NIR->MSL part of a graphics pipeline starts here. */
++   const int64_t kk_t_pipeline_start = os_time_get_nano();
++
+    enum kk_feature_key features = kk_make_feature_key(enabled_features);
+ 
+    /* Vulkan doesn't enforce a fragment shader to build pipelines. We may need
+@@ -1621,6 +1678,9 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+                                      local_size_threads, &s->pipeline.cs);
+    } else {
+       gather_graphics_pipeline_create_info(state, shaders, total_shaders);
++      /* bbport (BB_KK_TIMING): everything up to here was this pipeline's SPIR-V->NIR->MSL. */
++      kk_t_cache_hit = 0;
++      kk_t_nir_msl_ns = os_time_get_nano() - kk_t_pipeline_start;
+       result = kk_compile_graphics_pipeline(dev, shaders[0]);
+ 
+       /* Free generated fragment shader */
+@@ -1713,6 +1773,7 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+       &dev->vk, &kk_shader_ops, info.stage, pAllocator, sizeof(*shader));
+    if (shader == NULL)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
++   kk_bbstat_add(KK_BBSTAT_SHADERS, 1);
+ 
+    VkResult result = kk_msl_deserialize(blob, info.stage, shader);
+    if (result != VK_SUCCESS)
+@@ -1736,6 +1797,9 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+          dev, &shader->msl_data[MESA_SHADER_COMPUTE], local_size_threads,
+          &shader->pipeline.cs);
+    } else if (info.stage == MESA_SHADER_VERTEX) {
++      /* bbport (BB_KK_TIMING): from the on-disk cache: no NIR->MSL, and MTLLibrary/PSO still paid. */
++      kk_t_cache_hit = 1;
++      kk_t_nir_msl_ns = 0;
+       result = kk_compile_graphics_pipeline(dev, shader);
+    }
+ 

@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <pthread.h>
 #include <thread>
 #include <unordered_set>
 
@@ -75,6 +76,10 @@ enum class CompileLayer {
     Driver, ///< SPIR-V -> Metal pipeline state, in KosmicKrisp
 };
 
+/// Translation (CompileModule) this thread did for the pipeline it is selecting: read and cleared by
+/// the per-pipeline timing line (BB_PIPE_TIMING), so a pipeline's translating share is its own.
+thread_local u64 t_port_translate_ns = 0;
+
 void AddCompileTime(std::chrono::steady_clock::time_point start, CompileLayer layer) {
     const u64 ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now() - start)
@@ -98,8 +103,127 @@ struct CompileTimer {
     ~CompileTimer() {
         AddCompileTime(start, layer);
         ++g_bb_compiles;
+        if (layer == CompileLayer::Port) {
+            t_port_translate_ns += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now() - start)
+                                           .count());
+        }
     }
 };
+
+// ---- bbport BB_PIPE_TIMING: what each pipeline creation cost, and why it was not compiled ahead ---
+//
+// A hitch frame is compiled on the drawing thread, and the frame stats can only say how much of
+// that went to the port and how much to the driver. This log splits the driver's part against
+// KosmicKrisp's own timers (BB_KK_TIMING: NIR->MSL, MTLLibrary, Metal pipeline state) and records,
+// for every pipeline created, the async compiler's verdict and which gate declined it — the sizing
+// measurement behind docs/PIPELINE_SIZING.md. Off unless BB_PIPE_TIMING names a file.
+struct PipeTiming {
+    bool on{};
+    FILE* file{};
+    std::mutex mutex;
+    PipeTiming() {
+        const char* path = std::getenv("BB_PIPE_TIMING");
+        if (path && *path) {
+            file = std::fopen(path, "a");
+            on = file != nullptr;
+        }
+    }
+};
+
+PipeTiming& PipeTimingLog() {
+    static PipeTiming timing;
+    return timing;
+}
+
+void PipeNote(const std::string& line) {
+    PipeTiming& timing = PipeTimingLog();
+    if (!timing.on) {
+        return;
+    }
+    std::scoped_lock lock{timing.mutex};
+    std::fputs(line.c_str(), timing.file);
+    std::fflush(timing.file);
+}
+
+const char* StageName(Shader::SwStage stage) {
+    switch (stage) {
+    case Shader::SwStage::Vertex:
+        return "vs";
+    case Shader::SwStage::TessellationControl:
+        return "tcs";
+    case Shader::SwStage::TessellationEval:
+        return "tes";
+    case Shader::SwStage::Geometry:
+        return "gs";
+    case Shader::SwStage::Fragment:
+        return "ps";
+    case Shader::SwStage::Compute:
+        return "cs";
+    default:
+        return "?";
+    }
+}
+
+/// "vs_<program hash>,ps_<program hash>": which shaders the pipeline is for.
+std::string StageList(const PipelineSelection& sel) {
+    std::string list;
+    for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
+        const Shader::Info* info = sel.infos[stage];
+        if (info == nullptr) {
+            continue;
+        }
+        if (!list.empty()) {
+            list += ',';
+        }
+        list += fmt::format("{}_{:016x}", StageName(info->sw_stage), info->pgm_hash);
+    }
+    return list;
+}
+
+/// The frame's clock on the drawing thread: a pipeline line names its frame, and the frame line
+/// carries that frame's wall time and draw count, so a hitch can be matched to its pipelines
+/// without the flip log (whose timestamps start at the first flip).
+struct FrameClock {
+    u32 frame = ~0u;
+    std::chrono::steady_clock::time_point at{};
+    u64 draws_at = 0;
+    u64 draws = 0;
+    u64 created = 0;
+    u64 created_ns = 0;
+    u64 async_started = 0;
+    u64 async_skipped = 0;
+};
+
+thread_local FrameClock t_frame_clock;
+
+void NoteFrameForTiming() {
+    PipeTiming& timing = PipeTimingLog();
+    if (!timing.on) {
+        return;
+    }
+    const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+    if (frame == t_frame_clock.frame) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const u64 draws = BbStats::draws.load(std::memory_order_relaxed);
+    if (t_frame_clock.frame != ~0u) {
+        const double ms =
+            std::chrono::duration<double, std::milli>(now - t_frame_clock.at).count();
+        PipeNote(fmt::format(
+            "FRAME n={} ms={:.2f} draws={} created={} created_ms={:.2f} async={} skipped={}\n",
+            t_frame_clock.frame, ms, draws - t_frame_clock.draws_at, t_frame_clock.created,
+            t_frame_clock.created_ns / 1e6, t_frame_clock.async_started,
+            t_frame_clock.async_skipped));
+    }
+    t_frame_clock.frame = frame;
+    t_frame_clock.at = now;
+    t_frame_clock.draws_at = draws;
+    t_frame_clock.created = t_frame_clock.created_ns = 0;
+    t_frame_clock.async_started = t_frame_clock.async_skipped = 0;
+}
+
 
 /// The vertex outputs as the hardware lays them out (VS_OUT_CNTL): the misc vector, then the
 /// clip/cull distance vectors that are enabled.
@@ -759,6 +883,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     BbStats::CatTimer category{BbStats::CatPipeline};
     used_prepared = nullptr;
     NoteDrawTarget(liverpool->regs);
+    if (PipeTimingLog().on) {
+        NoteFrameForTiming();
+    }
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
             used_prepared = prepared;
@@ -773,7 +900,26 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         found != graphics_pipelines.end()) {
         return found->second.get();
     }
-    const bool skippable = AsyncSkippable(sel, indirect);
+    // BB_PIPE_TIMING: why the background compiler declined, and what the port translated for this
+    // pipeline (RefreshGraphicsKey translated every stage it did not already hold).
+    AsyncDecline decline = AsyncDecline::None;
+    const bool skippable = AsyncSkippable(sel, indirect, &decline);
+    const u64 port_ns = std::exchange(t_port_translate_ns, 0);
+    const auto timing_line = [&](const char* kind, u64 driver_ns, const char* async_state) {
+        if (!PipeTimingLog().on) {
+            return;
+        }
+        const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+        const u64 key_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
+        t_frame_clock.created += 1;
+        t_frame_clock.created_ns += port_ns + driver_ns;
+        PipeNote(fmt::format(
+            "PIPE kind={} frame={} key={:016x} tid={} stages={} rt={:016x} idx={} indirect={} "
+            "frame_draws={} async={} port_us={:.1f} drv_us={:.1f}\n",
+            kind, frame, key_hash, (unsigned long)pthread_self(), StageList(sel),
+            DrawTarget(*sel.regs), sel.regs->num_indices, indirect ? 1 : 0, last_frame_draws,
+            async_state, port_ns / 1e3, driver_ns / 1e3));
+    };
     if (const auto pending = pending_graphics.find(sel.graphics_key);
         pending != pending_graphics.end()) {
         const std::shared_ptr<PendingPipeline> job = pending->second;
@@ -782,6 +928,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             if (!job->done) {
                 if (skippable) {
                     ++async_skipped;
+                    ++t_frame_clock.async_skipped;
                     BbStats::async_skips.fetch_add(1, std::memory_order_relaxed);
                     return nullptr; // drawn from the frame its pipeline is ready
                 }
@@ -790,17 +937,26 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                 job->cv.wait(lk, [&] { return job->done; });
                 AddCompileTime(start, CompileLayer::Driver);
                 ++async_waited;
+                timing_line("w", u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - start)
+                                         .count()),
+                            AsyncDeclineName(decline));
+            } else {
+                timing_line("g", 0, "ready");
             }
         }
         pending_graphics.erase(sel.graphics_key);
         return FinishPipeline(sel.graphics_key, *job);
     }
     if (skippable) {
+        ++t_frame_clock.async_started;
+        timing_line("s", 0, "started");
         return CompileInBackground(sel);
     }
 
     const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
     LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
+    const auto start = std::chrono::steady_clock::now();
     CompileTimer timer{CompileLayer::Driver};
     GraphicsPipeline::SerializationSupport sdata{};
     auto& slot = graphics_pipelines[sel.graphics_key];
@@ -810,6 +966,10 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
                                               sdata, false);
     PipelineStore::SaveGraphics(sel.graphics_key, pipeline_hash, sdata);
     sel.fetch_shader.reset();
+    timing_line("g", u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count()),
+                AsyncDeclineName(decline));
     return slot.get();
 }
 
@@ -865,7 +1025,17 @@ const GraphicsPipeline* PipelineCache::FinishPipeline(const GraphicsPipelineKey&
 }
 
 
-bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indirect) {
+bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indirect,
+                                   AsyncDecline* why) {
+    const auto decline = [&](AsyncDecline reason) {
+        if (why != nullptr) {
+            *why = reason;
+        }
+        return false;
+    };
+    if (why != nullptr) {
+        *why = AsyncDecline::None;
+    }
     // Only a pass drawn frame after frame may go without a draw for a frame or two (its render
     // target drawn to in the last frames, below); a one-time render compiles at once. The pipeline
     // must not depend on the draw's vertex buffers (VK_EXT_vertex_input_dynamic_state). A size rule
@@ -875,9 +1045,14 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
         return !(env && env[0] == '0');
     }();
     const AsyncPolicy& policy = async_policy;
-    if (!enabled || (!instance.IsVertexInputDynamicState() && !StaticVertexInputAsync()) ||
-        !selection.regs) {
-        return false;
+    if (!enabled) {
+        return decline(AsyncDecline::Disabled);
+    }
+    if (!instance.IsVertexInputDynamicState() && !StaticVertexInputAsync()) {
+        return decline(AsyncDecline::NoVertexInput);
+    }
+    if (!selection.regs) {
+        return decline(AsyncDecline::NoTarget);
     }
     const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
     const u64 draws = BbStats::draws.load(std::memory_order_relaxed);
@@ -896,23 +1071,53 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
         }
     }
     if (last_frame_draws < policy.min_draws) {
-        return false;
+        return decline(AsyncDecline::FrameDraws);
     }
     // A full-screen pass (one triangle or quad: lighting, fog, post-processing) waits for its
     // pipeline: going without one for a frame left whole frames grey. So does an indirect draw
     // (its size unknown here). What may go without is geometry, which shows a frame later.
     constexpr u32 FullScreenIndices = 12;
-    if (indirect || selection.regs->num_indices <= FullScreenIndices) {
-        return false;
+    if (indirect) {
+        return decline(AsyncDecline::Indirect);
+    }
+    if (selection.regs->num_indices <= FullScreenIndices) {
+        return decline(AsyncDecline::FullScreen);
     }
     // A pass drawn frame after frame: its render target drawn to in each of the last
     // policy.min_streak frames, this one included (the scene, the output, shadow maps, half-size
     // and depth-only passes alike). A one-time render (a face baked for a character, a texture
     // made once) goes to a target new this frame: compiled at once.
     const u64 target = DrawTarget(*selection.regs);
+    if (target == 0) {
+        return decline(AsyncDecline::NoTarget);
+    }
     const auto streak = target_streaks.find(target);
-    return target != 0 && streak != target_streaks.end() &&
-           streak->second.frames >= policy.min_streak;
+    if (streak == target_streaks.end() || streak->second.frames < policy.min_streak) {
+        return decline(AsyncDecline::TargetStreak);
+    }
+    return true;
+}
+
+const char* AsyncDeclineName(AsyncDecline reason) {
+    switch (reason) {
+    case AsyncDecline::None:
+        return "none";
+    case AsyncDecline::Disabled:
+        return "async-off";
+    case AsyncDecline::NoVertexInput:
+        return "no-dynamic-vi";
+    case AsyncDecline::FrameDraws:
+        return "frame-draws";
+    case AsyncDecline::Indirect:
+        return "indirect";
+    case AsyncDecline::FullScreen:
+        return "fullscreen";
+    case AsyncDecline::NoTarget:
+        return "no-target";
+    case AsyncDecline::TargetStreak:
+        return "target-streak";
+    }
+    return "?";
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {
@@ -924,12 +1129,26 @@ const ComputePipeline* PipelineCache::GetComputePipeline() {
     if (is_new) {
         LOG_INFO(Render_Vulkan, "Compiling compute pipeline {:#x}",
                  std::hash<ComputePipelineKey>{}(compute_key));
+        const auto start = std::chrono::steady_clock::now();
         CompileTimer timer{CompileLayer::Driver};
         ComputePipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<ComputePipeline>(instance, scheduler, desc_heap, profile,
                                                        *pipeline_cache, compute_key, *sel.infos[0],
                                                        sel.modules[0], sdata, false);
         PipelineStore::SaveCompute(compute_key, sdata);
+        if (PipeTimingLog().on) {
+            const u64 port_ns = std::exchange(t_port_translate_ns, 0);
+            const u64 driver_ns = u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now() - start)
+                                          .count());
+            t_frame_clock.created += 1;
+            t_frame_clock.created_ns += port_ns + driver_ns;
+            PipeNote(fmt::format(
+                "PIPE kind=c frame={} key={:016x} stages={} rt=0 idx=0 indirect=0 frame_draws={} "
+                "async=compute port_us={:.1f} drv_us={:.1f}\n",
+                BbStats::frame_number.load(std::memory_order_relaxed), compute_key.value,
+                StageList(sel), last_frame_draws, port_ns / 1e3, driver_ns / 1e3));
+        }
     }
     return it->second.get();
 }

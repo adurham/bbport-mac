@@ -36,6 +36,7 @@
 #include "cp/cp_packets.h"
 #include "cp/cp_tasks.h"
 #include "cp/pm4_selftest.h"
+#include "gcn/bind_log.h"
 #include "platform/interrupts.h"
 #include "platform/videoout/videoout.h"
 #include "render/vk_draw_pipe.h"
@@ -115,6 +116,8 @@ void CommandProcessor::ApplyGraphicsRegisterPacket(Regs& regs, const u32* packet
             return;
         }
         set(Bank::Sh);
+        // BB_SHADER_BINDS: the game binds a program here, whether or not it draws with it.
+        Gcn::BindLog::NoteRegs(regs);
         break;
     case Op::SetUconfigReg:
         set(Bank::Uconfig);
