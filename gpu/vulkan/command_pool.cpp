@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 
 #include "common/assert.h"
@@ -37,6 +38,38 @@ u32 MaxBuffers() {
     }();
     return cap;
 }
+
+/// BB_CMDBUF_RELEASE_IDLE=N seconds: free a command buffer the pool has not handed out for N s
+/// (unset or 0: off; read once). The experiment the reference model asked for: the driver only
+/// releases a command buffer's command allocators when the buffer is destroyed, so the buffers a
+/// pool grew during an area load stay resident for the session.
+u32 ReleaseIdleSeconds() {
+    static const u32 seconds = [] {
+        const char* env = std::getenv("BB_CMDBUF_RELEASE_IDLE");
+        return static_cast<u32>(env ? std::max(0, std::atoi(env)) : 0);
+    }();
+    return seconds;
+}
+
+/// BB_CMDBUF_TRIM=1: after the frees, trim each pool once (vkTrimCommandPool; 0: never). This
+/// exists only to measure the trim apart from the free: the earlier timer experiment's fps cost
+/// came from trimming, not from freeing.
+bool TrimOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_CMDBUF_TRIM");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
+/// The pools alive right now. The per-frame hook owns none of the recording threads' pools, so the
+/// stats line and the release sweep can only reach them through this list; with both gates off
+/// nothing is tracked and the list stays empty.
+bool TrackPools() {
+    return StatsOn() || ReleaseIdleSeconds() != 0;
+}
+std::mutex registry_mutex;
+std::vector<CommandPool*> registry;
 
 /// The pool counters. commits, misses (a Commit that grew) and allocs (a Grow) are the window's,
 /// zeroed by the report; live (buffers allocated and not yet freed with their pool), pools
@@ -74,9 +107,20 @@ CommandPool::CommandPool(const Instance& instance_, Semaphore* timeline_)
     if (StatsOn()) {
         counts.pools.fetch_add(1, std::memory_order_relaxed);
     }
+    if (TrackPools()) {
+        const std::lock_guard lock{registry_mutex};
+        registry.push_back(this);
+    }
 }
 
 CommandPool::~CommandPool() {
+    if (TrackPools()) {
+        const std::lock_guard lock{registry_mutex};
+        const auto it = std::find(registry.begin(), registry.end(), this);
+        if (it != registry.end()) {
+            registry.erase(it);
+        }
+    }
     // BB_CMDBUF_STATS: a pool's buffers die with it.
     if (StatsOn()) {
         counts.pools.fetch_sub(1, std::memory_order_relaxed);
@@ -100,7 +144,9 @@ void CommandPool::Grow() {
     ASSERT(device.allocateCommandBuffers(&info, buffers.data()) == vk::Result::eSuccess);
     for (const vk::CommandBuffer buffer : buffers) {
         SetObjectName(device, buffer, "CommandPool: Command Buffer {}", entries.size());
-        entries.push_back({buffer, 0});
+        // tick 0: never handed out (the idle sweep only takes tick != 0, so a new buffer is never
+        // released); last_use starts at the allocation, the oldest a buffer's idleness can be.
+        entries.push_back({buffer, 0, std::chrono::steady_clock::now()});
     }
     if (StatsOn()) {
         CountPeak(entries.size());
@@ -108,8 +154,19 @@ void CommandPool::Grow() {
 }
 
 vk::CommandBuffer CommandPool::Commit() {
+    // The two experiments' per-pool hooks, both on this pool's own thread: a command pool must
+    // not be used from two threads at once, and recording into its buffers counts as using it, so
+    // the hook's thread only ever asks for these (RequestIdleRelease / the stats line) and the
+    // work is done here.
+    if (release_requested.load(std::memory_order_relaxed)) {
+        ReleaseIdle();
+    }
+    if (StatsOn()) {
+        PublishIdleBuckets();
+    }
     const auto take = [&](size_t index) {
         entries[index].tick = timeline->CurrentTick();
+        entries[index].last_use = std::chrono::steady_clock::now();
         next = (index + 1) % entries.size();
         return entries[index].buffer;
     };
@@ -169,6 +226,105 @@ vk::CommandBuffer CommandPool::Commit() {
     return take(first_new);
 }
 
+void CommandPool::ReleaseIdle() {
+    release_requested.store(false, std::memory_order_relaxed);
+    const u32 idle_seconds = ReleaseIdleSeconds();
+    if (idle_seconds == 0) {
+        return;
+    }
+    const std::chrono::seconds idle{idle_seconds};
+    const auto now = std::chrono::steady_clock::now();
+    // The free predicate, and nothing more: the submission that last used the buffer must be done
+    // on the GPU (an unreached tick is work still in flight, so it is never freed), and the buffer
+    // must have sat unused for the whole gate (one the GPU finished with a moment ago is exactly
+    // the one the next frame reuses). Entries never handed out have tick 0 and stay too.
+    const auto is_idle = [&](const Entry& entry) {
+        return entry.tick != 0 && entry.tick <= timeline->KnownGpuTick() &&
+               now - entry.last_use > idle;
+    };
+    static std::atomic<bool> announced{false};
+    if (!announced.exchange(true, std::memory_order_relaxed)) {
+        std::printf("GPU: BB_CMDBUF_RELEASE_IDLE=%u: releasing command buffers idle for more than "
+                    "%u s%s\n",
+                    idle_seconds, idle_seconds,
+                    TrimOn() ? ", then trimming each pool (BB_CMDBUF_TRIM=1)" : "");
+    }
+    std::vector<vk::CommandBuffer> freed;
+    freed.reserve(entries.size());
+    size_t kept = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (is_idle(entries[i])) {
+            freed.push_back(entries[i].buffer);
+            continue;
+        }
+        entries[kept++] = entries[i];
+    }
+    if (freed.empty()) {
+        return;
+    }
+    const vk::Device device = instance.GetDevice();
+    device.freeCommandBuffers(*pool, static_cast<u32>(freed.size()), freed.data());
+    // Only the command buffers go: their entries go with them, so no entry is left holding a
+    // handle that no longer exists, and a later Commit grows more as it already does.
+    entries.resize(kept);
+    // The cursor may have pointed at an entry that was just freed (or past the new end): send it
+    // back to the front. It is only where the search starts, so that is all it needs.
+    if (next >= entries.size()) {
+        next = 0;
+    }
+    if (StatsOn()) {
+        counts.live.fetch_sub(freed.size(), std::memory_order_relaxed);
+    }
+    if (TrimOn()) {
+        device.trimCommandPool(*pool, {});
+    }
+    std::printf("GPU: command buffers release: %llu freed, %llu live, idle > %us\n",
+                static_cast<unsigned long long>(freed.size()),
+                static_cast<unsigned long long>(entries.size()), idle_seconds);
+}
+
+void CommandPool::PublishIdleBuckets() {
+    const auto now = std::chrono::steady_clock::now();
+    std::array<u64, 4> buckets{};
+    for (const Entry& entry : entries) {
+        const auto age = now - entry.last_use;
+        const size_t bucket = age <= std::chrono::seconds(1)    ? 0
+                              : age <= std::chrono::seconds(5)  ? 1
+                              : age <= std::chrono::seconds(10) ? 2
+                                                                : 3;
+        ++buckets[bucket];
+    }
+    for (size_t i = 0; i < buckets.size(); ++i) {
+        idle_buckets[i].store(buckets[i], std::memory_order_relaxed);
+    }
+}
+
+std::array<u64, 4> CommandPool::IdleBuckets() const noexcept {
+    std::array<u64, 4> buckets{};
+    for (size_t i = 0; i < buckets.size(); ++i) {
+        buckets[i] = idle_buckets[i].load(std::memory_order_relaxed);
+    }
+    return buckets;
+}
+
+void ReleaseIdleCommandBuffers() {
+    if (ReleaseIdleSeconds() == 0) {
+        return;
+    }
+    // At most once a second, whatever the frame rate: one sweep a second is enough to see the
+    // footprint move, and a sweep per frame would put the driver's frees in every frame.
+    static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(1)) {
+        return;
+    }
+    last = now;
+    const std::lock_guard lock{registry_mutex};
+    for (CommandPool* pool : registry) {
+        pool->RequestIdleRelease();
+    }
+}
+
 void ReportCommandBufferPools() {
     if (!StatsOn()) {
         return;
@@ -190,8 +346,21 @@ void ReportCommandBufferPools() {
     // live is Grow's additions minus the destructors' removals (so it is also ever).
     const u64 reused = commits - misses;
     const u64 new_buffers = grew * GrowBy;
+    // BB_CMDBUF_STATS: the age of each live buffer's last use, summed over the pools (each pool
+    // publishes it from its own thread on its last Commit, so this reads no entries directly).
+    std::array<u64, 4> idle{};
+    {
+        const std::lock_guard lock{registry_mutex};
+        for (const CommandPool* pool : registry) {
+            const std::array<u64, 4> buckets = pool->IdleBuckets();
+            for (size_t i = 0; i < idle.size(); ++i) {
+                idle[i] += buckets[i];
+            }
+        }
+    }
     std::printf("GPU: command buffers (10 s): %llu commits, %llu reused, %llu grew (%llu new "
-                "buffers, %llu ever); %llu pools, %llu live, largest pool %llu\n",
+                "buffers, %llu ever); %llu pools, %llu live, largest pool %llu; idle<=1s:%llu "
+                "<=5s:%llu <=10s:%llu older:%llu\n",
                 static_cast<unsigned long long>(commits),
                 static_cast<unsigned long long>(reused),
                 static_cast<unsigned long long>(grew),
@@ -199,7 +368,11 @@ void ReportCommandBufferPools() {
                 static_cast<unsigned long long>(ever),
                 static_cast<unsigned long long>(pools),
                 static_cast<unsigned long long>(ever),
-                static_cast<unsigned long long>(peak));
+                static_cast<unsigned long long>(peak),
+                static_cast<unsigned long long>(idle[0]),
+                static_cast<unsigned long long>(idle[1]),
+                static_cast<unsigned long long>(idle[2]),
+                static_cast<unsigned long long>(idle[3]));
 }
 
 } // namespace Vulkan
