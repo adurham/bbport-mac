@@ -1,0 +1,7 @@
+yharnam seg-0003.mtl4archive seg-0004.mtl4archive seg-0005.mtl4archive seg-0006.mtl4archive seg-0007.mtl4archive seg-0008.mtl4archive seg-0009.mtl4archive 
+attack seg-0010.mtl4archive seg-0011.mtl4archive seg-0012.mtl4archive seg-0013.mtl4archive seg-0014.mtl4archive seg-0015.mtl4archive 
+combat seg-0016.mtl4archive seg-0017.mtl4archive seg-0018.mtl4archive seg-0019.mtl4archive seg-0020.mtl4archive 
+spin seg-0021.mtl4archive seg-0022.mtl4archive seg-0023.mtl4archive 
+sweep seg-0024.mtl4archive seg-0025.mtl4archive seg-0026.mtl4archive 
+interact seg-0027.mtl4archive seg-0028.mtl4archive seg-0029.mtl4archive seg-0030.mtl4archive 
+warp seg-0031.mtl4archive seg-0032.mtl4archive seg-0033.mtl4archive seg-0034.mtl4archive 

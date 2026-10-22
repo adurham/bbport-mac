@@ -106,3 +106,55 @@ created (an empty-store run does not walk the same pipelines twice). A union cap
 - 0 failed pipelines.
 - Captures within the ctrl-0008-vs-ctrl-base floor.
 - ctrl-0008 (env unset) no slower than ctrl-base and logging no `KK air`/`KK archive` lines.
+
+## Union capture and generalisation (2026-10-22, `tools/macos/kkair_union.sh`)
+
+Held-out route: `roam` (the lawnmower; never captured). Capture routes: yharnam, attack, combat,
+spin, sweep, interact, warp. All runs are hidden, with an empty store, a cold Metal cache and the 0008
+driver. The footprint watchdog ended every run 1.5-2.5 min after the start, at 15-20 GiB, so "the area"
+here means the first area load plus about 1-2 min of walking. That is the same window as the first proof.
+
+**Capture needs two passes.** An MTL4 archive entry keys on the library's function hash. A library
+compiled at run time from MSL does not hash like the `xcrun metal` metallib of the same MSL. Tested in
+isolation: a runtime-captured entry misses when the pipeline is built from the metallib, and a
+metallib-captured entry hits for both. So pass A dumps the missing MSL, the AIR is rebuilt
+(383 -> 438 libraries), and pass B captures with every library coming from the AIR. Pass B appends to
+`base.archive.d`.
+
+| route | pass A pipes / new MSL | pass B pipes, archive hits (< 1 ms) | new port keys vs earlier routes | new segments |
+|---|---|---|---|---|
+| yharnam | 298 / +0 | 329, 318 (97%) | 257 (first) | 0003-0009 (7, 11.2 MB) |
+| attack | 292 / +9 | 327, 319 | 13 | 0010-0015 (6, 10.9 MB) |
+| combat | 281 / +0 (A run reached 269 draws only) | 326, 325 | 1 | 0016-0020 (5, 10.9 MB) |
+| spin | 329 / +11 | 317, 315 | 30 | 0021-0023 (3, 10.4 MB) |
+| sweep | 342 / +9 | 332, 321 | 3 | 0024-0026 (3, 10.4 MB) |
+| interact | 298 / +0 | 319, 315 | 5 | 0027-0030 (4, 10.5 MB) |
+| warp | 309 / +26 | 329, 319 | 18 | 0031-0034 (4, 11.0 MB) |
+
+The union is 327 port pipeline keys. Every pass-B run re-serializes the area-load set (58/10/247
+pipelines, 10.4 MB), because the serializer captures every pipeline created, archive hits included. The
+de-duplicated set (`base.archive.dedup.d`, 14 segments, 12 MB) measured the same as the full one (82 MB).
+
+| held-out roam | ctrl (env unset) x2 | warm store (env unset) | proof (union) x2 | proof (dedup 12 MB) |
+|---|---|---|---|---|
+| pipelines created | 315 / 311 | 50 (rest preloaded) | 298 / 298 | 282 |
+| PSO p50 / total | 17.9 ms / 5.72 s; 17.3 ms / 5.38 s | 0.35 ms / 5.38 s | 0.125 ms / 0.43 s; 0.128 ms / 0.41 s | 0.134 ms / 0.06 s |
+| mtllib p50 / total | 135 ms / 32.2 s; 135 ms / 30.9 s | 0.34 ms / 25.2 s | 0.42 ms / 0.10 s; 0.44 ms / 0.11 s | 0.45 ms / 0.10 s |
+| libraries from MSL | all | all | 0 / 0 | 0 |
+| Mesa hits | 0/225, 0/222 | 176/447 | 205/214, 205/214 | 198/207 |
+| area driver total | 40.8 s / 39.1 s | 1.81 s | **0.18 s / 0.24 s** | 0.25 s |
+| frames > 50 ms | 70 (51.8 s) / 43 (47.7 s) | 21 (3.4 s) | 24 (1.77 s) / 28 (2.61 s) | 19 (2.21 s) |
+| failed pipelines / asserts | 0 / none | 0 / none | 0 / none | 0 / none |
+
+- **Generalisation.** All 248 of the proof run's pipeline keys were in the capture union. In the
+  controls, 254/260 and similar were (97.7%): 6 roam keys never appeared in any capture route. The
+  driver reports 310/316 and 312/318 pipelines created in < 1 ms (98%), and 0 libraries compiled from MSL.
+- **Remaining gap.** 11 of 214 PSOs took ≥ 1 ms, 393 ms in total. Six of them took 26-102 ms. These
+  are pipelines whose state only that walk produced (the variants a specific player position/state
+  draws), plus contention. At 15-25 ms each over 8 threads, pre-creating them at startup would cost
+  about 20-40 ms of wall time.
+- **Captures.** Two control runs (H vs H2, ctrl vs ctrl) differ by a mean_abs of 0.035, with 13.4% of
+  pixels > 0.1: the runs are not frame-aligned, so the floor is wide. Proof vs ctrl at the same marks:
+  0.049 / 18.3% and 0.024 / 6.8%. The first pair is above the floor and the second inside it. The
+  first proof capture is the darker frame (luma 0.038 vs 0.044), a different moment of the walk. No
+  corruption was seen, but this is not a pixel proof.

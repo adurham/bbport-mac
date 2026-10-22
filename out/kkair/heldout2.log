@@ -1,0 +1,46 @@
+kkair H2-roam-ctrl: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-ctrl/mesa seed=none store=empty env: 
+0	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-ctrl/mesa
+sizing run kkair-H2-roam-ctrl: 450s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-H2-roam-ctrl/user
+route exit 0; 5093 pipe lines, 222 kk lines, 269 bind lines
+10108	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-ctrl/mesa
+15788	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair H2-roam-ctrl done: exit 0
+05:08:04 ctrl 0
+kkair H2-roam-proof: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-proof/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-proof/mesa
+sizing run kkair-H2-roam-proof: 450s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-H2-roam-proof/user
+route exit 0; 5510 pipe lines, 214 kk lines, 258 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-proof/mesa
+6156	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair H2-roam-proof done: exit 0
+05:16:09 proof 0
+kkair H2-roam-dedup: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-dedup/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.dedup.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-dedup/mesa
+sizing run kkair-H2-roam-dedup: 450s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-H2-roam-dedup/user
+route exit 0; 4272 pipe lines, 207 kk lines, 252 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-dedup/mesa
+6024	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+3303 /opt/homebrew/bin/bash -c source /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-01ce0d688987.sh >/dev/null 2>&1 || true
+export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"
+export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"
+builtin cd -- /Users/adam.durham/repos/bbport-kkair-build/out/kkair || exit 126
+eval 'sleep 400; grep -E '\''^[0-9:]+ |DONE'\'' ~/repos/bbport-kkair-build/out/kkair/heldout2.log; pgrep -fl '\''bb-gpu|bb-probe|xctrace'\'''
+__hermes_ec=$?
+umask 077
+__hermes_snap_tmp=$(mktemp /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-01ce0d688987.sh.tmp.XXXXXXXXXX) && { { ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} ${!HERMES_BROWSER_CONTROL_*} AI_AGENT HERMES_AGENT HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION ${!HERMES_RPC_*} HERMES_KERNEL_DIR HERMES_UI_SESSION_ID 2>/dev/null; export -p; ) || true; } > "$__hermes_snap_tmp" && mv -f "$__hermes_snap_tmp" /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-01ce0d688987.sh; } 2>/dev/null || rm -f "$__hermes_snap_tmp" 2>/dev/null || true
+printf '\n__HERMES_CWD_01ce0d688987__%s__HERMES_CWD_01ce0d688987__\n' "$(pwd -P)"
+exit $__hermes_ec
+leftover process; stopping
+kkair H2-roam-dedup done: exit 0
+05:24:15 dedup 0
+3303 /opt/homebrew/bin/bash -c source /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-01ce0d688987.sh >/dev/null 2>&1 || true
+export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"
+export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"
+builtin cd -- /Users/adam.durham/repos/bbport-kkair-build/out/kkair || exit 126
+eval 'sleep 400; grep -E '\''^[0-9:]+ |DONE'\'' ~/repos/bbport-kkair-build/out/kkair/heldout2.log; pgrep -fl '\''bb-gpu|bb-probe|xctrace'\'''
+__hermes_ec=$?
+umask 077
+__hermes_snap_tmp=$(mktemp /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-01ce0d688987.sh.tmp.XXXXXXXXXX) && { { ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} ${!HERMES_BROWSER_CONTROL_*} AI_AGENT HERMES_AGENT HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION ${!HERMES_RPC_*} HERMES_KERNEL_DIR HERMES_UI_SESSION_ID 2>/dev/null; export -p; ) || true; } > "$__hermes_snap_tmp" && mv -f "$__hermes_snap_tmp" /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-01ce0d688987.sh; } 2>/dev/null || rm -f "$__hermes_snap_tmp" 2>/dev/null || true
+printf '\n__HERMES_CWD_01ce0d688987__%s__HERMES_CWD_01ce0d688987__\n' "$(pwd -P)"
+exit $__hermes_ec
+DONE

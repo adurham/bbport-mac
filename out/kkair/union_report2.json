@@ -1,0 +1,184 @@
+{
+ "runs": [
+  {
+   "dir": "H2-roam-ctrl",
+   "pipelines": 311,
+   "graphics": 220,
+   "compute": 34,
+   "kk_lines": 222,
+   "kk_cache_hits": 0,
+   "driver_total_ms": 39084.3,
+   "port_total_ms": 226.2,
+   "driver_p50_us": 35670.1,
+   "driver_p90_us": 340375.0,
+   "mtllib_p50_us": 134907.5,
+   "mtllib_p90_us": 296158.30000000005,
+   "mtllib_total_ms": 30929.9,
+   "pso_p50_us": 17257.0,
+   "pso_p90_us": 54756.70000000001,
+   "pso_total_ms": 5377.8,
+   "nir_msl_total_ms": 6027.2,
+   "kk_lib_over_5ms": 194,
+   "kk_pso_over_5ms": 195,
+   "hitch_frames_over_50ms": 43,
+   "hitch_total_ms": 47728.9,
+   "log_bytes": 161733,
+   "failed_pipelines": 0,
+   "vk_pipeline_errors": 0,
+   "kk_air_lines": [],
+   "kk_air_line_count": 0,
+   "asserts": [],
+   "max_draws_per_frame": 1767,
+   "reached_gameplay": true,
+   "gpu_exit": [
+    "GPU process exited (0)"
+   ],
+   "captures": [
+    "H2-roam-ctrl/captures/capture-20261022-050143.png",
+    "H2-roam-ctrl/captures/capture-20261022-050203.png",
+    "H2-roam-ctrl/captures/capture-20261022-050223.png",
+    "H2-roam-ctrl/captures/capture-20261022-050243.png"
+   ],
+   "config": [
+    "kkair H2-roam-ctrl: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-ctrl/mesa seed=none store=empty env: ",
+    "0\t/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-ctrl/mesa",
+    "10108\t/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-ctrl/mesa",
+    "15788\t/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair"
+   ],
+   "watchdog_stop": true
+  },
+  {
+   "dir": "H2-roam-proof",
+   "pipelines": 298,
+   "graphics": 213,
+   "compute": 34,
+   "kk_lines": 214,
+   "kk_cache_hits": 205,
+   "driver_total_ms": 237.4,
+   "port_total_ms": 221.8,
+   "driver_p50_us": 737.1,
+   "driver_p90_us": 1656.34,
+   "mtllib_p50_us": 441.0,
+   "mtllib_p90_us": 801.1999999999998,
+   "mtllib_total_ms": 108.8,
+   "pso_p50_us": 127.5,
+   "pso_p90_us": 375.0,
+   "pso_total_ms": 405.4,
+   "nir_msl_total_ms": 4.4,
+   "kk_lib_over_5ms": 0,
+   "kk_pso_over_5ms": 8,
+   "hitch_frames_over_50ms": 28,
+   "hitch_total_ms": 2610.5,
+   "log_bytes": 148437,
+   "failed_pipelines": 0,
+   "vk_pipeline_errors": 0,
+   "kk_air_lines": [
+    "KK air: 160 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 112 pipelines (112 with lookupArchives over 35 archives, 111 created in < 1 ms)",
+    "KK air: 206 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 138 pipelines (138 with lookupArchives over 35 archives, 137 created in < 1 ms)",
+    "KK air: 436 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 258 pipelines (258 with lookupArchives over 35 archives, 255 created in < 1 ms)",
+    "KK air: 521 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 315 pipelines (315 with lookupArchives over 35 archives, 311 created in < 1 ms)",
+    "KK air: 523 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 316 pipelines (316 with lookupArchives over 35 archives, 312 created in < 1 ms)",
+    "KK air: 529 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 318 pipelines (318 with lookupArchives over 35 archives, 312 created in < 1 ms)"
+   ],
+   "kk_air_line_count": 47,
+   "asserts": [],
+   "max_draws_per_frame": 1597,
+   "reached_gameplay": true,
+   "gpu_exit": [
+    "GPU process exited (0)"
+   ],
+   "captures": [
+    "H2-roam-proof/captures/capture-20261022-050944.png",
+    "H2-roam-proof/captures/capture-20261022-051004.png"
+   ],
+   "config": [
+    "kkair H2-roam-proof: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-proof/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d",
+    "19336\t/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-proof/mesa",
+    "19336\t/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-proof/mesa",
+    "6156\t/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair"
+   ],
+   "watchdog_stop": true
+  },
+  {
+   "dir": "H2-roam-dedup",
+   "pipelines": 282,
+   "graphics": 205,
+   "compute": 34,
+   "kk_lines": 207,
+   "kk_cache_hits": 198,
+   "driver_total_ms": 249.0,
+   "port_total_ms": 208.5,
+   "driver_p50_us": 916.3499999999999,
+   "driver_p90_us": 1883.4300000000003,
+   "mtllib_p50_us": 449.0,
+   "mtllib_p90_us": 708.8000000000001,
+   "mtllib_total_ms": 97.7,
+   "pso_p50_us": 134.0,
+   "pso_p90_us": 339.20000000000005,
+   "pso_total_ms": 64.3,
+   "nir_msl_total_ms": 2.3,
+   "kk_lib_over_5ms": 0,
+   "kk_pso_over_5ms": 3,
+   "hitch_frames_over_50ms": 19,
+   "hitch_total_ms": 2206.7,
+   "log_bytes": 101443,
+   "failed_pipelines": 0,
+   "vk_pipeline_errors": 0,
+   "kk_air_lines": [
+    "KK air: 73 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 59 pipelines (59 with lookupArchives over 14 archives, 58 created in < 1 ms)",
+    "KK air: 75 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 60 pipelines (60 with lookupArchives over 14 archives, 59 created in < 1 ms)",
+    "KK air: 91 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 68 pipelines (68 with lookupArchives over 14 archives, 67 created in < 1 ms)",
+    "KK air: 206 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 138 pipelines (138 with lookupArchives over 14 archives, 137 created in < 1 ms)",
+    "KK air: 484 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 296 pipelines (296 with lookupArchives over 14 archives, 292 created in < 1 ms)",
+    "KK air: 521 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 315 pipelines (315 with lookupArchives over 14 archives, 311 created in < 1 ms)"
+   ],
+   "kk_air_line_count": 24,
+   "asserts": [],
+   "max_draws_per_frame": 1489,
+   "reached_gameplay": true,
+   "gpu_exit": [
+    "GPU process exited (0)"
+   ],
+   "captures": [],
+   "config": [
+    "kkair H2-roam-dedup: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-dedup/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.dedup.d",
+    "19336\t/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-dedup/mesa",
+    "19336\t/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H2-roam-dedup/mesa",
+    "6024\t/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair"
+   ],
+   "watchdog_stop": true
+  }
+ ],
+ "compare": [
+  {
+   "a": "H2-roam-ctrl/captures/capture-20261022-050143.png",
+   "b": "H2-roam-proof/captures/capture-20261022-050944.png",
+   "mean_abs": 0.04934224486351013,
+   "p99_abs": 0.5176470875740051,
+   "frac_px_over_0.1": 0.18330073599931035,
+   "luma_mean_a": 0.04379446059465408,
+   "luma_mean_b": 0.03806915134191513,
+   "identical": false
+  },
+  {
+   "a": "H2-roam-ctrl/captures/capture-20261022-050203.png",
+   "b": "H2-roam-proof/captures/capture-20261022-051004.png",
+   "mean_abs": 0.02424158714711666,
+   "p99_abs": 0.35686275362968445,
+   "frac_px_over_0.1": 0.06826784232588713,
+   "luma_mean_a": 0.03830602392554283,
+   "luma_mean_b": 0.03832412511110306,
+   "identical": false
+  },
+  {
+   "a": "H-roam-ctrl/captures/capture-20261022-043544.png",
+   "b": "H2-roam-ctrl/captures/capture-20261022-050143.png",
+   "mean_abs": 0.034543246030807495,
+   "p99_abs": 0.3607843220233917,
+   "frac_px_over_0.1": 0.13446804383667926,
+   "luma_mean_a": 0.013434404507279396,
+   "luma_mean_b": 0.04379446059465408,
+   "identical": false
+  }
+ ]
+}

@@ -1,0 +1,152 @@
+kkair A-yharnam: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-yharnam/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/yharnam
+17124	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-yharnam/mesa
+sizing run kkair-A-yharnam: 300s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-yharnam/user
+route exit 0; 5223 pipe lines, 216 kk lines, 262 bind lines
+17484	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-yharnam/mesa
+16020	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-yharnam done: exit 0
+03:26:26 passA yharnam exit 0: MSL 383 -> 383 (+0) | A-yharnam: pipe=298 draws_max=1531 wd=1 | KK air: 534 libraries from AIR, 7 compiled from MSL, 0 AIR files unusable; 325 pipelines (0 with lookupArchives over 0 archives, 36 created in < 1 ms)
+kkair A-attack: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-attack/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/attack
+17484	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-attack/mesa
+sizing run kkair-A-attack: 300s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-attack/user
+route exit 0; 11626 pipe lines, 213 kk lines, 259 bind lines
+17752	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-attack/mesa
+15728	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-attack done: exit 0
+03:32:00 passA attack exit 0: MSL 383 -> 392 (+9) | A-attack: pipe=292 draws_max=1516 wd=0 | KK air: 530 libraries from AIR, 10 compiled from MSL, 0 AIR files unusable; 327 pipelines (0 with lookupArchives over 0 archives, 37 created in < 1 ms)
+kkair A-combat: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-combat/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/combat
+17752	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-combat/mesa
+sizing run kkair-A-combat: 360s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-combat/user
+route exit 0; 2957 pipe lines, 206 kk lines, 251 bind lines
+17752	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-combat/mesa
+15100	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-combat done: exit 0
+03:38:32 passA combat exit 0: MSL 392 -> 392 (+0) | A-combat: pipe=281 draws_max=269 wd=1 | KK air: 493 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 300 pipelines (0 with lookupArchives over 0 archives, 36 created in < 1 ms)
+kkair A-spin: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-spin/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/spin
+17752	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-spin/mesa
+sizing run kkair-A-spin: 240s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-spin/user
+route exit 0; 4954 pipe lines, 222 kk lines, 265 bind lines
+18200	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-spin/mesa
+15760	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-spin done: exit 0
+03:43:03 passA spin exit 0: MSL 392 -> 403 (+11) | A-spin: pipe=329 draws_max=1488 wd=1 | KK air: 532 libraries from AIR, 13 compiled from MSL, 0 AIR files unusable; 326 pipelines (0 with lookupArchives over 0 archives, 39 created in < 1 ms)
+kkair A-sweep: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-sweep/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/sweep
+18200	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-sweep/mesa
+sizing run kkair-A-sweep: 240s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-sweep/user
+route exit 0; 12903 pipe lines, 231 kk lines, 267 bind lines
+18572	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-sweep/mesa
+16464	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-sweep done: exit 0
+03:47:37 passA sweep exit 0: MSL 403 -> 412 (+9) | A-sweep: pipe=342 draws_max=1490 wd=0 | KK air: 543 libraries from AIR, 30 compiled from MSL, 0 AIR files unusable; 342 pipelines (0 with lookupArchives over 0 archives, 39 created in < 1 ms)
+kkair A-interact: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-interact/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/interact
+18572	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-interact/mesa
+sizing run kkair-A-interact: 180s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-interact/user
+route exit 0; 4716 pipe lines, 214 kk lines, 259 bind lines
+18784	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-interact/mesa
+15616	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-interact done: exit 0
+03:51:08 passA interact exit 0: MSL 412 -> 412 (+0) | A-interact: pipe=298 draws_max=1561 wd=1 | KK air: 535 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 322 pipelines (0 with lookupArchives over 0 archives, 38 created in < 1 ms)
+kkair A-warp: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-warp/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/passA/warp
+18784	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-warp/mesa
+sizing run kkair-A-warp: 300s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-A-warp/user
+route exit 0; 6476 pipe lines, 225 kk lines, 276 bind lines
+19264	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/A-warp/mesa
+17016	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair A-warp done: exit 0
+03:56:40 passA warp exit 0: MSL 412 -> 438 (+26) | A-warp: pipe=309 draws_max=1680 wd=1 | KK air: 532 libraries from AIR, 32 compiled from MSL, 0 AIR files unusable; 339 pipelines (0 with lookupArchives over 0 archives, 37 created in < 1 ms)
+AIR: 438 metallibs for 438 dumped MSL files in /Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air ( 33M on disk with the sources)
+03:56:42 offline AIR exit 0: AIR: 438 metallibs for 438 dumped MSL files in /Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air ( 33M on disk with the sources)
+kkair B-yharnam: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-yharnam/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19264	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-yharnam/mesa
+sizing run kkair-B-yharnam: 300s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-yharnam/user
+route exit 0; 6408 pipe lines, 220 kk lines, 265 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-yharnam/mesa
+16516	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-yharnam done: exit 0
+04:02:16 passB yharnam exit 0: segments 3 -> 10 [seg-0003.mtl4archive seg-0004.mtl4archive seg-0005.mtl4archive seg-0006.mtl4archive seg-0007.mtl4archive seg-0008.mtl4archive seg-0009.mtl4archive ] 10148 -> 21100 KB | B-yharnam: pipe=308 draws_max=1539 wd=1 | KK air: 549 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 329 pipelines (329 with lookupArchives over 3 archives, 318 created in < 1 ms)
+kkair B-attack: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-attack/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-attack/mesa
+sizing run kkair-B-attack: 300s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-attack/user
+route exit 0; 6009 pipe lines, 213 kk lines, 259 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-attack/mesa
+16044	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-attack done: exit 0
+04:07:48 passB attack exit 0: segments 10 -> 16 [seg-0010.mtl4archive seg-0011.mtl4archive seg-0012.mtl4archive seg-0013.mtl4archive seg-0014.mtl4archive seg-0015.mtl4archive ] 21100 -> 31844 KB | B-attack: pipe=292 draws_max=1519 wd=1 | KK air: 540 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 327 pipelines (327 with lookupArchives over 10 archives, 319 created in < 1 ms)
+kkair B-combat: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-combat/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-combat/mesa
+sizing run kkair-B-combat: 360s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-combat/user
+route exit 0; 13996 pipe lines, 212 kk lines, 259 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-combat/mesa
+15544	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-combat done: exit 0
+04:14:18 passB combat exit 0: segments 16 -> 21 [seg-0016.mtl4archive seg-0017.mtl4archive seg-0018.mtl4archive seg-0019.mtl4archive seg-0020.mtl4archive ] 31844 -> 42508 KB | B-combat: pipe=290 draws_max=1514 wd=0 | KK air: 538 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 326 pipelines (326 with lookupArchives over 16 archives, 325 created in < 1 ms)
+kkair B-spin: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-spin/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-spin/mesa
+sizing run kkair-B-spin: 240s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-spin/user
+route exit 0; 5042 pipe lines, 229 kk lines, 265 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-spin/mesa
+15412	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-spin done: exit 0
+04:18:50 passB spin exit 0: segments 21 -> 24 [seg-0021.mtl4archive seg-0022.mtl4archive seg-0023.mtl4archive ] 42508 -> 52648 KB | B-spin: pipe=337 draws_max=1486 wd=1 | KK air: 525 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 317 pipelines (317 with lookupArchives over 21 archives, 315 created in < 1 ms)
+kkair B-sweep: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-sweep/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-sweep/mesa
+sizing run kkair-B-sweep: 240s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-sweep/user
+route exit 0; 4677 pipe lines, 221 kk lines, 263 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-sweep/mesa
+15128	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-sweep done: exit 0
+04:23:20 passB sweep exit 0: segments 24 -> 27 [seg-0024.mtl4archive seg-0025.mtl4archive seg-0026.mtl4archive ] 52648 -> 62788 KB | B-sweep: pipe=320 draws_max=1487 wd=1 | KK air: 553 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 332 pipelines (332 with lookupArchives over 24 archives, 321 created in < 1 ms)
+kkair B-interact: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-interact/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-interact/mesa
+sizing run kkair-B-interact: 180s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-interact/user
+route exit 0; 4958 pipe lines, 214 kk lines, 259 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-interact/mesa
+15560	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-interact done: exit 0
+04:26:51 passB interact exit 0: segments 27 -> 31 [seg-0027.mtl4archive seg-0028.mtl4archive seg-0029.mtl4archive seg-0030.mtl4archive ] 62788 -> 73028 KB | B-interact: pipe=298 draws_max=1529 wd=1 | KK air: 535 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 319 pipelines (319 with lookupArchives over 27 archives, 315 created in < 1 ms)
+kkair B-warp: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-warp/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d BB_KK_ARCHIVE_CAPTURE=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-warp/mesa
+sizing run kkair-B-warp: 300s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-B-warp/user
+route exit 0; 5176 pipe lines, 217 kk lines, 266 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/B-warp/mesa
+15240	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair B-warp done: exit 0
+04:32:24 passB warp exit 0: segments 31 -> 35 [seg-0031.mtl4archive seg-0032.mtl4archive seg-0033.mtl4archive seg-0034.mtl4archive ] 73028 -> 83736 KB | B-warp: pipe=298 draws_max=1566 wd=1 | KK air: 546 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 329 pipelines (329 with lookupArchives over 31 archives, 319 created in < 1 ms)
+kkair H-roam-ctrl: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-ctrl/mesa seed=none store=empty env: 
+0	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-ctrl/mesa
+sizing run kkair-H-roam-ctrl: 450s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-H-roam-ctrl/user
+route exit 0; 7675 pipe lines, 225 kk lines, 272 bind lines
+10340	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-ctrl/mesa
+16044	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair H-roam-ctrl done: exit 0
+04:40:25 heldout ctrl exit 0 | H-roam-ctrl: pipe=315 draws_max=1803 wd=1 | 
+kkair H-roam-warm: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=keep mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-warm/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-ctrl/mesa store=copy env: 
+10340	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-warm/mesa
+16044	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+sizing run kkair-H-roam-warm: 450s, store=copy, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-H-roam-warm/user
+route exit 0; 3835 pipe lines, 447 kk lines, 267 bind lines
+20700	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-warm/mesa
+24652	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+kkair H-roam-warm done: exit 0
+04:48:25 heldout warm exit 0 | H-roam-warm: pipe=50 draws_max=1568 wd=1 | 
+kkair H-roam-proof: driver=0008 deps=/Users/adam.durham/repos/bbport-kkair-build/deps-arm64 metal=cold mesa=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-proof/mesa seed=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/mesa store=empty env: BB_KK_AIR_DIR=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/air BB_KK_ARCHIVES=/Users/adam.durham/repos/bbport-kkair-build/out/kkair/artefacts/base.archive.d
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-proof/mesa
+sizing run kkair-H-roam-proof: 450s, store=empty, user=/Users/adam.durham/repos/bbport-kkair-build/out/sizing/kkair-H-roam-proof/user
+route exit 0; 5556 pipe lines, 214 kk lines, 258 bind lines
+19336	/Users/adam.durham/repos/bbport-kkair-build/out/kkair/H-roam-proof/mesa
+6156	/var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/C/io.github.bbport.kkair
+97270 /opt/homebrew/bin/bash -c source /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-567082c8f3c4.sh >/dev/null 2>&1 || true
+export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"
+export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"
+builtin cd -- /Users/adam.durham/repos/bbport-kkair-build/out/kkair || exit 126
+eval 'sleep 410; grep -E '\''^[0-9:]+ '\'' ~/repos/bbport-kkair-build/out/kkair/union.log | tail -3 | cut -c1-300; pgrep -fl '\''bb-gpu|bb-probe|xctrace'\'''
+__hermes_ec=$?
+umask 077
+__hermes_snap_tmp=$(mktemp /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-567082c8f3c4.sh.tmp.XXXXXXXXXX) && { { ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} ${!HERMES_BROWSER_CONTROL_*} AI_AGENT HERMES_AGENT HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION ${!HERMES_RPC_*} HERMES_KERNEL_DIR HERMES_UI_SESSION_ID 2>/dev/null; export -p; ) || true; } > "$__hermes_snap_tmp" && mv -f "$__hermes_snap_tmp" /var/folders/58/v74nwjls7274pb8d49gdwzp00000gn/T/hermes-snap-567082c8f3c4.sh; } 2>/dev/null || rm -f "$__hermes_snap_tmp" 2>/dev/null || true
+printf '\n__HERMES_CWD_567082c8f3c4__%s__HERMES_CWD_567082c8f3c4__\n' "$(pwd -P)"
+exit $__hermes_ec
+leftover process; stopping
+kkair H-roam-proof done: exit 0
+04:56:31 heldout proof exit 0 | H-roam-proof: pipe=298 draws_max=1565 wd=1 | KK air: 523 libraries from AIR, 0 compiled from MSL, 0 AIR files unusable; 316 pipelines (316 with lookupArchives over 35 archives, 310 created in < 1 ms)
+04:56:31 WARNING: a game/trace process is still running
+04:56:31 union done

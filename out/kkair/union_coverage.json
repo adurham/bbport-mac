@@ -1,0 +1,158 @@
+{
+ "routes": [
+  {
+   "route": "yharnam",
+   "pipelines_passA": 249,
+   "pipelines_passB": 253,
+   "new_keys_vs_earlier_routes": 257,
+   "already_seen": 0,
+   "passB_kkair": {
+    "air": 549,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 329,
+    "lookup": 329,
+    "archives": 3,
+    "fast": 318
+   }
+  },
+  {
+   "route": "attack",
+   "pipelines_passA": 247,
+   "pipelines_passB": 247,
+   "new_keys_vs_earlier_routes": 13,
+   "already_seen": 241,
+   "passB_kkair": {
+    "air": 540,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 327,
+    "lookup": 327,
+    "archives": 10,
+    "fast": 319
+   }
+  },
+  {
+   "route": "combat",
+   "pipelines_passA": 239,
+   "pipelines_passB": 246,
+   "new_keys_vs_earlier_routes": 1,
+   "already_seen": 255,
+   "passB_kkair": {
+    "air": 538,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 326,
+    "lookup": 326,
+    "archives": 16,
+    "fast": 325
+   }
+  },
+  {
+   "route": "spin",
+   "pipelines_passA": 272,
+   "pipelines_passB": 272,
+   "new_keys_vs_earlier_routes": 30,
+   "already_seen": 250,
+   "passB_kkair": {
+    "air": 525,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 317,
+    "lookup": 317,
+    "archives": 21,
+    "fast": 315
+   }
+  },
+  {
+   "route": "sweep",
+   "pipelines_passA": 275,
+   "pipelines_passB": 264,
+   "new_keys_vs_earlier_routes": 3,
+   "already_seen": 274,
+   "passB_kkair": {
+    "air": 553,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 332,
+    "lookup": 332,
+    "archives": 24,
+    "fast": 321
+   }
+  },
+  {
+   "route": "interact",
+   "pipelines_passA": 248,
+   "pipelines_passB": 248,
+   "new_keys_vs_earlier_routes": 5,
+   "already_seen": 247,
+   "passB_kkair": {
+    "air": 535,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 319,
+    "lookup": 319,
+    "archives": 27,
+    "fast": 315
+   }
+  },
+  {
+   "route": "warp",
+   "pipelines_passA": 259,
+   "pipelines_passB": 251,
+   "new_keys_vs_earlier_routes": 18,
+   "already_seen": 243,
+   "passB_kkair": {
+    "air": 546,
+    "msl": 0,
+    "bad": 0,
+    "pipes": 329,
+    "lookup": 329,
+    "archives": 31,
+    "fast": 319
+   }
+  }
+ ],
+ "heldout": "roam",
+ "union_keys": 327,
+ "H-roam-ctrl": {
+  "pipelines": 260,
+  "in_capture_union": 254,
+  "frac_in_union": 0.9769,
+  "kkair": null,
+  "kk_pso_n": 225,
+  "kk_pso_hits_lt1ms": 24,
+  "kk_pso_miss_total_ms": 5709.0,
+  "kk_pso_miss_p50_ms": 20.37
+ },
+ "H-roam-warm": {
+  "pipelines": 40,
+  "in_capture_union": 7,
+  "frac_in_union": 0.175,
+  "kkair": null,
+  "kk_pso_n": 447,
+  "kk_pso_hits_lt1ms": 247,
+  "kk_pso_miss_total_ms": 5319.5,
+  "kk_pso_miss_p50_ms": 21.37
+ },
+ "H-roam-proof": {
+  "pipelines": 248,
+  "in_capture_union": 248,
+  "frac_in_union": 1.0,
+  "kkair": {
+   "air": 523,
+   "msl": 0,
+   "bad": 0,
+   "pipes": 316,
+   "lookup": 316,
+   "archives": 35,
+   "fast": 310
+  },
+  "kk_pso_n": 214,
+  "kk_pso_hits_lt1ms": 203,
+  "kk_pso_miss_total_ms": 392.8,
+  "kk_pso_miss_p50_ms": 26.33
+ },
+ "heldout_only_keys_proof": 0,
+ "heldout_only_keys_ctrl": 6
+}
