@@ -1,0 +1,67 @@
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index ad0e081..7c19bdc 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -480,13 +480,16 @@ kk_stop_encoder(struct kk_cmd_buffer *cmd, struct kk_encoder_state *es)
+       kk_bbstat_add(lite ? KK_BBSTAT_ENC_RENDER_LITE : KK_BBSTAT_ENC_RENDER_FULL,
+                     1);
+    } else {
++      if (bb_mode == KK_BB_BARRIER_CFREE)
++         before = MTL_STAGE_DISPATCH | MTL_STAGE_BLIT;
+       kk_bbstat_add(KK_BBSTAT_ENC_COMPUTE, 1);
+    }
+    es->bb_end_full = false;
+    const bool bb_skip =
+-      es == &cmd->gfx &&
+-      (bb_mode == KK_BB_BARRIER_NONE ||
+-       (bb_mode == KK_BB_BARRIER_VK && before != MTL_STAGE_ALL));
++      bb_mode == KK_BB_BARRIER_FREE ||
++      (es == &cmd->gfx &&
++       (bb_mode == KK_BB_BARRIER_NONE ||
++        (bb_mode == KK_BB_BARRIER_VK && before != MTL_STAGE_ALL)));
+    if (!bb_skip)
+       mtl_barrier_after_stages(es->encoder, MTL_STAGE_ALL, before);
+    mtl_end_encoding(es->encoder);
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 446cf53..11a0ced 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -75,6 +75,8 @@ kk_bb_barrier_mode(void)
+           : !strcmp(v, "nodep") ? KK_BB_BARRIER_NODEP
+           : !strcmp(v, "none")  ? KK_BB_BARRIER_NONE
+           : !strcmp(v, "vk")    ? KK_BB_BARRIER_VK
++          : !strcmp(v, "free")  ? KK_BB_BARRIER_FREE
++          : !strcmp(v, "cfree") ? KK_BB_BARRIER_CFREE
+                                 : KK_BB_BARRIER_LEGACY;
+       p_atomic_set(&mode, m);
+       fprintf(stderr, "KosmicKrisp: end-of-encoder barriers: %s (BB_KK_BARRIER)\n",
+@@ -82,6 +84,8 @@ kk_bb_barrier_mode(void)
+               : m == KK_BB_BARRIER_NODEP ? "nodep (diagnostic, unsafe)"
+               : m == KK_BB_BARRIER_NONE  ? "none for render encoders (diagnostic, unsafe)"
+               : m == KK_BB_BARRIER_VK    ? "vk (render encoders follow the Vulkan barriers)"
++              : m == KK_BB_BARRIER_FREE  ? "free: no barrier on any encoder (diagnostic, unsafe)"
++              : m == KK_BB_BARRIER_CFREE ? "cfree: nodep + compute holds only dispatch/blit (diagnostic, unsafe)"
+                                          : "legacy ALL->ALL");
+    }
+    return (enum kk_bb_barrier_mode)m;
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index 2d0e78c..1cb4146 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -206,6 +206,16 @@ enum kk_bb_barrier_mode {
+     * no Vulkan barrier between them may overlap on the GPU, as Vulkan allows:
+     * a dependency the port forgot to declare becomes a visible race. */
+    KK_BB_BARRIER_VK = 4,
++   /* free (diagnostic only, UNSAFE, probe/kk-overlap): no end-of-encoder barrier
++    * on ANY encoder, render or compute/blit: the ceiling of every sync-based
++    * overlap scheme (fences, untracked resources), including compute work
++    * running under render work, which none/nodep never release. */
++   KK_BB_BARRIER_FREE = 5,
++   /* cfree (diagnostic only, UNSAFE, probe/kk-overlap): render encoders as
++    * nodep, and compute/blit encoders end holding back only later
++    * dispatch/blit work, so a later render pass may run under them: the
++    * ceiling of compute-under-render overlap (free hangs at the title). */
++   KK_BB_BARRIER_CFREE = 6,
+ };
+ enum kk_bb_barrier_mode kk_bb_barrier_mode(void);
+ 

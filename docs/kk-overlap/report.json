@@ -1,0 +1,362 @@
+{
+ "ctrltr-1": {
+  "gameplay_s": 378.0,
+  "windows": {
+   "0-60": {
+    "frames": 2883,
+    "frame_p50": 20.55,
+    "frame_p99": 23.41,
+    "game_cpu_ms": 27.25,
+    "present_wait_ms": 7.67,
+    "submissions": 65.0,
+    "draws": 885.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 7.99,
+    "game_fault_ms": 2.71,
+    "b_busy_ms": 13.08,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 86.5,
+    "gxrender_cpu_ms_per_frame": 2.47
+   },
+   "60-110": {
+    "frames": 2428,
+    "frame_p50": 20.57,
+    "frame_p99": 21.39,
+    "game_cpu_ms": 27.38,
+    "present_wait_ms": 7.75,
+    "submissions": 65.0,
+    "draws": 883.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 7.96,
+    "game_fault_ms": 2.72,
+    "b_busy_ms": 13.14,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 87.0,
+    "gxrender_cpu_ms_per_frame": 2.47
+   },
+   "last75 (303-378)": {
+    "frames": 3625,
+    "frame_p50": 20.67,
+    "frame_p99": 21.47,
+    "game_cpu_ms": 27.47,
+    "present_wait_ms": 7.68,
+    "submissions": 65.0,
+    "draws": 884.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.06,
+    "game_fault_ms": 2.93,
+    "b_busy_ms": 13.15,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 86.5,
+    "gxrender_cpu_ms_per_frame": 2.48
+   }
+  },
+  "verdict": "renderer work CAPPED - the guest paces late (>= 18 ms)",
+  "null_render_lines": 0,
+  "asserts": {
+   "gcn_to_vk.cpp:422": 0,
+   "cp_graphics.cpp:203": 0
+  },
+  "guest_prev_frame_wait_ms_last": 17.41
+ },
+ "ctrltr-2": {
+  "gameplay_s": 377.8,
+  "windows": {
+   "0-60": {
+    "frames": 2869,
+    "frame_p50": 20.8,
+    "frame_p99": 21.67,
+    "game_cpu_ms": 27.02,
+    "present_wait_ms": 7.98,
+    "submissions": 65.0,
+    "draws": 885.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 7.93,
+    "game_fault_ms": 2.81,
+    "b_busy_ms": 13.41,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 85.0,
+    "gxrender_cpu_ms_per_frame": 2.5
+   },
+   "60-110": {
+    "frames": 2408,
+    "frame_p50": 20.77,
+    "frame_p99": 21.26,
+    "game_cpu_ms": 27.08,
+    "present_wait_ms": 7.97,
+    "submissions": 65.0,
+    "draws": 885.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 7.92,
+    "game_fault_ms": 2.82,
+    "b_busy_ms": 13.36,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 85.0,
+    "gxrender_cpu_ms_per_frame": 2.49
+   },
+   "last75 (303-378)": {
+    "frames": 3533,
+    "frame_p50": 21.17,
+    "frame_p99": 22.71,
+    "game_cpu_ms": 28.75,
+    "present_wait_ms": 7.81,
+    "submissions": 65.0,
+    "draws": 885.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.18,
+    "game_fault_ms": 3.11,
+    "b_busy_ms": 13.46,
+    "gxrender_pct": 12,
+    "game_threads_pct": 88,
+    "gxrender_cpu_ms_per_frame": 2.54
+   }
+  },
+  "verdict": "renderer work CAPPED - the guest paces late (>= 18 ms)",
+  "null_render_lines": 0,
+  "asserts": {
+   "gcn_to_vk.cpp:422": 0,
+   "cp_graphics.cpp:203": 0
+  },
+  "guest_prev_frame_wait_ms_last": 17.96
+ },
+ "nodeptr-1": {
+  "gameplay_s": 377.2,
+  "windows": {
+   "0-60": {
+    "frames": 2889,
+    "frame_p50": 20.36,
+    "frame_p99": 28.87,
+    "game_cpu_ms": 27.87,
+    "present_wait_ms": 7.38,
+    "submissions": 65.0,
+    "draws": 887.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 7.97,
+    "game_fault_ms": 2.91,
+    "b_busy_ms": 12.94,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 88.5,
+    "gxrender_cpu_ms_per_frame": 2.44
+   },
+   "60-110": {
+    "frames": 2419,
+    "frame_p50": 20.55,
+    "frame_p99": 23.29,
+    "game_cpu_ms": 28.45,
+    "present_wait_ms": 7.4,
+    "submissions": 65.0,
+    "draws": 887.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.05,
+    "game_fault_ms": 2.98,
+    "b_busy_ms": 13.08,
+    "gxrender_pct": 12.5,
+    "game_threads_pct": 90.0,
+    "gxrender_cpu_ms_per_frame": 2.57
+   },
+   "last75 (302-377)": {
+    "frames": 3628,
+    "frame_p50": 20.63,
+    "frame_p99": 21.97,
+    "game_cpu_ms": 30.78,
+    "present_wait_ms": 6.37,
+    "submissions": 65.0,
+    "draws": 887.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.79,
+    "game_fault_ms": 3.22,
+    "b_busy_ms": 12.32,
+    "gxrender_pct": 13,
+    "game_threads_pct": 98,
+    "gxrender_cpu_ms_per_frame": 2.68
+   }
+  },
+  "verdict": "renderer work CAPPED - the guest paces late (>= 18 ms)",
+  "null_render_lines": 0,
+  "asserts": {
+   "gcn_to_vk.cpp:422": 0,
+   "cp_graphics.cpp:203": 0
+  },
+  "guest_prev_frame_wait_ms_last": 16.98
+ },
+ "litetr-1": {
+  "gameplay_s": 377.8,
+  "windows": {
+   "0-60": {
+    "frames": 2812,
+    "frame_p50": 20.94,
+    "frame_p99": 25.25,
+    "game_cpu_ms": 28.13,
+    "present_wait_ms": 7.84,
+    "submissions": 65.0,
+    "draws": 884.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.02,
+    "game_fault_ms": 3.04,
+    "b_busy_ms": 13.48,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 87.5,
+    "gxrender_cpu_ms_per_frame": 2.51
+   },
+   "60-110": {
+    "frames": 2358,
+    "frame_p50": 21.15,
+    "frame_p99": 22.44,
+    "game_cpu_ms": 28.42,
+    "present_wait_ms": 7.87,
+    "submissions": 65.0,
+    "draws": 885.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.16,
+    "game_fault_ms": 3.0,
+    "b_busy_ms": 13.44,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 88.0,
+    "gxrender_cpu_ms_per_frame": 2.54
+   },
+   "last75 (303-378)": {
+    "frames": 3535,
+    "frame_p50": 21.13,
+    "frame_p99": 22.74,
+    "game_cpu_ms": 30.55,
+    "present_wait_ms": 6.92,
+    "submissions": 65.0,
+    "draws": 885.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.7,
+    "game_fault_ms": 3.35,
+    "b_busy_ms": 12.94,
+    "gxrender_pct": 12.0,
+    "game_threads_pct": 94.0,
+    "gxrender_cpu_ms_per_frame": 2.54
+   }
+  },
+  "verdict": "renderer work CAPPED - the guest paces late (>= 18 ms)",
+  "null_render_lines": 0,
+  "asserts": {
+   "gcn_to_vk.cpp:422": 0,
+   "cp_graphics.cpp:203": 0
+  },
+  "guest_prev_frame_wait_ms_last": 17.27
+ },
+ "nonetr-1": {
+  "gameplay_s": 351.1,
+  "windows": {
+   "0-60": {
+    "frames": 2754,
+    "frame_p50": 18.51,
+    "frame_p99": 19.32,
+    "game_cpu_ms": 27.36,
+    "present_wait_ms": 5.9,
+    "submissions": 65.0,
+    "draws": 889.0,
+    "dispatches": 104.0,
+    "stage_a_cpu_ms": 7.87,
+    "game_fault_ms": 2.97,
+    "b_busy_ms": 11.09,
+    "gxrender_pct": 14,
+    "game_threads_pct": 97.0,
+    "gxrender_cpu_ms_per_frame": 2.59
+   },
+   "60-110": {
+    "frames": 2679,
+    "frame_p50": 18.65,
+    "frame_p99": 19.2,
+    "game_cpu_ms": 27.3,
+    "present_wait_ms": 6.11,
+    "submissions": 65.0,
+    "draws": 889.0,
+    "dispatches": 104.0,
+    "stage_a_cpu_ms": 7.84,
+    "game_fault_ms": 2.98,
+    "b_busy_ms": 11.31,
+    "gxrender_pct": 14.0,
+    "game_threads_pct": 96.0,
+    "gxrender_cpu_ms_per_frame": 2.61
+   },
+   "last75 (276-351)": {
+    "frames": 4012,
+    "frame_p50": 18.7,
+    "frame_p99": 19.23,
+    "game_cpu_ms": 27.68,
+    "present_wait_ms": 6.01,
+    "submissions": 65.0,
+    "draws": 890.0,
+    "dispatches": 104.0,
+    "stage_a_cpu_ms": 7.93,
+    "game_fault_ms": 3.05,
+    "b_busy_ms": 11.2,
+    "gxrender_pct": 14,
+    "game_threads_pct": 97,
+    "gxrender_cpu_ms_per_frame": 2.62
+   }
+  },
+  "verdict": "renderer work CAPPED - the guest paces late (>= 18 ms)",
+  "null_render_lines": 0,
+  "asserts": {
+   "gcn_to_vk.cpp:422": 0,
+   "cp_graphics.cpp:203": 0
+  },
+  "guest_prev_frame_wait_ms_last": 15.59
+ },
+ "vktr-1": {
+  "gameplay_s": 377.3,
+  "windows": {
+   "0-60": {
+    "frames": 2997,
+    "frame_p50": 19.65,
+    "frame_p99": 22.82,
+    "game_cpu_ms": 26.81,
+    "present_wait_ms": 7.0,
+    "submissions": 65.0,
+    "draws": 887.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 7.96,
+    "game_fault_ms": 2.9,
+    "b_busy_ms": 12.23,
+    "gxrender_pct": 13.0,
+    "game_threads_pct": 89.0,
+    "gxrender_cpu_ms_per_frame": 2.55
+   },
+   "60-110": {
+    "frames": 2513,
+    "frame_p50": 19.87,
+    "frame_p99": 20.58,
+    "game_cpu_ms": 28.08,
+    "present_wait_ms": 6.87,
+    "submissions": 65.0,
+    "draws": 889.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.12,
+    "game_fault_ms": 3.18,
+    "b_busy_ms": 12.23,
+    "gxrender_pct": 13.0,
+    "game_threads_pct": 94.0,
+    "gxrender_cpu_ms_per_frame": 2.58
+   },
+   "last75 (302-377)": {
+    "frames": 3781,
+    "frame_p50": 19.79,
+    "frame_p99": 21.0,
+    "game_cpu_ms": 27.21,
+    "present_wait_ms": 7.04,
+    "submissions": 65.0,
+    "draws": 889.0,
+    "dispatches": 105.0,
+    "stage_a_cpu_ms": 8.05,
+    "game_fault_ms": 3.04,
+    "b_busy_ms": 12.28,
+    "gxrender_pct": 13,
+    "game_threads_pct": 90,
+    "gxrender_cpu_ms_per_frame": 2.57
+   }
+  },
+  "verdict": "renderer work CAPPED - the guest paces late (>= 18 ms)",
+  "null_render_lines": 0,
+  "asserts": {
+   "gcn_to_vk.cpp:422": 0,
+   "cp_graphics.cpp:203": 0
+  },
+  "guest_prev_frame_wait_ms_last": 16.73
+ }
+}

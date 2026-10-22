@@ -1,0 +1,8 @@
+RESULT mode=full+onecb encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=10.184 us_per_enc=33.95
+RESULT mode=fence+onecb encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=9.425 us_per_enc=31.42
+RESULT mode=none+onecb encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=7.914 us_per_enc=26.38
+RESULT mode=full+onecb encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=29.247 us_per_enc=97.49
+RESULT mode=fence+onecb encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=26.816 us_per_enc=89.39
+RESULT mode=none+onecb encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=23.471 us_per_enc=78.24
+RESULT mode=full encoders=300 size=1720x720 verts=300000 vtx_iters=16 frag_iters=64 p50_ms=35.751 us_per_enc=119.17
+RESULT mode=none encoders=300 size=1720x720 verts=300000 vtx_iters=16 frag_iters=64 p50_ms=24.636 us_per_enc=82.12

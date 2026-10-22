@@ -1,0 +1,13 @@
+{"tag":"ctrltr-1","attempt":1,"max_draws":29,"overlap":86,"gcn422":0,"pm4_203":0,"watchdog":1,"mode":"KosmicKrisp: end-of-encoder barriers: legacy ALL->ALL (BB_KK_BARRIER)","assert":""}
+{"tag":"ctrltr-1","attempt":2,"max_draws":894,"overlap":18,"gcn422":0,"pm4_203":0,"watchdog":1,"mode":"KosmicKrisp: end-of-encoder barriers: legacy ALL->ALL (BB_KK_BARRIER)","assert":""}
+{"tag":"ctrltr-1","attempt":1,"max_draws":886,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: legacy ALL->ALL (BB_KK_BARRIER)","assert":""}
+{"tag":"nodeptr-1","attempt":1,"max_draws":892,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: nodep (diagnostic, unsafe) (BB_KK_BARRIER)","assert":""}
+{"tag":"litetr-1","attempt":1,"max_draws":892,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":1,"mode":"KosmicKrisp: end-of-encoder barriers: lite (BB_KK_BARRIER)","assert":""}
+{"tag":"litetr-1","attempt":2,"max_draws":890,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: lite (BB_KK_BARRIER)","assert":""}
+{"tag":"nonetr-1","attempt":1,"max_draws":24,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":1,"mode":"KosmicKrisp: end-of-encoder barriers: none for render encoders (diagnostic, unsafe) (BB_KK_BARRIER)","assert":""}
+{"tag":"freetr-1","attempt":1,"max_draws":24,"note":"never left the title: Continue did not take in 90 s (23 presses); killed by hand"}
+{"tag":"cfreetr-1","attempt":1,"max_draws":24,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: cfree: nodep + compute holds only dispatch/blit (diagnostic, unsafe) (BB_KK_BARRIER)","assert":""}
+{"tag":"cfreetr-1","attempt":1,"max_draws":24,"note":"never left the title (22 presses in 90 s), same as free; killed by hand"}
+{"tag":"nonetr-1","attempt":1,"max_draws":894,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: none for render encoders (diagnostic, unsafe) (BB_KK_BARRIER)","assert":""}
+{"tag":"ctrltr-2","attempt":1,"max_draws":889,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: legacy ALL->ALL (BB_KK_BARRIER)","assert":""}
+{"tag":"vktr-1","attempt":1,"max_draws":894,"overlap":0,"gcn422":0,"pm4_203":0,"watchdog":0,"mode":"KosmicKrisp: end-of-encoder barriers: vk (render encoders follow the Vulkan barriers) (BB_KK_BARRIER)","assert":""}

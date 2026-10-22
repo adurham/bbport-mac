@@ -1,0 +1,15 @@
+RESULT mode=full encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=10.032 us_per_enc=33.44
+RESULT mode=lite encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=10.360 us_per_enc=34.53
+RESULT mode=consumer encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=10.363 us_per_enc=34.54
+RESULT mode=fence encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=10.417 us_per_enc=34.72
+RESULT mode=none encoders=300 size=1720x720 verts=3 vtx_iters=64 frag_iters=4 p50_ms=10.395 us_per_enc=34.65
+RESULT mode=full encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=4 p50_ms=10.103 us_per_enc=33.68
+RESULT mode=lite encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=4 p50_ms=10.102 us_per_enc=33.67
+RESULT mode=consumer encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=4 p50_ms=10.080 us_per_enc=33.60
+RESULT mode=fence encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=4 p50_ms=10.209 us_per_enc=34.03
+RESULT mode=none encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=4 p50_ms=10.195 us_per_enc=33.98
+RESULT mode=full encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=28.584 us_per_enc=95.28
+RESULT mode=lite encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=25.942 us_per_enc=86.47
+RESULT mode=consumer encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=26.040 us_per_enc=86.80
+RESULT mode=fence encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=25.497 us_per_enc=84.99
+RESULT mode=none encoders=300 size=1720x720 verts=30000 vtx_iters=64 frag_iters=64 p50_ms=23.484 us_per_enc=78.28
