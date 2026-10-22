@@ -1,0 +1,12 @@
+idx,lib_ms,pso_ms,ok
+10,0.189,59.025,1
+11,0.150,28.912,1
+12,0.163,24.624,1
+13,0.126,30.585,1
+14,0.158,21.139,1
+15,0.153,41.537,1
+16,0.149,40.318,1
+17,0.170,43.051,1
+18,0.145,24.393,1
+19,0.139,20.205,1
+SUMMARY mode=libcapture salt=- n=10 ok=10 dev_ms=31.0 compiler_ms=0.0 archive_load_ms=0.0 lib_total_ms=1.5 pso_total_ms=333.8 lib_per_ms=0.154 pso_per_ms=33.379 serialize_ms=17.5 archive_bytes=601904 gpu=Apple M4 Max
