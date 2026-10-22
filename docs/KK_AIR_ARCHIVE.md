@@ -183,3 +183,31 @@ de-duplicated set (`base.archive.dedup.d`, 14 segments, 12 MB) measured the same
 - **Harness.** `kkair_run.sh` drivers `native` (the native line's deps-arm64) and `today`
   (`deps-arm64-today`, a symlink farm onto the backup), and `INI_SET="key=value"` appends to the run's
   own ini copy (sizing_run.sh), so the switch is proven through the settings path with no `BB_KK_*` env.
+
+### Ship proof (held-out roam, hidden, empty store, cold Metal cache, `out/kkair/ship_series.sh` + `ship_off_rerun.sh`)
+
+| | S-today2: today's driver (0001-0004), no switch | S-off2: new driver (0001-0008), kk_preload absent | S-on: new driver, `kk_preload=1` in the run's ini, no BB_KK_* env |
+|---|---|---|---|
+| pipelines created | 311 (220 g / 34 c) | 307 (219 / 34) | 282 (205 / 34) |
+| area driver total | 38.7 s | 39.4 s | **0.29 s** |
+| mtllib p50 / total | (no timers in this driver) | 139 ms / 31.4 s | 0.53 ms / 0.12 s |
+| PSO p50 / total | (no timers) | 18.1 ms / 5.52 s | **0.141 ms** / 0.08 s |
+| libraries from AIR / from MSL | - | - / all | 521 / **0** |
+| archive hits (created < 1 ms) | - | - | 308 / 315 (98%) |
+| Mesa hits | - | 0 / 219 | 198 / 207 |
+| gameplay frames (>= 500 draws) p50 / >50 ms | 29.0 ms / 34 | 28.8 ms / 24 | 28.4 ms / 11 |
+| all frames > 50 ms | 47 | 37 | 19 |
+| `KK air` / `KK archive` / `KK preload` lines | 0 | 0 | 24 + 15 + 1 |
+| failed pipelines / asserts | 0 / none | 0 / none | 0 / none |
+
+Earlier control for the same route and driver family: H2-roam-ctrl 39.1 s, PSO p50 17.3 ms, 43 frames > 50 ms;
+H-roam-ctrl 40.8 s. The first attempts of S-today and S-off both died at the title->area transition (24
+draws/frame) on the known `cp_graphics.cpp:203` "PM4 type 0 packet" assert (once per driver, i.e. not
+driver-related); their reruns are the columns above. Every run was ended by the footprint watchdog
+(S-on after ~85 s on free+inactive 3.8 GiB, the others after ~2.5 min at 19 GiB).
+
+**OFF is not byte-identical to today's driver in one respect:** today's installed driver was built
+from 0001-0004 only (stamp 5b955b1a = hash of 0001-0004), so the new one also brings 0005-0007, all
+default off. The only visible difference with the switch off is 0005's one start-up line
+`KosmicKrisp: end-of-encoder barriers: legacy ALL->ALL (BB_KK_BARRIER)` (legacy = upstream behaviour).
+Pipeline cost and frame time are within the run-to-run spread (38.7 / 39.1 / 39.4 / 40.8 s driver total).
