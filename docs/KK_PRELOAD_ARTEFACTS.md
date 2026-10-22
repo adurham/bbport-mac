@@ -71,3 +71,41 @@ compiles: pipelines whose state only a specific player position/state produces (
 ~254 were in no capture route; 11 of 214 PSOs took >= 1 ms, 393 ms in total), and anything outside
 the captured areas (other areas, bosses, cutscenes): those compile exactly as they do today, then the
 port's own store keeps them.
+
+## 2026-10-22 top-up: the load burst after the position moved
+
+`docs/HITCH_ATTRIBUTION_2026-10-22.md` found the one compile left in a covered area: a 30-pipeline
+burst at the area load, **2 016.9 ms** on a cold Metal cache and **329 ms** on the next launch, all
+30 archive misses. 26 of the run's 31 created keys appeared in no capture route: the set was a
+snapshot of the save position as it was captured, and the owner has walked since.
+
+The top-up is the same three layers, one route, on today's position (all hidden, `STORE=copy`):
+
+1. **MSL**: a pass-A run with `BB_KK_AIR_DIR=<artefacts/air>` and no archive loaded dumps the MSL the
+   AIR lacks - 234 files the first time, 6 more on a second pass after the first rebuild. Offline
+   `PRUNE=1 kkair_build_air.sh` -> **438 -> 678 libraries**.
+2. **Archive**: a pass-B run with the rebuilt AIR and `BB_KK_ARCHIVES=<shipped segments>` +
+   `BB_KK_ARCHIVE_CAPTURE=<new dir>` writes AIR-keyed entries; the new segments are kept beside the
+   14 shipped ones -> **19 segments, 48 MB, 59 ms to load all**.
+3. **Mesa**: the pass-B runs used a workdir without `mesa/`, so Mesa kept generating NIR->MSL
+   (81% of what was left: 296 ms of 365). One run with the shipped artefacts (so `run.sh` clones the
+   Mesa cache into the data dir and extends it) and that cache copied back -> **19 -> 28 MB**.
+
+The 30-pipeline burst, same route, same store, measured at each step (driver time and its layers):
+
+| capture state | driver | NIR->MSL | MTLLibrary | pipeline state | archive misses |
+|---|---|---|---|---|---|
+| before (Metal cold, first launch) | 2 016.9 ms | 251.9 | 1 096.2 | 620.1 | 30 |
+| before (Metal warm, next launch) | 329 ms | - | 194 | 123 | 30 |
+| + AIR 678 + 3 segments | 389.6 ms | 260.8 | 22.0 | 9.7 | 30 |
+| + extended Mesa cache | **135.2 ms** | **0** | 30.4 | 29.4 | **0** |
+
+So the load hitch is 2.1 s on a first launch and 0.17 s afterwards, against 2.1 s / 0.33 s before the
+top-up. The remaining 135 ms is the port's own translation (33 ms) plus Metal creating the library
+and the pipeline state for pipelines the archive now answers for - the floor of a first draw of a new
+state, not a compile storm.
+
+**Caveat on this measurement:** the proof run's frame rate was unusable (19 fps, 1 068 frames over
+50 ms all owned by IPC) because four other Hermes sessions were running on the machine; only the
+compile numbers above are quoted from it. The steady-state numbers in
+`HITCH_ATTRIBUTION_2026-10-22.md` come from the quiet runs.
