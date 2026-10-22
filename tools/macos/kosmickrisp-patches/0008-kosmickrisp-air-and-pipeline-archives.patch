@@ -12,10 +12,10 @@ index 37668fd..676257d 100644
  /* Library */
  mtl_library *
 diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
-index 1b689f1..76ec52e 100644
+index 1b689f1..a0d3152 100644
 --- a/src/kosmickrisp/bridge/mtl_compiler.m
 +++ b/src/kosmickrisp/bridge/mtl_compiler.m
-@@ -12,6 +12,297 @@
+@@ -12,6 +12,337 @@
  #include <Metal/MTL4LibraryFunctionDescriptor.h>
  #include <Metal/MTL4RenderPipeline.h>
  #include <Metal/MTLDevice.h>
@@ -33,13 +33,20 @@ index 1b689f1..76ec52e 100644
 + *                              before.
 + *   BB_KK_ARCHIVES=<a>:<b>:... MTL4Archives (base first, then the player's) passed to every render
 + *                              and compute pipeline compile as MTL4CompilerTaskOptions.lookupArchives,
-+ *                              so a miss compiles normally. Never archive-only creation.
++ *                              so a miss compiles normally. Never archive-only creation. An entry that
++ *                              is a directory loads every *.mtl4archive in it (a capture's segments),
++ *                              in name order.
 + *   BB_KK_ARCHIVE_CAPTURE=1    attach a CaptureBinaries MTL4PipelineDataSetSerializer to the compiler
 + *                              and write it as an archive: on the last compiler release, and (because
 + *                              the port's GPU process ends with _Exit, which never releases it) also
-+ *                              from a background thread 5 s after the last new pipeline. The archive
-+ *                              goes to $BB_KK_AIR_DIR/capture.mtl4archive (./kk-capture.mtl4archive
-+ *                              without an AIR dir); any value other than 1 is taken as the path.
++ *                              from a background thread 5 s after the last new pipeline. Every write
++ *                              is a new segment <dir>/seg-NNNN.mtl4archive, because
++ *                              serializeAsArchiveAndFlushToURL FLUSHES: it empties the serializer, so
++ *                              each write holds only the pipelines created since the previous one
++ *                              (writing one file over and over kept only the last few pipelines).
++ *                              <dir> is $BB_KK_AIR_DIR/capture.archive.d (./kk-capture.archive.d
++ *                              without an AIR dir); any value other than 1 is taken as <dir>. Pass
++ *                              <dir> itself to BB_KK_ARCHIVES.
 + *                              With BB_KK_AIR_DIR set, every library compiled from source is also
 + *                              dumped as <dir>/<key>.metal, listed in <dir>/manifest.txt with the
 + *                              options it must be compiled with.
@@ -68,6 +75,8 @@ index 1b689f1..76ec52e 100644
 +   id<MTL4PipelineDataSetSerializer> serializer;
 +   pthread_rwlock_t capture_lock; /* compiles read, serialize writes */
 +   atomic_uint_fast64_t air_hits, air_misses, air_bad, pipelines, flushed_pipelines;
++   atomic_uint_fast64_t lookup_pipelines, fast_pipelines; /* created with lookupArchives / in < 1 ms */
++   unsigned archive_count, segments;
 +   atomic_int_fast64_t last_pipeline_ns;
 +   pthread_mutex_t flush_mutex;
 +};
@@ -101,9 +110,9 @@ index 1b689f1..76ec52e 100644
 +      if (strcmp(cap, "1") != 0)
 +         s->capture_path = [@(cap) retain];
 +      else if (s->air_dir != nil)
-+         s->capture_path = [[s->air_dir stringByAppendingPathComponent:@"capture.mtl4archive"] retain];
++         s->capture_path = [[s->air_dir stringByAppendingPathComponent:@"capture.archive.d"] retain];
 +      else
-+         s->capture_path = [@"kk-capture.mtl4archive" retain];
++         s->capture_path = [@"kk-capture.archive.d" retain];
 +   }
 +   s->enabled = s->air_dir != nil || s->archive_paths.count > 0 || s->capture_path != nil;
 +   if (s->enabled) {
@@ -133,21 +142,30 @@ index 1b689f1..76ec52e 100644
 +      return;
 +   }
 +   @autoreleasepool {
-+      NSString *tmp = [s->capture_path stringByAppendingString:@".tmp"];
++      mkdir(s->capture_path.UTF8String, 0755);
++      /* The next free segment number (a re-capture into an existing dir appends). */
++      NSString *seg;
++      do {
++         seg = [s->capture_path stringByAppendingPathComponent:
++                                   [NSString stringWithFormat:@"seg-%04u.mtl4archive", s->segments++]];
++      } while (access(seg.UTF8String, F_OK) == 0);
++      NSString *tmp = [seg stringByAppendingString:@".tmp"];
 +      int64_t t0 = bb_air_now_ns();
 +      pthread_rwlock_wrlock(&s->capture_lock);
 +      NSError *error = nil;
 +      BOOL ok = [s->serializer serializeAsArchiveAndFlushToURL:[NSURL fileURLWithPath:tmp] error:&error];
 +      pthread_rwlock_unlock(&s->capture_lock);
 +      double ms = (bb_air_now_ns() - t0) / 1e6;
-+      if (ok && rename(tmp.UTF8String, s->capture_path.UTF8String) == 0) {
++      if (ok && rename(tmp.UTF8String, seg.UTF8String) == 0) {
 +         struct stat st = {0};
-+         stat(s->capture_path.UTF8String, &st);
++         stat(seg.UTF8String, &st);
++         uint64_t prev = atomic_load(&s->flushed_pipelines);
 +         atomic_store(&s->flushed_pipelines, n);
-+         fprintf(stderr, "KK archive: captured %llu pipelines into %s (%lld bytes, %.1f ms, %s)\n",
-+                 (unsigned long long)n, s->capture_path.UTF8String, (long long)st.st_size, ms, why);
++         fprintf(stderr, "KK archive: captured pipelines %llu..%llu (%llu new) into %s (%lld bytes, %.1f ms, %s)\n",
++                 (unsigned long long)prev + 1, (unsigned long long)n, (unsigned long long)(n - prev),
++                 seg.UTF8String, (long long)st.st_size, ms, why);
 +      } else {
-+         fprintf(stderr, "KK archive: capture serialize to %s FAILED (%s)\n", s->capture_path.UTF8String,
++         fprintf(stderr, "KK archive: capture serialize to %s FAILED (%s)\n", seg.UTF8String,
 +                 error ? error.localizedDescription.UTF8String : "no error given");
 +      }
 +   }
@@ -165,9 +183,12 @@ index 1b689f1..76ec52e 100644
 +      uint64_t sum = atomic_load(&s->air_hits) + atomic_load(&s->air_misses) + atomic_load(&s->air_bad);
 +      if (sum != reported) {
 +         reported = sum;
-+         fprintf(stderr, "KK air: %llu libraries from AIR, %llu compiled from MSL, %llu AIR files unusable; %llu pipelines\n",
++         fprintf(stderr, "KK air: %llu libraries from AIR, %llu compiled from MSL, %llu AIR files unusable; %llu pipelines "
++                         "(%llu with lookupArchives over %u archives, %llu created in < 1 ms)\n",
 +                 (unsigned long long)atomic_load(&s->air_hits), (unsigned long long)atomic_load(&s->air_misses),
-+                 (unsigned long long)atomic_load(&s->air_bad), (unsigned long long)atomic_load(&s->pipelines));
++                 (unsigned long long)atomic_load(&s->air_bad), (unsigned long long)atomic_load(&s->pipelines),
++                 (unsigned long long)atomic_load(&s->lookup_pipelines), s->archive_count,
++                 (unsigned long long)atomic_load(&s->fast_pipelines));
 +      }
 +      if (s->serializer != nil &&
 +          atomic_load(&s->pipelines) != atomic_load(&s->flushed_pipelines) &&
@@ -188,7 +209,20 @@ index 1b689f1..76ec52e 100644
 +   done = true;
 +   if (s->archive_paths.count) {
 +      NSMutableArray<id<MTL4Archive>> *loaded = [NSMutableArray array];
++      NSMutableArray<NSString *> *files = [NSMutableArray array];
 +      for (NSString *p in s->archive_paths) {
++         BOOL is_dir = NO;
++         if ([[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&is_dir] && is_dir) {
++            NSArray *names = [[[NSFileManager defaultManager] contentsOfDirectoryAtPath:p error:nil]
++               sortedArrayUsingSelector:@selector(compare:)];
++            for (NSString *n in names)
++               if ([n.pathExtension isEqualToString:@"mtl4archive"])
++                  [files addObject:[p stringByAppendingPathComponent:n]];
++         } else {
++            [files addObject:p];
++         }
++      }
++      for (NSString *p in files) {
 +         int64_t t0 = bb_air_now_ns();
 +         NSError *error = nil;
 +         id<MTL4Archive> a = [dev newArchiveWithURL:[NSURL fileURLWithPath:p] error:&error];
@@ -205,7 +239,9 @@ index 1b689f1..76ec52e 100644
 +      if (loaded.count) {
 +         s->task_options = [MTL4CompilerTaskOptions new];
 +         s->task_options.lookupArchives = loaded;
++         s->archive_count = (unsigned)loaded.count;
 +      }
++      fprintf(stderr, "KK archive: %u archives passed as lookupArchives to every pipeline\n", s->archive_count);
 +   }
 +   if (s->capture_path != nil) {
 +      MTL4PipelineDataSetSerializerDescriptor *sd = [[MTL4PipelineDataSetSerializerDescriptor new] autorelease];
@@ -294,9 +330,13 @@ index 1b689f1..76ec52e 100644
 +}
 +
 +static void
-+bb_air_pipeline_created(void)
++bb_air_pipeline_created(int64_t ns)
 +{
 +   struct bb_air_state *s = &bb_air_s;
++   if (s->task_options != nil)
++      atomic_fetch_add(&s->lookup_pipelines, 1);
++   if (ns < 1000000)
++      atomic_fetch_add(&s->fast_pipelines, 1);
 +   atomic_fetch_add(&s->pipelines, 1);
 +   atomic_store(&s->last_pipeline_ns, bb_air_now_ns());
 +}
@@ -313,7 +353,7 @@ index 1b689f1..76ec52e 100644
  
  /* Compiler */
  mtl_compiler *
-@@ -21,6 +312,7 @@
+@@ -21,6 +352,7 @@
        id<MTLDevice> dev = (id<MTLDevice>)device;
  
        MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor new] autorelease];
@@ -321,7 +361,7 @@ index 1b689f1..76ec52e 100644
  
        NSError *error;
        id<MTL4Compiler> compiler = [dev newCompilerWithDescriptor:desc error:&error];
-@@ -42,6 +334,17 @@
+@@ -42,6 +374,17 @@
  {
     @autoreleasepool {
        id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;
@@ -339,7 +379,7 @@ index 1b689f1..76ec52e 100644
        NSString *ns_src = [NSString stringWithCString:src encoding:NSASCIIStringEncoding];
  
        MTLCompileOptions *opts = [[MTLCompileOptions new] autorelease];
-@@ -54,7 +357,16 @@
+@@ -54,7 +397,16 @@
        desc.options = opts;
  
        NSError *error;
@@ -356,13 +396,14 @@ index 1b689f1..76ec52e 100644
  
        if (lib == nil) {
           fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
-@@ -92,8 +404,17 @@
+@@ -92,8 +444,18 @@
        desc.maxTotalThreadsPerThreadgroup = max_total_threads_per_threadgroup;
  
        NSError *error;
 -      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
 +      /* bbport 0008: lookupArchives (BB_KK_ARCHIVES) - a miss compiles; nil when unset. */
 +      struct bb_air_state *bb = bb_air();
++      int64_t bb_t0 = bb_air_now_ns();
 +      if (bb->serializer != nil)
 +         pthread_rwlock_rdlock(&bb->capture_lock);
 +      id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc
@@ -371,17 +412,18 @@ index 1b689f1..76ec52e 100644
 +      if (bb->serializer != nil)
 +         pthread_rwlock_unlock(&bb->capture_lock);
 +      if (bb->enabled && pipeline != nil)
-+         bb_air_pipeline_created();
++         bb_air_pipeline_created(bb_air_now_ns() - bb_t0);
  
        if (pipeline == nil) {
           fprintf(stderr, "Failed to create MTLComputePipelineState: %s\n", [error.localizedDescription UTF8String]);
-@@ -212,8 +533,17 @@
+@@ -212,8 +574,18 @@
        MTL4RenderPipelineDescriptor *desc = (MTL4RenderPipelineDescriptor *)descriptor;
  
        NSError *error = nil;
 -      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc compilerTaskOptions:nil
 +      /* bbport 0008: lookupArchives (BB_KK_ARCHIVES) - a miss compiles; nil when unset. */
 +      struct bb_air_state *bb = bb_air();
++      int64_t bb_t0 = bb_air_now_ns();
 +      if (bb->serializer != nil)
 +         pthread_rwlock_rdlock(&bb->capture_lock);
 +      id<MTLRenderPipelineState> pipeline = [comp newRenderPipelineStateWithDescriptor:desc
@@ -390,7 +432,7 @@ index 1b689f1..76ec52e 100644
 +      if (bb->serializer != nil)
 +         pthread_rwlock_unlock(&bb->capture_lock);
 +      if (bb->enabled && pipeline != nil)
-+         bb_air_pipeline_created();
++         bb_air_pipeline_created(bb_air_now_ns() - bb_t0);
  
        if (pipeline == nil) {
           fprintf(stderr, "Failed to create MTLRenderPipelineState: %s\n", [error.localizedDescription UTF8String]);

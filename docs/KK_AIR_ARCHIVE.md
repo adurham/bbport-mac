@@ -16,8 +16,8 @@ its three `KK_BBSTAT_SHADERS` hunks were already in 0004.
 | env | effect |
 |---|---|
 | `BB_KK_AIR_DIR=<dir>` | `mtl_new_library` first tries `<dir>/<key>.metallib` (`newLibraryWithURL`). If it is missing or unusable, the MSL is compiled as before. |
-| `BB_KK_ARCHIVES=a:b:...` | Loaded once with `newArchiveWithURL` (base first, then the player's). Every render/compute PSO gets `MTL4CompilerTaskOptions.lookupArchives`, so a miss compiles normally. Archive-only creation is never used. An unloadable archive is skipped and logged. |
-| `BB_KK_ARCHIVE_CAPTURE=1\|<path>` | Puts a `CaptureBinaries`-only serializer on the compiler. `CaptureDescriptors` is not used because it hits the 27.2 bug. The archive is written to `<path>`, or `$BB_KK_AIR_DIR/capture.mtl4archive` when the value is `1`, via tmp+rename. This happens on the last compiler release and also 5 s after the last new pipeline: bb-gpu ends with `_Exit`, so the release never runs there. With an AIR dir, every library compiled from source is dumped as `<key>.metal` and gets a line in `manifest.txt`: `<key> -std=metal4.1 -fmetal-math-mode=fast -fmetal-math-fp32-functions=fast`. |
+| `BB_KK_ARCHIVES=a:b:...` | Loaded once with `newArchiveWithURL` (base first, then the player's). An entry that is a directory loads every `*.mtl4archive` in it, in name order (a capture's segments). Every render/compute PSO gets `MTL4CompilerTaskOptions.lookupArchives`, so a miss compiles normally. Archive-only creation is never used. An unloadable archive is skipped and logged. |
+| `BB_KK_ARCHIVE_CAPTURE=1\|<dir>` | Puts a `CaptureBinaries`-only serializer on the compiler. `CaptureDescriptors` is not used because it hits the 27.2 bug. Each write is a new segment `<dir>/seg-NNNN.mtl4archive` (`$BB_KK_AIR_DIR/capture.archive.d` when the value is `1`), via tmp+rename. **`serializeAsArchiveAndFlushToURL` flushes the serializer**: each call writes only the pipelines created since the previous call. The first version rewrote one file, so the shipped archive held only the last 13 of 329 pipelines and the proof PSO p50 stayed at 15 ms. A re-capture into an existing dir appends segments. This happens on the last compiler release and also 5 s after the last new pipeline: bb-gpu ends with `_Exit`, so the release never runs there. With an AIR dir, every library compiled from source is dumped as `<key>.metal` and gets a line in `manifest.txt`: `<key> -std=metal4.1 -fmetal-math-mode=fast -fmetal-math-fp32-functions=fast`. |
 
 **AIR key:** BLAKE3, the hash Mesa's disk cache uses (`util/mesa-blake3.h`). It covers the tag
 `bbport-kk-air-1`, the `{msl_version, math_mode, fp32_functions}` triple and the MSL text, in hex. The
@@ -30,9 +30,15 @@ That is the same `compilerTaskOptions:nil` as upstream: no serializer, no thread
 log line. Taking the capture rwlock is gated on the serializer. This has not been proven by a run yet
 (see the open bar).
 
-Log lines when enabled: `KK archive: loaded|capturing|captured N pipelines ... (bytes, ms)`, plus
-`KK air: H libraries from AIR, M compiled from MSL, B AIR files unusable; P pipelines` (every 2 s
-while it changes).
+Log lines when enabled: `KK archive: loaded|capturing|captured pipelines A..B (N new) into seg (bytes, ms)`,
+`KK archive: N archives passed as lookupArchives to every pipeline`, plus `KK air: H libraries from
+AIR, M compiled from MSL, B AIR files unusable; P pipelines (L with lookupArchives over N archives, F
+created in < 1 ms)` (every 2 s while it changes). F/P is the archive hit rate: a hit takes 0.1-0.4 ms,
+a miss 6-34 ms.
+
+The shipped Mesa cache must come from the same driver binary: Mesa's disk cache keys on the
+driver's build-id, so a rebuilt driver misses every entry (a proof seeded with the old cache got
+0/206 hits and 5.1 s of NIR→MSL). `kkair_proof.sh` therefore ships capture2's Mesa cache.
 
 ## Local layout (in this worktree, not committed; the port's installed driver is untouched)
 
@@ -77,7 +83,23 @@ while it changes).
 - (c) Load at play time: `BB_KK_AIR_DIR=<air> BB_KK_ARCHIVES=<base.mtl4archive>[:<player.mtl4archive>]
   MESA_SHADER_CACHE_DIR=<shipped mesa cache>`, with the driver built with 0008.
 
-## Bar (open)
+## Result 2026-10-22 (proof vs ctrl-0008, 300 s, hidden, Metal cache cold, empty store)
+
+| | ctrl-0008 (env unset) | proof before the segment fix | proof |
+|---|---|---|---|
+| graphics/compute pipelines | 228/34 | 254/34 | 221/34 |
+| PSO p50 | 17.2 ms | 15.06 ms | **0.155 ms** |
+| PSO total | 5.66 s | 5.36 s | 1.10 s (180/223 under 1 ms) |
+| mtllib p50 / total | 133 ms / 31.6 s | 0.47 ms / 4.16 s | 0.44 ms / 2.34 s |
+| NIR→MSL / Mesa hits | 6.1 s / 0 | 1.14 s / 201 | 0.35 s / 166/223 |
+| area driver total | 39.5 s | 5.78 s | **2.35 s** |
+| failed pipelines | 0 | 0 | 0 |
+
+ctrl-0008 per pipeline: 121 ms (39.5 s / 326), against 123 ms (37.9 s / 308) before. It logs no
+`KK` line. What is left of the proof is coverage: 47 libraries and 43 PSOs that the capture runs never
+created (an empty-store run does not walk the same pipelines twice). A union capture closes that.
+
+## Bar
 
 - `mtl_new_library` median ≤ 1 ms (from 142.7).
 - Area driver total ≤ 2 s (from 33 s).

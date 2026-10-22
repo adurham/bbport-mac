@@ -47,14 +47,22 @@ if has offline; then
     bash tools/macos/kkair_build_air.sh "$art/air" >>"$log" 2>&1; say "offline AIR exit $?: $(tail -1 "$log")"
 fi
 if has capture2; then
-    rm -f "$art/base.mtl4archive"
+    # The capture is a directory of segments: every serializeAsArchiveAndFlushToURL empties the
+    # serializer, so each write holds only the pipelines since the previous one (patch 0008).
+    rm -rf "$art/base.mtl4archive" "$art/base.archive.d"
     MESA_SEED=$art/mesa bash tools/macos/kkair_run.sh capture2 "$secs" 0008 \
-        BB_KK_AIR_DIR="$art/air" BB_KK_ARCHIVE_CAPTURE="$art/base.mtl4archive" >>"$log" 2>&1
-    say "capture2 exit $?: base archive $(stat -f %z "$art/base.mtl4archive" 2>/dev/null || echo MISSING) bytes"
+        BB_KK_AIR_DIR="$art/air" BB_KK_ARCHIVE_CAPTURE="$art/base.archive.d" >>"$log" 2>&1
+    rc=$?
+    # Mesa's disk cache keys on the driver's build-id, so the shipped Mesa cache must come from the
+    # very driver binary that runs: capture2's (seeded with capture1's, refilled by this build).
+    if [[ -d $here/out/kkair/capture2/mesa ]]; then
+        rm -rf "$art/mesa" && cp -cR "$here/out/kkair/capture2/mesa" "$art/mesa"
+    fi
+    say "capture2 exit $rc: base archive $(ls "$art/base.archive.d"/*.mtl4archive 2>/dev/null | wc -l | tr -d ' ') segments, $(du -sk "$art/base.archive.d" 2>/dev/null | cut -f1) KB"
 fi
 if has proof; then
     MESA_SEED=$art/mesa bash tools/macos/kkair_run.sh proof "$secs" 0008 \
-        BB_KK_AIR_DIR="$art/air" BB_KK_ARCHIVES="$art/base.mtl4archive" >>"$log" 2>&1
+        BB_KK_AIR_DIR="$art/air" BB_KK_ARCHIVES="$art/base.archive.d" >>"$log" 2>&1
     say "proof exit $?"
 fi
 if has report; then
@@ -67,7 +75,7 @@ if has report; then
                   "$here/out/kkair/ctrl-base" "$here/out/kkair/ctrl-0008" | tee "$here/out/kkair/report.txt"
     {
         echo "artefact sizes on disk:"
-        du -sh "$art/base.mtl4archive" "$art/mesa" 2>/dev/null
+        du -sh "$art/base.archive.d" "$art/mesa" 2>/dev/null
         echo "AIR metallibs: $(find "$art/air" -name '*.metallib' | wc -l | tr -d ' ') files, $(find "$art/air" -name '*.metallib' -exec stat -f %z {} + | awk '{s+=$1} END {printf "%.1f MB", s/1e6}')"
         echo "dumped MSL: $(find "$art/air" -name '*.metal' | wc -l | tr -d ' ') files, $(find "$art/air" -name '*.metal' -exec stat -f %z {} + | awk '{s+=$1} END {printf "%.1f MB", s/1e6}')"
     } | tee -a "$here/out/kkair/report.txt"
