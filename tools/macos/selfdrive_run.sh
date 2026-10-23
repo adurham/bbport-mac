@@ -36,6 +36,19 @@ for i in $(seq 1 80); do
 done
 : > "$pad"
 if [[ $reached -eq 0 ]]; then echo "selfdrive: NEVER reached gameplay (last draws ${d:-?})"; fi
+# optional filmstrip: BB_SHOTS=1 triggers the port's own capture every ~3 s while standing
+if [ "${BB_SHOTS:-0}" = 1 ]; then
+    trig=/tmp/bb-shot-trigger-$tag
+    rm -f "$trig" /tmp/kk-m2-$tag.shots
+    for _ in $(seq 1 $((stand / 3))); do
+        : > "$trig"; sleep 0.5
+        png=$(grep -a 'Capture: wrote' "$log" | tail -1 | sed 's/.*Capture: wrote \(.*\.png\).*/\1/')
+        [[ -n $png ]] && echo "$png" >> /tmp/kk-m2-$tag.shots
+        sleep 2.5
+    done
+    rm -f "$trig"
+    echo "selfdrive: $(wc -l < /tmp/kk-m2-$tag.shots 2>/dev/null || echo 0) captures"
+fi
 sleep "$stand"
 # stop
 pkill -TERM -f 'bbprobe|bb-probe' 2>/dev/null
