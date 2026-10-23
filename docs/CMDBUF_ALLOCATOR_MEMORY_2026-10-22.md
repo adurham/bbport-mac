@@ -301,3 +301,34 @@ logging (the gate's decisions do not depend on it) and stand: zero hoists, block
 longer sets that log; it collects `BB_FRAME_STATS`/`BB_FRAME_LOG` instead so fps is read from the frame
 CSV. The run also missed the Mesa shader cache (new driver UUID `2E07D05D` vs the preload's `C5B640F8`),
 so it filled `~/.cache/mesa_shader_cache` from scratch; the next run on the same build is warm.
+
+### Second run (clean, no render log, warm shader cache): confirms it
+
+215 s of play, `BB_FRAME_STATS`/`BB_FRAME_LOG` on, `BB_KK_RENC_LOG` off.
+
+```
+pre-gfx hoist on: draws hoisted 0, side ops hoisted 0, hoist encoders 0; refusals 841380
+(pass encoder already created 249036, may-touch-anything 350986, earlier unknown side op 0,
+read-after-write 0, barrier after draw 0, first heap use 241358, pre_gfx busy 0);
+late refusals 0; max Metal command buffers per recording 102 (gfx only 51); order violations 0
+```
+
+Allocator block identical to the pre-M2 measurement: **86 gfx allocators, 10 151 MB summed, median
+132.7 MB** (before: 86 / 10 072 MB / 122.7 MB). 1 833 923 Metal command buffers created in 215 s
+(8 500/s), max 51 gfx per recording.
+
+Frame distribution that run (11 329 frames): mean 19.0 ms (**52.6 fps**), median 9.9 ms, p95 40.7 ms
+(~25 fps), worst 522 ms; the five worst 5-second windows averaged 37-40 ms. So the frame rate is bimodal
+- ~100 fps looking at cheap views, ~25 fps in the heavy ones - and the earlier 12 fps was the render log,
+not this.
+
+**Verdict on M2: correct, proven, and inert.** The gate refuses 841 380 of 841 380 candidate
+evaluations. The population is exactly the work that splits the passes: tessellation 350 986 (flagged
+`ANY` because its accesses are not decoded), first heap use 241 358, and draws arriving after the pass's
+render encoder exists 249 036. Zero read-after-write and zero barrier refusals means the safety analysis
+never even gets to the interesting cases.
+
+So the memory route is blocked on one thing: **the tessellation pre-gfx side op carries no address list**
+(`kk_cmd_draw.c` calls `kk_renc_side_op(..., KK_RENC_SIDE_ANY, NULL, 0u, NULL, 0u)`), so the gate cannot
+prove it safe and refuses every tessellated draw - which in this game is most of them. Until that path
+gets a decoded read/write set, deferred recording cannot reduce a single split on this title.
