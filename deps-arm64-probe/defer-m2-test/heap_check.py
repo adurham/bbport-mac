@@ -18,7 +18,9 @@ Hoisted draws (P1 tessellation, P2 unroll) must show, in execution order,
   draw -> the pass's render encoder,
 all on ONE hoist encoder (Hn) that ends immediately before the pass's
 render encoder is created; HEAP counter +0 for the draw.
-Refused draws (P3: BARRIER; P4: pre_gfx busy, HEAP reported) keep the M1
+P4 (an encoder from work outside the pass is open when the pass begins) is
+hoisted too: cs_start_render ends that carried encoder first.
+Refused draws (P3: BARRIER, HEAP reported) keep the M1
 placement: the reset on an in-pass POST compute encoder created after the
 pass's render encoder, as in the M1 log.
 
@@ -74,7 +76,11 @@ for l in open(hp + '.counters').read().splitlines():
 want = {'P1-tess': (1, 0), 'P2-unroll': (1, 0),
         # P3 is refused (in-pass barrier) and is the recording's first heap user:
         # the counter now means "refused AND first heap use applied", so it is 1.
-        'P3-unroll-refused': (0, 1), 'P4-tess-busy': (0, 1)}
+        'P3-unroll-refused': (0, 1),
+        # P4: the compute encoder open from work outside the pass is carried
+        # into it; cs_start_render now ends it (BB_KK_DEFER_HOIST), so the
+        # pre_gfx slot is free and the draw hoists with its reset.
+        'P4-tess-busy': (1, 0)}
 ok = True
 if not control:
     print('per-draw (hoisted, HEAP refusals added): %s -> %s' % (

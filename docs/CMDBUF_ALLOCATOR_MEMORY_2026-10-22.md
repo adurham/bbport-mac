@@ -473,3 +473,26 @@ below `BUSY`/`SHADER_WRITE`, so the stats line reported `first heap use 21981` w
 0 - the real reason (the pre_gfx slot still holding the previous refused draw's encoder) was hidden. The
 counter now means "the draw was also the recording's first heap user" and is incremented separately; the
 reported reason is the true one. M2 harness predicate table updated for the new semantics (PASS).
+
+### The BUSY cascade, corrected: it was a carried encoder, not an in-pass one
+
+The 22k "BUSY-cascade" label was half wrong. Inside a pass, the draw after a refused draw refuses **ENC**,
+not BUSY: the refused draw's M1 pre-gfx work runs `kk_renc_slow_sync_force`, which creates the pass's render
+encoder, and ENC is checked first. The real BUSY source is a compute encoder carried **across passes**:
+`kk_CmdEndRendering` calls `cs_end` once, which ends pre_gfx and the pass and then moves the still-open
+post_gfx encoder into the pre_gfx slot - typically the in-pass heap reset of a refused draw. That encoder
+stayed open through the next pass, so every gated draw in it refused BUSY, and its own post work was
+carried into the pass after that.
+
+Fix: `cs_start_render` ends a carried, non-folded, non-hoisted pre_gfx encoder before the shared buffer is
+created or reused (assert: no render encoder open, `gfx.cmd_buf == NULL`), counted as `carried compute
+encoders ended at pass start`. `kk_renc_hoist_busy` returns false outside a recording pass, since the gate
+runs before a lazily started pass begins and the carried encoder is now ended by then. Hoist path unchanged;
+with `BB_KK_DEFER_HOIST` off nothing changes (M1 harness byte-identical).
+
+Offline: M1 identical with both controls; M2 PASS - the main stream is now draws 7 / refused 5 / busy 0 (the
+old pre_gfx-busy case hoists), the new case 8 shows a pass ending with a carried encoder and the next pass
+hoisting, and the keep-open control is caught. Probe UUID `A286EEAB-0D50-36BC-8D05-8A8950CEF2A4`.
+
+Still old path, by design: draws after a refused draw *in the same pass* stay refused (now reported ENC) -
+that needs the M1 fallback to stop creating the render encoder, an M2/M3 design change.

@@ -14,12 +14,15 @@
  *   getc_()    cs_get_compute (hoist_next -> the hoist encoder on the pass's
  *              command buffer; else kk_renc_slow_sync_force + M1 encoders)
  *   hclose()   kk_cmd_hoist_close (renc.hoist_close)
+ *   pass_begin() cs_start_render: hoist on, a carried (non-folded) compute
+ *              encoder is ended before the pass begins
  *   pass_end() cs_end: pre_gfx encoder, then the gfx state, then post_gfx
  * Every dispatch line carries seq=N, its record-order id, identical in every
  * mode, so run.sh can match a hoisted dispatch with its M1 position.
  *
  * usage: renc_hoist_test direct|deferred|hoist <out-prefix> [perturb-bind|perturb-order]
  *        renc_hoist_test predicate      (refusal-predicate unit table)
+ *        renc_hoist_test cascade <out-prefix> [keep-open]   (BUSY cascade)
  */
 
 #include "kk_cmd_buffer.h"
@@ -309,10 +312,40 @@ pass_end(struct kk_cmd_buffer *cmd, bool barrier, enum mtl_stages before)
    kk_renc_rendering_end(cmd);
 }
 
+/* cs_end x1 (kk_CmdEndRendering, kk_bb_one_cb_draw_split, a restart): the
+ * pre_gfx encoder, then the gfx state; an open post_gfx encoder is promoted
+ * into the pre_gfx slot still open (SWAP), to be ended by a later cs_end */
+static void
+pass_end_single(struct kk_cmd_buffer *cmd, bool barrier, enum mtl_stages before)
+{
+   struct kk_encoder_state *t;
+   if (cmd->pre_gfx->encoder) {
+      end_compute(cmd, cmd->pre_gfx);
+      t = cmd->pre_gfx; cmd->pre_gfx = cmd->post_gfx; cmd->post_gfx = t;
+   } else if (cmd->post_gfx->encoder) {
+      t = cmd->pre_gfx; cmd->pre_gfx = cmd->post_gfx; cmd->post_gfx = t;
+   }
+   kk_renc_end(cmd, barrier, before);
+   kk_renc_rendering_end(cmd);
+}
+
+/* control: today's cs_start_render (a carried compute encoder stays open
+ * across the pass start) */
+static bool keep_open;
+
 static void
 pass_begin(struct kk_cmd_buffer *cmd, void *desc, bool entry_barrier)
 {
    rendering_begin(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+   /* cs_start_render (BB_KK_ONE_CMDBUF), hoist on: every compute encoder
+    * still open that is not folded/hoisted (on its own command buffer) is
+    * ended before the pass begins, pre_gfx slot first */
+   if (cmd->renc.hoist && !keep_open) {
+      struct kk_encoder_state *const carried[2] = {cmd->pre_gfx, cmd->post_gfx};
+      for (unsigned i = 0; i < 2; i++)
+         if (carried[i]->encoder && !carried[i]->bb_hoisted)
+            end_compute(cmd, carried[i]);
+   }
    kk_renc_begin(cmd, desc);
    uint32_t ids[2] = {0, 1};
    kk_renc_set_vertex_amplification_count(kk_renc(cmd), ids, 2);
@@ -449,6 +482,29 @@ predicate_table(void)
    /* 2: the busy refusal above now counts as BUSY too (it used to be masked by HEAP) */
    bad += h || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != 2;
    c->pre_gfx->encoder = NULL;
+   kk_renc_fini(c);
+   free(c);
+   {  /* the gate runs before the pass begins lazily (kk_flush_gfx_state):
+       * cs_start_render will end a carried encoder, so it is not BUSY */
+      struct kk_cmd_buffer *c2 = new_cmd(true, true);
+      c2->argument_table = fake();
+      c2->gfx.cmd_buf = fake();
+      c2->pre_gfx->encoder = busy_enc;
+      const long long b0 = stats[KK_BBSTAT_HOIST_REFUSED_BUSY];
+      h = kk_renc_hoist_draw(c2, 0u, NULL, 0u, false);
+      printf("  %-52s -> hoist=%d busy+=%lld\n", "gate before lazy pass begin, carried encoder open",
+             h, (long long)(stats[KK_BBSTAT_HOIST_REFUSED_BUSY] - b0));
+      bad += !h || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != b0;
+      draw_done(c2);
+      c2->pre_gfx->encoder = NULL;
+      kk_renc_fini(c2);
+      free(c2);
+      stats[KK_BBSTAT_HOIST_DRAWS]--; /* keep the next row's count */
+   }
+   c = new_cmd(true, true);
+   c->argument_table = fake();
+   c->gfx.cmd_buf = fake();
+   kk_renc_begin(c, d);
    h = kk_renc_hoist_draw(c, 0u, NULL, 0u, false);
    printf("  %-52s -> hoist=%d draws=%lld\n", "kk_renc_hoist_draw, nothing in the way",
           h, (long long)stats[KK_BBSTAT_HOIST_DRAWS]);
@@ -904,6 +960,116 @@ heap_mode(int argc, char **argv)
    return 0;
 }
 
+
+/* ---- BUSY cascade: renc_hoist_test cascade deferred|hoist <out-prefix> [keep-open]
+ * Rendering 1: a draw, an in-pass barrier, then draw A (unroll, the pass's
+ * first heap user): refused BARRIER, M1 path: its heap reset is in-pass
+ * post-gfx work (post_gfx encoder), its unroll pre-gfx. kk_CmdEndRendering's
+ * single cs_end ends pre_gfx and the pass and promotes the open post_gfx
+ * encoder (A's reset) into the pre_gfx slot, still open.
+ * Rendering 2 (new shared buffer: cs_start_render ended the old one): draw B
+ * (predicate), the first gated draw. Today (keep-open) the carried encoder
+ * holds the pre_gfx slot for the whole pass: B refuses BUSY. Now
+ * cs_start_render ends it first: B hoists.
+ * A2, a gated draw right after A in A's own pass, refuses ENC with or without
+ * the change: A's M1 pre-gfx work synced the pass into its Metal render
+ * encoder, and nothing can be hoisted ahead of an encoder that exists. */
+static int
+cascade_mode(int argc, char **argv)
+{
+   if (argc < 4) return 2;
+   const bool hoist = !strcmp(argv[2], "hoist");
+   keep_open = argc > 4 && !strcmp(argv[4], "keep-open");
+   char path[1024];
+   snprintf(path, sizeof(path), "%s.renc", argv[3]);
+   FILE *rl = fopen(path, "w");
+   snprintf(path, sizeof(path), "%s.mtl", argv[3]);
+   mt = fopen(path, "w");
+   snprintf(path, sizeof(path), "%s.hoist", argv[3]);
+   hl = fopen(path, "w");
+   snprintf(path, sizeof(path), "%s.heap", argv[3]);
+   heapl = fopen(path, "w");
+   if (!rl || !mt || !hl || !heapl) return 2;
+   kk_renc_log_set_file_for_test(rl);
+   the_table = fake();
+   void *cb1 = fake(), *cb2 = fake();
+   void *desc = fake(), *pipe = fake(), *ds = fake();
+   struct kk_shader *vs_ro = calloc(1, sizeof(*vs_ro));
+   struct kk_cmd_buffer *cmd = new_cmd(true, hoist);
+   cmd->argument_table = the_table;
+   cmd->gfx.cmd_buf = cb1;
+   kk_renc_set_table_address(cmd, 1u, 0x5A000000ull);
+   struct kk_renc *r = kk_renc(cmd);
+   cmd->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+   memset(stats, 0, sizeof(stats));
+
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 20);
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_primitives(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0);
+   kk_renc_barrier_after_encoder_stages(r, MTL_STAGE_FRAGMENT, MTL_STAGE_VERTEX);
+   struct heap_draw_rec ra;
+   const long long a_bar = stats[KK_BBSTAT_HOIST_REFUSED_BARRIER];
+   heap_unroll_draw(cmd, r, 0xD8000000ull, 0xE8000000ull, 0xE9000000ull, "A", &ra);
+   const long long a2_enc = stats[KK_BBSTAT_HOIST_REFUSED_ENC];
+   const long long a2_busy = stats[KK_BBSTAT_HOIST_REFUSED_BUSY];
+   bool a2_hoisted;
+   {  /* A2: same pass, right after A */
+      uint64_t rd[1] = {0xF2000060ull};
+      gate(cmd, false, rd, 1, false);
+      a2_hoisted = cmd->renc.hoist_draw;
+      struct libkk_predicate_indirect_neq_zero_args pa = {0xF0000060ull, 0xF1000060ull, 0xF2000060ull, 5, 5};
+      side(cmd, true, LIBKK_PREDICATE_INDIRECT_NEQ_ZERO, &pa, sizeof(pa));
+      kk_renc_draw_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0xF0000060ull);
+      draw_done(cmd);
+   }
+   store_ops(cmd);
+   pass_end_single(cmd, true, MTL_STAGE_ALL); /* kk_CmdEndRendering */
+   const bool carried = cmd->pre_gfx->encoder != NULL && !cmd->pre_gfx->bb_work_pre;
+   printf("A: hoisted=%d refused_barrier+=%lld; after EndRendering's cs_end the pre_gfx slot holds %s\n",
+          ra.hoisted, (long long)(stats[KK_BBSTAT_HOIST_REFUSED_BARRIER] - a_bar),
+          cmd->pre_gfx->encoder ? oname(cmd->pre_gfx->encoder) : "nothing");
+   (void)carried;
+   printf("A2 (same pass as A): hoisted=%d refused_enc+=%lld refused_busy+=%lld\n", a2_hoisted,
+          (long long)(stats[KK_BBSTAT_HOIST_REFUSED_ENC] - a2_enc),
+          (long long)(stats[KK_BBSTAT_HOIST_REFUSED_BUSY] - a2_busy));
+
+   cmd->gfx.cmd_buf = cb2;
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 21);
+   const long long b_busy = stats[KK_BBSTAT_HOIST_REFUSED_BUSY];
+   const long long b_draws = stats[KK_BBSTAT_HOIST_DRAWS];
+   bool b_hoisted;
+   unsigned b_seq;
+   {
+      uint64_t rd[1] = {0xF2000050ull};
+      gate(cmd, false, rd, 1, false);
+      b_hoisted = cmd->renc.hoist_draw;
+      b_seq = seq + 1u;
+      struct libkk_predicate_indirect_neq_zero_args pa = {0xF0000050ull, 0xF1000050ull, 0xF2000050ull, 5, 5};
+      side(cmd, true, LIBKK_PREDICATE_INDIRECT_NEQ_ZERO, &pa, sizeof(pa));
+      kk_renc_draw_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0xF0000050ull);
+      draw_done(cmd);
+   }
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+   printf("B: seq=%u hoisted=%d draws+=%lld refused_busy+=%lld (%s)\n", b_seq, b_hoisted,
+          (long long)(stats[KK_BBSTAT_HOIST_DRAWS] - b_draws),
+          (long long)(stats[KK_BBSTAT_HOIST_REFUSED_BUSY] - b_busy),
+          keep_open ? "control: carried encoder left open" : "carried encoder ended at cs_start_render");
+   printf("hoist counters: draws=%lld side_ops=%lld encoders=%lld refused=%lld "
+          "(barrier=%lld busy=%lld enc=%lld) late=%lld\n",
+          (long long)stats[KK_BBSTAT_HOIST_DRAWS], (long long)stats[KK_BBSTAT_HOIST_OPS],
+          (long long)stats[KK_BBSTAT_HOIST_ENCODERS], (long long)stats[KK_BBSTAT_HOIST_REFUSED],
+          (long long)stats[KK_BBSTAT_HOIST_REFUSED_BARRIER], (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY],
+          (long long)stats[KK_BBSTAT_HOIST_REFUSED_ENC], (long long)stats[KK_BBSTAT_HOIST_LATE]);
+   kk_renc_fini(cmd);
+   fclose(rl); fclose(mt); fclose(hl); fclose(heapl);
+   free(cmd);
+   free(vs_ro);
+   return 0;
+}
+
 /* ---- the op stream ------------------------------------------------------- */
 
 int
@@ -915,6 +1081,8 @@ main(int argc, char **argv)
       return oracle_mode();
    if (argc >= 2 && !strcmp(argv[1], "heap"))
       return heap_mode(argc, argv);
+   if (argc >= 2 && !strcmp(argv[1], "cascade"))
+      return cascade_mode(argc, argv);
    /* BB_KK_HOIST_WHY_ALL / BB_KK_HOIST_ORACLE from the environment for the
     * op-stream modes (the latches read the env on first use) */
    if (argc < 3) return 2;

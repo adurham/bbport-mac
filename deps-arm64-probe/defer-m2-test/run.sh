@@ -118,15 +118,18 @@ import re, sys
 t = open(sys.argv[1]).read()
 c = dict((k, int(v)) for k, v in re.findall(r'(\w+)=(\d+)', t.split('why-all:')[1]))
 # expected for this stream (counted by hand from the op list in renc_hoist_test.c):
-# 12 draw gates (D1..D12); refused only by the may-touch-anything family:
+# 12 draw gates (D1..D12), 5 refused (D3 D4 D5 D10 D12); refused only by the may-touch-anything family:
 # D3 (tess with no VS reflection: ANY) and D12 (tess after a memory-writing
 # draw: SHADER_WRITE); their ENC/BUSY cascade: D4 (ENC + BUSY + ANY_EARLIER,
 # all caused by D3's M1 fallback). D6 (first heap user) is no longer refused
 # (its heap reset is hoisted with it). Renderings with gated draws: A..H = 8,
 # hoisted end to end: C, G; would hoist end to end if the family were
 # satisfied: A (D3/D4 excused), C, E (its refusal is a late ANY), G, H.
-want = {'evals': 12, 'refused': 6, 'only_any': 2, 'any_cascade': 1,
-        'renderings': 8, 'hoisted': 2, 'if_any': 5}
+# D7 (pass D: a compute encoder from work outside the pass is carried into
+# it) is no longer refused BUSY: cs_start_render ends the carried encoder, so
+# D7 hoists and rendering D is hoisted end to end (and would be if-any).
+want = {'evals': 12, 'refused': 5, 'only_any': 2, 'any_cascade': 1,
+        'renderings': 8, 'hoisted': 3, 'if_any': 6}
 bad = [k for k in want if c.get(k) != want[k]]
 print('why-all expected %s: %s' % (want, 'PASS' if not bad else 'FAIL %s' % {k: c.get(k) for k in bad}))
 sys.exit(1 if bad else 0)
@@ -151,5 +154,59 @@ python3 "$HERE/heap_check.py" "$OUT/heap-hoist" "$OUT/heap-deferred" || rc=1
 echo "7e. negative control: a hoist whose reset lands AFTER the unroll/tess (reset left post) must be caught"
 python3 "$HERE/heap_check.py" "$OUT/heap-hoist" "$OUT/heap-deferred" --control-reset-late > "$OUT/heap-control.txt" 2>&1
 if [ $? = 0 ]; then cat "$OUT/heap-control.txt"; echo "reset-late control: NOT DETECTED (harness broken)"; rc=1; else grep FAIL "$OUT/heap-control.txt" | head -4; echo "reset-late control: detected"; fi
+echo "== 8. BUSY cascade: draw A refused (in-pass barrier, M1 path: its heap reset is in-pass post-gfx work,"
+echo "   promoted into the pre_gfx slot still open by EndRendering's cs_end), draw B = first gated draw of the next pass"
+"$T" cascade hoist "$OUT/casc" > "$OUT/casc.counters" || { echo "cascade failed"; rc=1; }
+"$T" cascade hoist "$OUT/casc-ctl" keep-open > "$OUT/casc-ctl.counters" || { echo "cascade control failed"; rc=1; }
+"$T" cascade deferred "$OUT/casc-m1" > /dev/null || { echo "cascade M1 failed"; rc=1; }
+cat "$OUT/casc.counters"
+echo "   B's hoist (Metal log, from its hoist encoder to its pass's render encoder):"
+python3 - "$OUT/casc.mtl" <<'PYEOF'
+import sys
+L = open(sys.argv[1]).read().splitlines()
+i = next(k for k, l in enumerate(L) if ' new_compute_encoder hoist' in l)
+j = next(k for k in range(i, len(L)) if ' new_render_encoder' in L[k])
+for l in L[max(0, i - 3):j + 1]: print('     ' + l)
+PYEOF
+python3 - "$OUT/casc" "$OUT/casc-ctl" <<'PYEOF' || rc=1
+import re, sys
+def rd(p):
+    t = open(p + '.counters').read()
+    b = re.search(r'^B: seq=(\d+) hoisted=(\d) draws\+=(\d+) refused_busy\+=(\d+)', t, re.M)
+    a = re.search(r'^A: hoisted=(\d) refused_barrier\+=(\d+)', t, re.M)
+    hs = [int(x) for x in open(p + '.hoist').read().split()]
+    return a, b, hs, open(p + '.mtl').read().splitlines()
+a, b, hs, L = rd(sys.argv[1])
+ok = a.group(1) == '0' and a.group(2) == '1'
+print('A refused BARRIER (M1 path): %s' % ('ok' if ok else 'FAIL'))
+for p in sys.argv[1:3]:
+    m = re.search(r'^A2 \(same pass as A\): hoisted=(\d) refused_enc\+=(\d+) refused_busy\+=(\d+)', open(p + '.counters').read(), re.M)
+    g = m.group(1) == '0' and m.group(2) == '1' and m.group(3) == '0'
+    print('A2 (%s, same pass as A) refuses ENC, not BUSY (render encoder created by A\'s M1 sync): %s' % (p.rsplit('/', 1)[1], 'ok' if g else 'FAIL'))
+    ok &= g
+s = int(b.group(1))
+# the hoisted dispatch is on an H encoder that ends right before the pass's render encoder,
+# and the carried encoder (A's reset) ended before that hoist encoder was created
+i = next(k for k, l in enumerate(L) if re.search(r' dispatch prog=\d+ seq=%d$' % s, l))
+h = L[i].split()[0]
+e = L.index(h + ' end_encoding')
+good_b = (b.group(2) == '1' and b.group(3) == '1' and b.group(4) == '0' and s in hs and
+          h.startswith('H') and L[e + 1].split()[1] == 'new_render_encoder')
+c = next(l.split()[0] for l in L if l.endswith('new_compute_encoder post'))
+hc = next(k for k, l in enumerate(L) if l.startswith(h + ' new_compute_encoder hoist'))
+good_b &= L.index(c + ' end_encoding') < hc
+print('B (seq=%d) hoisted on %s, BUSY +0, carried %s (A\'s reset) ended before %s was created: %s' % (s, h, c, h, 'ok' if good_b else 'FAIL'))
+ok &= good_b
+ca, cb, chs, CL = rd(sys.argv[2])
+ctl = cb.group(2) == '0' and cb.group(4) == '1' and int(cb.group(1)) not in chs
+print('control (carried encoder left open, today): B hoisted=%s refused_busy+=%s -> %s' % (
+    cb.group(2), cb.group(4), 'refuses BUSY: detected' if ctl else 'NOT DETECTED (harness broken)'))
+ok &= ctl
+print('BUSY cascade: %s' % ('PASS' if ok else 'FAIL'))
+sys.exit(0 if ok else 1)
+PYEOF
+$X "$OUT/casc-m1.mtl" "$OUT/casc.hoist" > "$OUT/casc-expected.mtl" || { echo "expect_hoist.py failed"; exit 2; }
+echo -n "8b. cascade hoist mtl vs expected (M1 log, carried encoder ended at pass start, hoisted dispatches moved), raw cmp: "
+same "$OUT/casc-expected.mtl" "$OUT/casc.mtl"
 echo "== result: $([ $rc = 0 ] && echo PASS || echo FAIL)"
 exit $rc

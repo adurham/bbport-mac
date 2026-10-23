@@ -17,6 +17,15 @@ Everything else stays where it was. Mechanically:
      triples (encoder renamed Hk), 'Hk barrier_after_stages', 'Hk
      end_encoding', immediately before that pass's 'new_render_encoder';
   4. compute encoders are renumbered C1.. by creation order.
+Plus one schedule change that is not a move of hoisted work (step 0): a
+CARRIED compute encoder - created before a pass began (in the M1 log: created
+before that pass's render encoder and still open when it is created; an
+in-pass M1 encoder is always created after it, by the sync) - is ended by
+cs_start_render in hoist mode (BB_KK_DEFER_HOIST, kk_cmd_buffer.c) instead of
+at that pass's cs_end: its end lines move to just before the pass's hoist
+block / render encoder, and any pre-gfx work the M1 log puts on it after the
+render encoder goes to a fresh pre compute encoder created on first use,
+ended where the carried one ended in M1.
 run.sh then cmp's this against the real hoist-mode log, byte for byte.
 """
 import re
@@ -25,6 +34,44 @@ import sys
 m1 = open(sys.argv[1]).read().splitlines()
 hoisted = [int(x) for x in open(sys.argv[2]).read().split()]
 hset = set(hoisted)
+
+# 0. carried compute encoders: split at the render encoder they are open across
+def _carried(L):
+    created, ended = {}, {}
+    for i, l in enumerate(L):
+        o = l.split(' ', 1)[0]
+        if re.match(r'^C\d+$', o) and ' new_compute_encoder' in l:
+            created[o] = i
+        if re.match(r'^C\d+$', o) and l.endswith(' end_encoding'):
+            ended[o] = i
+    rcreated = [i for i, l in enumerate(L) if re.match(r'^R\d+ new_render_encoder', l)]
+    out = {}
+    for o, c in created.items():
+        e = ended.get(o)
+        across = [r for r in rcreated if c < r < (e if e is not None else len(L))]
+        if across:
+            out[o] = across[0]
+    return out
+carried = _carried(m1)
+if carried:
+    L = list(m1)
+    ins = {}  # index of the R line -> lines to put before it
+    for o, r in carried.items():
+        num = int(o[1:])
+        ob = 'C%d' % (num + 1000)
+        end_idx = [i for i, l in enumerate(L) if l == o + ' end_encoding'][0]
+        bar = L[end_idx - 1]
+        assert bar.startswith(o + ' barrier_after_stages '), bar
+        ins.setdefault(r, []).extend([bar, o + ' end_encoding'])
+        for i in range(r + 1, len(L)):
+            if L[i].split(' ', 1)[0] == o:
+                L[i] = ob + L[i][len(o):]
+        # created on first use (step 2 moves this line there / drops it)
+        ins.setdefault(r + 1, []).append(ob + ' new_compute_encoder pre')
+    m1 = []
+    for i, l in enumerate(L):
+        m1.extend(ins.get(i, []))
+        m1.append(l)
 
 # 1. locate and cut the hoisted triples
 lines = list(m1)
