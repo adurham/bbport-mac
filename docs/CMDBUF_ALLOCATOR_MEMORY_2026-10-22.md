@@ -332,3 +332,30 @@ So the memory route is blocked on one thing: **the tessellation pre-gfx side op 
 (`kk_cmd_draw.c` calls `kk_renc_side_op(..., KK_RENC_SIDE_ANY, NULL, 0u, NULL, 0u)`), so the gate cannot
 prove it safe and refuses every tessellated draw - which in this game is most of them. Until that path
 gets a decoded read/write set, deferred recording cannot reduce a single split on this title.
+
+## Where the route stands after M2, and the next two measurements
+
+Decision taken with the reference model (2026-10-23, after the clean run):
+
+- **Do not invent a partial read-address set for the tessellation dispatch.** Its shader reads go through
+  descriptor tables; index buffer + vertex/tess params + the three table roots cover the driver's reads,
+  not the shader's, and a wrong hoist here is silent corruption, not a crash.
+- **Prove the pass's WRITE set is empty instead**, from the Vulkan contract plus pipeline reflection:
+  (1) an in-pass self-dependency barrier that can reach vertex/tess - already counted, measured 0;
+  (2) transform feedback active on an earlier draw in the pass; (3) an earlier draw whose pipeline writes
+  memory as a shader side effect (SSBO store, storage-image store, atomics); (4) any attachment in
+  GENERAL / feedback-loop layout; (5) driver-internal side ops writing only fresh heap / per-draw params.
+  If those hold, nothing a hoisted dispatch can see was written in this pass, so its unknown reads cannot
+  matter. Residual risk to state before shipping: this is a GNM translation and may rely on behaviour that
+  today only works because the encoder splits serialise everything.
+- **Validate with an oracle, not an assertion**: decode the dispatch's real binding list from the argument
+  tables the driver itself wrote, intersect with the pass write set, and require the gate never to be more
+  permissive than the oracle. Ships behind a flag, permanently.
+- **Two numbers before more work**: (a) is the 249k "pass encoder already created" a CASCADE of the first
+  ANY refusal in each pass (in which case fixing ANY collapses both buckets)? The gate currently reports the
+  first reason only, so this has to be counted per reason behind a debug flag; (b) does
+  `MTL4CommandAllocator` capacity actually scale with the number of command buffers encoded into it - a
+  standalone Metal 4 bench, because the whole route rests on that premise and it has never been measured
+  in isolation.
+
+Both measurements are running as of 2026-10-23 00:05.
