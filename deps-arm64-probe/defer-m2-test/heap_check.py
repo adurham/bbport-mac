@@ -72,7 +72,9 @@ for l in open(hp + '.counters').read().splitlines():
     if m:
         counters[m.group(1)] = (int(m.group(2)), int(m.group(3)))
 want = {'P1-tess': (1, 0), 'P2-unroll': (1, 0),
-        'P3-unroll-refused': (0, 0), 'P4-tess-busy': (0, 1)}
+        # P3 is refused (in-pass barrier) and is the recording's first heap user:
+        # the counter now means "refused AND first heap use applied", so it is 1.
+        'P3-unroll-refused': (0, 1), 'P4-tess-busy': (0, 1)}
 ok = True
 if not control:
     print('per-draw (hoisted, HEAP refusals added): %s -> %s' % (

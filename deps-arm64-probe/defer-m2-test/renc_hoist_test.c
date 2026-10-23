@@ -437,15 +437,17 @@ predicate_table(void)
    draw_done(c);
    void *busy_enc = fake();
    c->pre_gfx->encoder = busy_enc; /* a non-hoist, non-folded encoder */
-   /* refused anyway (BUSY): HEAP reported first, as before (enum order) */
+   /* refused anyway (BUSY): the real reason is now reported, and HEAP is
+    * counted separately because the draw was also the first heap user */
    h = kk_renc_hoist_draw(c, 0u, NULL, 0u, true);
    printf("  %-52s -> hoist=%d refused_heap=%lld busy=%lld\n", "kk_renc_hoist_draw heap_first, pre_gfx busy",
           h, (long long)stats[KK_BBSTAT_HOIST_REFUSED_HEAP], (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY]);
-   bad += h || stats[KK_BBSTAT_HOIST_REFUSED_HEAP] != 1 || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != 0;
+   bad += h || stats[KK_BBSTAT_HOIST_REFUSED_HEAP] != 1 || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != 1;
    h = kk_renc_hoist_draw(c, 0u, NULL, 0u, false);
    printf("  %-52s -> hoist=%d refused_busy=%lld\n", "kk_renc_hoist_draw, pre_gfx holds another encoder",
           h, (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY]);
-   bad += h || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != 1;
+   /* 2: the busy refusal above now counts as BUSY too (it used to be masked by HEAP) */
+   bad += h || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != 2;
    c->pre_gfx->encoder = NULL;
    h = kk_renc_hoist_draw(c, 0u, NULL, 0u, false);
    printf("  %-52s -> hoist=%d draws=%lld\n", "kk_renc_hoist_draw, nothing in the way",

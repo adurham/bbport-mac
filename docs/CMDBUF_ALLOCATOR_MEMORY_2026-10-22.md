@@ -465,3 +465,11 @@ read-after-write, barrier, shader-write, XFB or feedback refusals at all.
 
 NOT yet proven: pixel parity. Hoisting reorders execution, so a visible A/B (same route, hoist off vs on,
 screenshot diff) is the gate before this is called safe, even though nothing looked wrong in the run.
+
+### Counter fix: the 22k "heap" refusals were BUSY in disguise
+
+`HEAP` was still added to the refusal mask for a draw refused for another reason, and its enum value sits
+below `BUSY`/`SHADER_WRITE`, so the stats line reported `first heap use 21981` with every other reason at
+0 - the real reason (the pre_gfx slot still holding the previous refused draw's encoder) was hidden. The
+counter now means "the draw was also the recording's first heap user" and is incremented separately; the
+reported reason is the true one. M2 harness predicate table updated for the new semantics (PASS).
