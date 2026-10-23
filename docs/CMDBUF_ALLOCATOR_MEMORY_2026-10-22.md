@@ -206,3 +206,25 @@ Two things this milestone taught, both worth keeping:
 
 M2 (hoist pre-gfx compute) and M3 (sink post-gfx work) are gated separately; M1 deliberately changes
 the data structure only, so the allocator block is still ~10 GB until they land.
+
+## M2 status at hand-off (the session died mid-milestone)
+
+M2's **design is landed and complete in the headers**; its **implementation is not written**. The tree
+compiles and links unchanged because nothing calls the new declarations yet - the state is a clean
+hand-off point, not a broken one.
+
+- `kk_render_defer.h` (~line 102): the hoist contract, the `kk_renc_hoist_why` refusal enum (ENC, ANY,
+  ANY_EARLIER, RAW, BARRIER, HEAP, BUSY) and the five entry points.
+- `kk_device.h` / `kk_device.c`: `kk_bb_defer_hoist()` from `BB_KK_DEFER_HOIST`, the per-reason
+  counters, and the end-of-run print.
+- `kk_cmd_buffer.h`: `renc.hoist_draw` / `hoist_next` / `hoist_open`, `kk_cmd_hoist_close()`.
+
+Remaining: the bodies in `kk_render_defer.c` (`kk_renc_hoist_check`, `kk_renc_hoist_draw`,
+`kk_renc_hoist_late_refusal`, `kk_renc_hoist_why_name`, and the hoist branch of
+`kk_renc_slow_side_op`), the pass-open replay closing the hoist encoder, the call from `kk_draw`'s
+pre-gfx generation (`kk_cmd_draw.c`), and `deps-arm64-probe/defer-m2-test/` (clone of the M1 harness,
+plus a flag-set mode asserting the difference is exactly the pre-gfx dispatches moving ahead of the
+render encoder).
+
+Working rule from the two lost half-hours: a milestone's design goes into the tree (headers or a doc)
+**before** its body is written, so a crash costs the body, never the reasoning.
