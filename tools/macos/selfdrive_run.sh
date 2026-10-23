@@ -12,7 +12,10 @@ log=/tmp/kk-m2-$tag.err
 export BB_GAME_DIR=$HOME/Games/Bloodborne/CUSA03173
 export BB_GPU_DEPS=$PWD/deps-arm64-probe
 export BB_NATIVE_GPU=1
-export BB_KK_ONE_CMDBUF=1 BB_KK_DEFER_RENDER=1 BB_KK_DEFER_HOIST=1 BB_KK_STATS=1
+if [ "${BB_KK_DEFER:-1}" != 0 ]; then
+    export BB_KK_ONE_CMDBUF=1 BB_KK_DEFER_RENDER=1 BB_KK_DEFER_HOIST=1
+fi
+export BB_KK_STATS=1
 export BB_KK_ALLOC_LOG=/tmp/kk-m2-$tag.alloc
 export BB_FRAME_STATS=1 BB_FRAME_LOG=/tmp/kk-m2-$tag.frames.csv
 export BB_PAD_FILE=$pad
