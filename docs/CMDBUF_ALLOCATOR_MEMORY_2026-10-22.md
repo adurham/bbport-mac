@@ -263,3 +263,33 @@ predicate/unroll addresses are in the gate's read set, an occupied slot is BUSY)
 re-check can only differ from the gate through work this draw itself adds - so it should not fire in
 the real driver, but that is a trace, not a proof. **The runtime A/B must show `late refusals = 0`.**
 If it ever fires, the fix is to split the pass at the refusal, not to widen the gate.
+
+## M2 in the real driver (probe, `BB_KK_DEFER_HOIST=1`): measured, and INERT
+
+One run at the owner's settings, `BB_NATIVE_GPU=1` + probe driver (UUID `2E07D05D`), deferred backend and
+hoist both latched, game quit at ~8 min. `BB_KK_STATS` at exit:
+
+```
+pre-gfx hoist (BB_KK_DEFER_HOIST) on: draws hoisted 0, side ops hoisted 0, hoist encoders 0;
+refusals 238645 (pass encoder already created 51677, may-touch-anything 97997, earlier unknown
+side op 0, read-after-write 0, barrier after draw 0, first heap use 88971, pre_gfx busy 0);
+late refusals 0; max Metal command buffers per recording 96 (gfx only 48); order violations 0
+```
+
+**Zero draws hoisted.** The gate refuses the entire population, and the refusals name exactly the
+work that forces the splits: **tessellation (97 997, flagged `KK_RENC_SIDE_ANY`)** and **first heap use
+(88 971)**, with the rest being draws that arrive after the pass's render encoder exists (51 677).
+Read-after-write and barrier refusals: zero. No late refusals, no order violations - the safety model
+held; it is just too conservative to ever hoist anything this game emits.
+
+Allocator block unchanged: 70 gfx allocators, **7.83 GB** summed, median **130.5 MB** each (pre-M2:
+86 / 10.07 GB / 122.7 MB), 602 Metal command buffers live, 565 606 created, max 48 gfx buffers per
+recording.
+
+**What that means.** M2 as specified cannot move this number: the pre-gfx work that splits the passes is
+precisely the work the gate refuses by construction (`ANY` for tessellation because its accesses are not
+decoded, `HEAP` because the heap reset is in-pass post-gfx work). The next vector is therefore not M3 - it
+is to give the **tessellation side op a decoded read/write set** instead of `ANY` (it reads the draw's own
+index/vertex inputs and writes fresh heap outputs, so it is hoistable once that is established), and to
+decide whether the heap reset can be emitted ahead of the unroll safely. Until then the deferred-recording
+route leaves the block where it is.
