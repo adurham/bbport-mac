@@ -496,3 +496,28 @@ hoisting, and the keep-open control is caught. Probe UUID `A286EEAB-0D50-36BC-8D
 
 Still old path, by design: draws after a refused draw *in the same pass* stay refused (now reported ENC) -
 that needs the M1 fallback to stop creating the render encoder, an M2/M3 design change.
+
+## Carried-encoder fix measured (2026-10-23, self-driven run, oracle armed)
+
+No hands on the pad: `out/selfdrive_run.sh` presses Cross through a `BB_PAD_FILE` until the run log shows
+`draws/frame >= 200` (gameplay reached at press 15, 1493 draws/frame), stands 40 s, quits itself.
+
+```
+draws hoisted 339948, side ops hoisted 1294830, hoist encoders 229485;
+refusals 6266 (pass encoder already created 0, first heap use 6266, feedback-capable layout 6266,
+everything else 0); late refusals 0; carried compute encoders ended at pass start 16260;
+max Metal command buffers per recording 6 (gfx only 3); order violations 0
+oracle: hoisted ops checked 1294830, clear 1294830, MISMATCHES 0
+```
+
+| | before M2 | after M2 | now |
+|---|---|---|---|
+| gfx allocators | 86 / 10 151 MB / median 132.7 | 86 / 2 260 MB / 27.5 | **70 / 624 MB / 9.0 (max 17.0)** |
+| pre / post | 1 003 / 1 004 MB | 176 / 173 | 48 / 44 MB |
+| max gfx Metal CBs per recording | 48 | 18 | **3** |
+
+The whole command-allocator block is now **~716 MB**, from 12.2 GB - under the 1.5 GiB acceptance bar. The
+carried-encoder counter fired 16 260 times, which is the pass-to-pass cascade the fix removed; refusals are
+down to 6 266 and every one of them is a draw in a pass that had already created its encoder.
+
+Frame time with the oracle on (i.e. not a perf measurement): mean 17.2 ms / 58.1 fps over 78 s, p95 33.3 ms.
