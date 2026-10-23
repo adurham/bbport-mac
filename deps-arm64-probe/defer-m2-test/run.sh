@@ -100,8 +100,35 @@ for s in hs:
 print('structure: ' + ('PASS' if ok else 'FAIL'))
 sys.exit(0 if ok else 1)
 EOF
-echo "== 5. refusal predicate"
+echo "== 5. refusal predicate (incl. the pass write-set predicate: SHADER_WRITE / XFB / FEEDBACK)"
 "$T" predicate || rc=1
+echo "== 5b. oracle (BB_KK_HOIST_ORACLE): real decoded bindings vs the gate"
+"$T" oracle || rc=1
+echo "== 5c. oracle on over the whole hoist stream (no mismatch allowed)"
+BB_KK_HOIST_ORACLE=1 "$T" hoist "$OUT/horacle" > "$OUT/horacle.counters" 2> "$OUT/horacle.err"; orc=$?
+cat "$OUT/horacle.counters"
+if [ $orc = 0 ] && cmp -s "$OUT/hoist.mtl" "$OUT/horacle.mtl" && cmp -s "$OUT/hoist.renc" "$OUT/horacle.renc"; then echo "oracle stream: PASS (Metal + renc logs identical to the oracle-off run)"; else cat "$OUT/horacle.err"; echo "oracle stream: FAIL (rc=$orc)"; rc=1; fi
+echo "== 5d. BB_KK_HOIST_WHY_ALL over the hoist stream (counting only: logs must be identical)"
+BB_KK_HOIST_WHY_ALL=1 "$T" hoist "$OUT/hwhy" > "$OUT/hwhy.counters" 2>/dev/null || rc=1
+cat "$OUT/hwhy.counters"
+if cmp -s "$OUT/hoist.mtl" "$OUT/hwhy.mtl" && cmp -s "$OUT/hoist.renc" "$OUT/hwhy.renc" && cmp -s "$OUT/hoist.hoist" "$OUT/hwhy.hoist"; then echo "why-all: decision unchanged (logs identical)"; else echo "why-all: CHANGED THE DECISION (FAIL)"; rc=1; fi
+python3 - "$OUT/hwhy.counters" <<'PYEOF' || rc=1
+import re, sys
+t = open(sys.argv[1]).read()
+c = dict((k, int(v)) for k, v in re.findall(r'(\w+)=(\d+)', t.split('why-all:')[1]))
+# expected for this stream (counted by hand from the op list in renc_hoist_test.c):
+# 12 draw gates (D1..D12); refused only by the may-touch-anything family:
+# D3 (tess with no VS reflection: ANY) and D12 (tess after a memory-writing
+# draw: SHADER_WRITE); their ENC/BUSY cascade: D4 (ENC + BUSY + ANY_EARLIER,
+# all caused by D3's M1 fallback). Renderings with gated draws: A..H = 8,
+# hoisted end to end: G; would hoist end to end if the family were
+# satisfied: A (D3/D4 excused), E (its refusal is a late ANY), G, H.
+want = {'evals': 12, 'refused': 7, 'only_any': 2, 'any_cascade': 1,
+        'renderings': 8, 'hoisted': 1, 'if_any': 4}
+bad = [k for k in want if c.get(k) != want[k]]
+print('why-all expected %s: %s' % (want, 'PASS' if not bad else 'FAIL %s' % {k: c.get(k) for k in bad}))
+sys.exit(1 if bad else 0)
+PYEOF
 echo "== 6. negative controls (must be DETECTED)"
 $X "$OUT/deferred.mtl" "$OUT/porder.hoist" > "$OUT/expected-porder.mtl"
 if cmp -s "$OUT/expected-porder.mtl" "$OUT/porder.mtl"; then echo "perturb-order: NOT DETECTED (harness broken)"; rc=1; else echo "perturb-order (render encoder created before the hoisted dispatch):"; diff "$OUT/expected-porder.mtl" "$OUT/porder.mtl" | head -12; echo "perturb-order: detected"; fi

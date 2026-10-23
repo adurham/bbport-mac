@@ -359,3 +359,56 @@ Decision taken with the reference model (2026-10-23, after the clean run):
   in isolation.
 
 Both measurements are running as of 2026-10-23 00:05.
+
+## The premise, measured in isolation (2026-10-23): the route has a real ~10x ceiling
+
+`deps-arm64-probe/mtl-split-bench/` - one `MTL4CommandAllocator`, reset once, N Metal command buffers
+encoded, `allocatedSize` read back; 3 reps per point, spread 0 B (deterministic).
+
+- **Capacity is a function of command buffers per reset, nothing else.** ~**2.38-2.44 MB per render
+  command buffer**, R^2 1.000000, flat whether the buffer carries 0, 50 or 200 draws (draws add ~811 B
+  each, encoders ~28 KB; both second-order). Holding 10 200 draws constant: 1 CB = 10.5 MB,
+  51 CBs = 124.5 MB - 11.8x.
+- **Floor** 25 784 B after reset; one render CB 2.40 MB; a compute CB ~0.52 MB; an empty CB 32 KB.
+- **An allocator never shrinks on reset** - it holds its high-water mark for life (256 CBs pins 608 MB,
+  and a later 1-CB recording still reads 608 MB). Submission is irrelevant: capacity is set at encode
+  time (a no-commit run is byte-identical).
+- **Model check against the game:** worst recording 51 gfx CBs x 2.38-2.44 MB = 121-125 MB, i.e. 92-94% of
+  the measured 132.7 MB per allocator. The block is set by the single worst recording, not the average.
+- **Ceiling:** 1 CB per recording at the same ~10.2k draws = ~10.5 MB per allocator -> **~0.9-1.6 GB**
+  instead of 10.15 GB (at 20k draws 18.5 MB / ~1.6 GB). Lowering the 11.7 average changes nothing while
+  any recording still splits into 51.
+
+So deferred recording is worth finishing: the target is the worst-case split count per recording.
+
+## The hoist gate, rebuilt on a proof instead of a blanket flag
+
+The tessellation pre-gfx side op no longer carries `KK_RENC_SIDE_ANY`. It is now gated by a per-pass
+write-set predicate derived from pipeline reflection (`kk_shader_info.bb_mem` / `bb_mem_stage`, computed
+on the app's NIR in `kk_bb_reflect_memory`, before the driver's own emulation stores are added):
+
+- `SHADER_WRITE` - an earlier draw in the pass whose pipeline writes memory as a shader side effect
+  (`nir->info.writes_memory` or `nir_intrinsic_writes_external_memory`: SSBO/global stores and atomics,
+  storage-image stores and atomics), or a side op flagged as writing;
+- `XFB` - transform feedback (`nir->xfb_info`; the driver does not advertise the feature);
+- `FEEDBACK` - an attachment (or its resolve target) in a layout other than
+  COLOR/DEPTH_STENCIL/DEPTH/STENCIL/ATTACHMENT_OPTIMAL, i.e. anything a shader could sample while it is
+  being rendered (GENERAL, feedback-loop, local-read); plus a dynamic feedback loop.
+- `BARRIER`, `ANY_EARLIER`, `RAW`, `ENC`, `HEAP`, `BUSY` unchanged. `ANY` survives for ops that genuinely
+  cannot be bounded (e.g. no bound VS, `write_u32_array`), and the libkk tessellation kernels now carry a
+  narrower `KK_RENC_SIDE_DRIVER` flag (they only touch the draw's own pool params and geometry heap).
+
+Validated by an **oracle** (`BB_KK_HOIST_ORACLE=1|abort`, permanent, default off) that decodes the real
+binding list of each accepted op from the descriptor bytes the driver itself wrote and intersects it with
+the pass's write set (attachments + decoded draws + non-hoisted side ops); the gate may never be more
+permissive than the oracle. Offline: gate vs oracle agree on the clear cases, and a deliberately broken
+reflection is caught with both ranges printed (`oracle test: PASS`, `mismatches=1` on the broken case).
+`BB_KK_HOIST_WHY_ALL=1` counts every applicable reason per evaluation (the gate reports the first only),
+plus a cascade counter that separates ENC/BUSY caused by an ANY-only refusal's split from genuine ones.
+
+Offline gates after the change: M1 harness both logs byte-identical with both controls caught; M2 harness
+PASS with the tessellation chain now hoisting end to end; a whole-pass hoist case added. Probe UUID
+`2A454A3C-8DF2-3D0F-B414-AC7EBFBCAFBC`; installed driver untouched.
+
+**Still unmeasured: the ceiling in the real driver.** Needs one runtime run with `BB_KK_HOIST_WHY_ALL=1`
+and `BB_KK_HOIST_ORACLE=abort` plus an image-diff against hoist-off.

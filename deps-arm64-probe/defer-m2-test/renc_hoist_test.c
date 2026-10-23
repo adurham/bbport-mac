@@ -26,6 +26,10 @@
 #include "kk_render_defer.h"
 #include "kk_render_enc.h"
 #include "kk_device.h"
+#include "kk_descriptor_set.h"
+#include "kk_descriptor_set_layout.h"
+#include "kk_image.h"
+#include "kk_image_view.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,6 +150,7 @@ start_compute(struct kk_cmd_buffer *cmd, bool pre, bool hoist)
       M(es->encoder, "new_compute_encoder hoist cb=%s", oname(cmd->gfx.cmd_buf));
    } else {
       es->encoder = named("C", ++ncompute);
+      es->bb_wa_any = kk_renc_wa_excused_inflight(cmd);
       M(es->encoder, "new_compute_encoder %s", pre ? "pre" : "post");
    }
    return es->encoder;
@@ -203,13 +208,25 @@ side(struct kk_cmd_buffer *cmd, bool pre, uint32_t prog, const void *args, size_
    dispatch(cmd, enc, prog, s);
 }
 
-/* kk_launch_tess's VS+TCS pre dispatches (kk_cmd_draw.c:1985 order) */
+/* kk_launch_tess's VS+TCS pre dispatches (kk_cmd_draw.c order): flags from
+ * the bound shaders' reflection (kk_renc_tess_side_flags: ANY when no
+ * vertex shader is bound, as in the main stream below), vertex params read,
+ * tess state written; a gated draw records the node before cs_get_compute. */
+static uint64_t tess_vp = 0x76000000ull;
 static void
 tess_side(struct kk_cmd_buffer *cmd, uint64_t state)
 {
    const unsigned s = ++seq;
+   const uint32_t f = kk_renc_tess_side_flags(cmd);
+   const uint64_t rd[1] = {tess_vp};
+   const bool first = cmd->renc.hoist_draw;
+   if (first)
+      kk_renc_side_op(cmd, true, KK_RENC_SIDE_RAW, f, rd, 1u, &state, 1u);
    void *enc = getc_(cmd, true);
-   kk_renc_side_op(cmd, true, KK_RENC_SIDE_RAW, KK_RENC_SIDE_ANY, NULL, 0u, &state, 1u);
+   if (!first)
+      kk_renc_side_op(cmd, true, KK_RENC_SIDE_RAW, f, rd, 1u, &state, 1u);
+   if (cmd->pre_gfx->bb_hoisted && enc == cmd->pre_gfx->encoder)
+      fprintf(hl, "%u\n", s);
    M(enc, "barrier_after_encoder_stages %x %x", MTL_STAGE_DISPATCH, MTL_STAGE_DISPATCH);
    dispatch(cmd, enc, 9000u, s);
 }
@@ -219,14 +236,33 @@ static void
 gate(struct kk_cmd_buffer *cmd, bool tess, const uint64_t *reads, uint32_t nr,
      bool heap_first)
 {
-   kk_renc_hoist_draw(cmd, tess ? KK_RENC_SIDE_ANY : 0u, reads, nr, heap_first);
+   kk_renc_hoist_draw(cmd, tess ? kk_renc_tess_side_flags(cmd) : 0u, reads, nr,
+                      heap_first);
 }
 
+/* kk_draw's end (kk_renc_hoist_draw_end) */
 static void
 draw_done(struct kk_cmd_buffer *cmd)
 {
-   cmd->renc.hoist_draw = false;
-   cmd->renc.hoist_next = false;
+   kk_renc_hoist_draw_end(cmd);
+}
+
+/* kk_CmdBeginRendering's kk_renc_rendering_begin: one color attachment in
+ * `layout` */
+static void
+rendering_begin(struct kk_cmd_buffer *cmd, VkImageLayout layout)
+{
+   VkRenderingAttachmentInfo ca = {
+      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = (VkImageView)(uintptr_t)0x1,
+      .imageLayout = layout,
+   };
+   VkRenderingInfo ri = {
+      .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .colorAttachmentCount = 1,
+      .pColorAttachments = &ca,
+   };
+   kk_renc_rendering_begin(cmd, &ri);
 }
 
 static void
@@ -251,11 +287,13 @@ pass_end(struct kk_cmd_buffer *cmd, bool barrier, enum mtl_stages before)
    end_compute(cmd, cmd->pre_gfx);
    kk_renc_end(cmd, barrier, before);
    end_compute(cmd, cmd->post_gfx);
+   kk_renc_rendering_end(cmd);
 }
 
 static void
 pass_begin(struct kk_cmd_buffer *cmd, void *desc, bool entry_barrier)
 {
+   rendering_begin(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
    kk_renc_begin(cmd, desc);
    uint32_t ids[2] = {0, 1};
    kk_renc_set_vertex_amplification_count(kk_renc(cmd), ids, 2);
@@ -397,8 +435,285 @@ predicate_table(void)
    bad += h || sum != 0;
    kk_renc_fini(c);
    free(c);
+   /* ---- pass write-set predicate (SHADER_WRITE / XFB / FEEDBACK) ---- */
+   {
+      struct kk_shader *vs_ro = calloc(1, sizeof(*vs_ro));
+      struct kk_shader *vs_w = calloc(1, sizeof(*vs_w));
+      struct kk_shader *vs_x = calloc(1, sizeof(*vs_x));
+      vs_w->info.bb_mem = vs_w->info.bb_mem_stage = KK_SHADER_MEM_WRITES;
+      vs_x->info.bb_mem = vs_x->info.bb_mem_stage = KK_SHADER_MEM_XFB;
+      uint32_t tf;
+#define NEWPASS(layout)                                                        \
+   do {                                                                        \
+      c = new_cmd(true, true);                                                 \
+      c->argument_table = fake();                                              \
+      c->gfx.cmd_buf = fake();                                                 \
+      rendering_begin(c, layout);                                              \
+      kk_renc_begin(c, d);                                                     \
+   } while (0)
+#define DRAW_WITH(vs)                                                          \
+   do {                                                                        \
+      c->state.shaders[MESA_SHADER_VERTEX] = (vs);                             \
+      kk_renc_note_draw(c);                                                    \
+      kk_renc_draw_primitives(kk_renc(c), MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0); \
+   } while (0)
+#define DONE() do { kk_renc_fini(c); free(c); } while (0)
+      NEWPASS(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      c->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+      tf = kk_renc_tess_side_flags(c);
+      printf("  %-52s -> 0x%x %s\n", "tess side-op flags, read-only VS (SHADER, not ANY)",
+             tf, tf == KK_RENC_SIDE_SHADER ? "ok" : "MISMATCH");
+      bad += tf != KK_RENC_SIDE_SHADER;
+      EXPECT(c, "tess op, fresh pass, attachment layout", tf, 0x10, KK_RENC_HOIST_OK);
+      DRAW_WITH(vs_ro);
+      EXPECT(c, "tess op after a read-only draw (attachment writes only)", tf, 0x10, KK_RENC_HOIST_OK);
+      c->state.shaders[MESA_SHADER_VERTEX] = vs_w;
+      tf = kk_renc_tess_side_flags(c);
+      EXPECT(c, "tess op whose own VS writes memory, after a draw", tf, 0x10, KK_RENC_HOIST_SHADER_WRITE);
+      DONE();
+
+      NEWPASS(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      DRAW_WITH(vs_w);
+      c->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+      EXPECT(c, "tess op after a draw whose pipeline writes memory", KK_RENC_SIDE_SHADER, 0x10, KK_RENC_HOIST_SHADER_WRITE);
+      EXPECT(c, "predicate op after a draw whose pipeline writes memory", 0u, 0x10, KK_RENC_HOIST_SHADER_WRITE);
+      DONE();
+
+      NEWPASS(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      DRAW_WITH(vs_x);
+      c->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+      EXPECT(c, "tess op after a draw with transform feedback", KK_RENC_SIDE_SHADER, 0x10, KK_RENC_HOIST_XFB);
+      DONE();
+
+      NEWPASS(VK_IMAGE_LAYOUT_GENERAL);
+      EXPECT(c, "tess op, attachment in GENERAL", KK_RENC_SIDE_SHADER, 0x10, KK_RENC_HOIST_FEEDBACK);
+      EXPECT(c, "predicate op (no descriptor reads), GENERAL", 0u, 0x10, KK_RENC_HOIST_OK);
+      DONE();
+      NEWPASS(VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
+      EXPECT(c, "tess op, attachment FEEDBACK_LOOP_OPTIMAL", KK_RENC_SIDE_SHADER, 0x10, KK_RENC_HOIST_FEEDBACK);
+      DONE();
+      NEWPASS(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      c->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+      c->vk.dynamic_graphics_state.feedback_loops = VK_IMAGE_ASPECT_COLOR_BIT;
+      tf = kk_renc_tess_side_flags(c);
+      EXPECT(c, "tess op, dynamic feedback-loop state on", tf, 0x10, KK_RENC_HOIST_FEEDBACK);
+      DONE();
+      NEWPASS(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      DRAW_WITH(vs_ro);
+      kk_renc_barrier_after_encoder_stages(kk_renc(c), MTL_STAGE_FRAGMENT, MTL_STAGE_VERTEX);
+      EXPECT(c, "tess op after draw + in-pass barrier", KK_RENC_SIDE_SHADER, 0x10, KK_RENC_HOIST_BARRIER);
+      DONE();
+      NEWPASS(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      c->state.shaders[MESA_SHADER_VERTEX] = NULL;
+      tf = kk_renc_tess_side_flags(c);
+      EXPECT(c, "tess op, no VS reflection: ANY kept", tf, 0x10, KK_RENC_HOIST_ANY);
+      kk_renc_side_op(c, true, KK_RENC_SIDE_RAW, KK_RENC_SIDE_SHADER, NULL, 0u, NULL, 0u);
+      EXPECT(c, "after a non-hoisted tess op (reads unlisted)", KK_RENC_SIDE_SHADER | KK_RENC_SIDE_SHADER_WRITES, 0x10, KK_RENC_HOIST_SHADER_WRITE);
+      DONE();
+      free(vs_ro);
+      free(vs_w);
+      free(vs_x);
+#undef NEWPASS
+#undef DRAW_WITH
+#undef DONE
+   }
 #undef EXPECT
    printf("predicate table: %s\n", bad ? "FAIL" : "PASS");
+   return bad ? 1 : 0;
+}
+
+/* ---- oracle test mode ---------------------------------------------------- */
+/* Real driver structures, filled the way the driver fills them: a
+ * descriptor set (kk_descriptor_set_layout + the descriptor bytes
+ * kk_descriptor_set.c writes: kk_buffer_address for a storage buffer,
+ * kk_sampled_image_descriptor with a GPU resource id for a sampled image),
+ * image views registered by resource id exactly as kk_image_view.c does
+ * (kk_renc_oracle_view_range), and shaders whose bb_* reflection names the
+ * (set, binding) they access. The pre op goes through the REAL gate
+ * (kk_renc_hoist_draw, then kk_renc_side_op with the tess flags), so a
+ * hoisted op is checked by the oracle inside kk_renc_slow_side_op, at hoist
+ * time; refused ops are also given to kk_renc_oracle_conflict directly to
+ * show that the oracle agrees. */
+
+struct oracle_world {
+   struct kk_descriptor_set_layout *layout;
+   struct kk_descriptor_set *set;
+   uint8_t map[256];
+   struct kk_image img_att, img_tex;
+   struct kk_image_view view_att, view_tex;
+   struct kk_shader vs_reader, vs_writer, vs_liar, vs_samples_att;
+};
+
+static void
+oracle_view(struct kk_image *img, struct kk_image_view *v, uint64_t addr,
+            uint64_t size, uint64_t id)
+{
+   memset(img, 0, sizeof(*img));
+   memset(v, 0, sizeof(*v));
+   img->plane_count = 1;
+   img->planes[0].addr = addr;
+   img->planes[0].layout.size_B = size;
+   v->vk.image = &img->vk;
+   v->vk.view_type = VK_IMAGE_VIEW_TYPE_2D;
+   v->vk.level_count = 1;
+   v->vk.layer_count = 1;
+   v->plane_count = 1;
+   v->planes[0].sampled_gpu_resource_id = id;
+   /* kk_image_view_init's registration */
+   const struct kk_renc_range rg = kk_renc_oracle_view_range(v, 0);
+   kk_renc_oracle_register(id, &rg);
+}
+
+static void
+oracle_world_init(struct oracle_world *w)
+{
+   memset(w, 0, sizeof(*w));
+   /* set 0: binding 0 = STORAGE_BUFFER [0x40000000, +0x1000),
+    *        binding 1 = SAMPLED_IMAGE (the texture),
+    *        binding 2 = SAMPLED_IMAGE (the color attachment's image) */
+   w->layout = calloc(1, sizeof(*w->layout) + 3 * sizeof(w->layout->binding[0]));
+   w->layout->binding_count = 3;
+   w->layout->binding[0] = (struct kk_descriptor_set_binding_layout){
+      .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .array_size = 1, .offset = 0,
+      .stride = sizeof(struct kk_buffer_address)};
+   w->layout->binding[1] = (struct kk_descriptor_set_binding_layout){
+      .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .array_size = 1, .offset = 64,
+      .stride = sizeof(struct kk_sampled_image_descriptor)};
+   w->layout->binding[2] = (struct kk_descriptor_set_binding_layout){
+      .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .array_size = 1, .offset = 128,
+      .stride = sizeof(struct kk_sampled_image_descriptor)};
+   w->set = calloc(1, sizeof(*w->set));
+   w->set->layout = w->layout;
+   w->set->mapped_ptr = w->map;
+   w->set->size = sizeof(w->map);
+   w->set->addr = 0x3F000000ull;
+   oracle_view(&w->img_att, &w->view_att, 0x80000000ull, 0x100000ull, 0xA77ull);
+   oracle_view(&w->img_tex, &w->view_tex, 0x90000000ull, 0x100000ull, 0x7E7ull);
+   /* write_buffer_desc / get_sampled_image_view_desc */
+   const struct kk_buffer_address ba = {.base_addr = 0x40000000ull, .size = 0x1000};
+   memcpy(w->map + 0, &ba, sizeof(ba));
+   struct kk_sampled_image_descriptor sd = {0};
+   sd.image_gpu_resource_id = w->view_tex.planes[0].sampled_gpu_resource_id;
+   memcpy(w->map + 64, &sd, sizeof(sd));
+   sd.image_gpu_resource_id = w->view_att.planes[0].sampled_gpu_resource_id;
+   memcpy(w->map + 128, &sd, sizeof(sd));
+   /* reflection (kk_bb_reflect_memory's output) */
+   w->vs_reader.info.bb_binding_count = 2; /* reads the SSBO and the texture */
+   w->vs_reader.info.bb_bindings[0] = KK_SHADER_BB_BINDING(0, 0, false);
+   w->vs_reader.info.bb_bindings[1] = KK_SHADER_BB_BINDING(0, 1, false);
+   w->vs_writer.info.bb_mem = w->vs_writer.info.bb_mem_stage = KK_SHADER_MEM_WRITES;
+   w->vs_writer.info.bb_binding_count = 1; /* stores to the SSBO */
+   w->vs_writer.info.bb_bindings[0] = KK_SHADER_BB_BINDING(0, 0, true);
+   /* BROKEN reflection: names the SSBO store but lost the WRITES bit */
+   w->vs_liar = w->vs_writer;
+   w->vs_liar.info.bb_mem = w->vs_liar.info.bb_mem_stage = 0u;
+   /* samples the color attachment's own image (a feedback loop) */
+   w->vs_samples_att.info.bb_binding_count = 1;
+   w->vs_samples_att.info.bb_bindings[0] = KK_SHADER_BB_BINDING(0, 2, false);
+}
+
+static const char *const verdict_name[] = {"clear", "CONFLICT", "undecoded-only"};
+
+/* One scenario: a pass whose recorded draw uses `earlier_vs` (NULL: none),
+ * optionally an in-pass barrier, then a gated tess draw whose VS is
+ * `tess_vs`. Returns the gate decision; *v = the oracle's own verdict. */
+static enum kk_renc_hoist_why
+oracle_case(struct oracle_world *w, VkImageLayout layout,
+            struct kk_shader *earlier_vs, bool barrier, struct kk_shader *tess_vs,
+            enum kk_renc_oracle_verdict *v, int64_t *mismatches)
+{
+   memset(stats, 0, sizeof(stats));
+   struct kk_cmd_buffer *c = new_cmd(true, true);
+   c->argument_table = fake();
+   c->gfx.cmd_buf = fake();
+   c->state.gfx.descriptors.sets[0] = w->set;
+   c->state.gfx.descriptors.root.sets[0] = w->set->addr;
+   c->state.gfx.render.color_att_count = 1;
+   c->state.gfx.render.color_att[0].iview = &w->view_att;
+   rendering_begin(c, layout);
+   kk_renc_begin(c, fake());
+   if (earlier_vs != NULL) {
+      c->state.shaders[MESA_SHADER_VERTEX] = earlier_vs;
+      kk_renc_note_draw(c); /* kk_dispatch_draw */
+      kk_renc_draw_primitives(kk_renc(c), MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0);
+   }
+   if (barrier)
+      kk_renc_barrier_after_encoder_stages(kk_renc(c), MTL_STAGE_FRAGMENT,
+                                           MTL_STAGE_VERTEX);
+   c->state.shaders[MESA_SHADER_VERTEX] = tess_vs;
+   const uint32_t f = kk_renc_tess_side_flags(c);
+   const uint64_t rd[1] = {0x76000000ull}, st = 0x77000000ull;
+   /* kk_bb_hoist_gate, then kk_launch_tess's side op (hoist first) */
+   const bool gated = kk_renc_hoist_draw(c, f, NULL, 0u, false);
+   enum kk_renc_hoist_why why = KK_RENC_HOIST_OK;
+   if (!gated)
+      why = kk_renc_hoist_check(c, f, NULL, 0u);
+   /* the oracle's own verdict, before the op's node exists */
+   *v = kk_renc_oracle_conflict(c, f, rd, 1u, &st, 1u, false);
+   if (gated) {
+      kk_renc_side_op(c, true, KK_RENC_SIDE_RAW, f, rd, 1u, &st, 1u);
+      if (!c->renc.hoist_next) /* refused late */
+         why = KK_RENC_HOIST_WHY_COUNT;
+   }
+   kk_renc_hoist_draw_end(c);
+   *mismatches = stats[KK_BBSTAT_HOIST_ORACLE_MISMATCH];
+   kk_renc_rendering_end(c);
+   kk_renc_fini(c);
+   free(c);
+   return why;
+}
+
+static int
+oracle_mode(void)
+{
+   kk_renc_log_set_file_for_test(NULL);
+   kk_renc_hoist_set_flags_for_test(0, 1); /* BB_KK_HOIST_ORACLE=1 */
+   mt = fopen("/dev/null", "w");
+   struct oracle_world w;
+   oracle_world_init(&w);
+   int bad = 0;
+   enum kk_renc_oracle_verdict v;
+   int64_t mm;
+   enum kk_renc_hoist_why why;
+#define ROW(name, want_why, want_v, want_mm)                                    \
+   do {                                                                        \
+      const bool ok = why == (want_why) && v == (want_v) && mm == (want_mm);   \
+      printf("  %-58s gate=%-12s oracle=%-8s mismatches=%lld -> %s\n", name,  \
+             why == KK_RENC_HOIST_WHY_COUNT ? "late" : kk_renc_hoist_why_name(why), \
+             verdict_name[v], (long long)mm, ok ? "ok" : "FAIL");              \
+      bad += !ok;                                                              \
+   } while (0)
+   printf("(i) earlier draw's pipeline stores to the SSBO the tess VS reads:\n");
+   why = oracle_case(&w, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &w.vs_writer,
+                     false, &w.vs_reader, &v, &mm);
+   ROW("gate refuses, oracle agrees (decoded overlap)", KK_RENC_HOIST_SHADER_WRITE,
+       KK_RENC_ORACLE_CONFLICT, 0);
+   printf("(ii) earlier draw writes only its attachments:\n");
+   why = oracle_case(&w, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &w.vs_reader,
+                     false, &w.vs_reader, &v, &mm);
+   ROW("gate hoists, oracle checked at hoist time: clear", KK_RENC_HOIST_OK,
+       KK_RENC_ORACLE_CLEAR, 0);
+   printf("(iii) in-pass barrier after the earlier draw:\n");
+   why = oracle_case(&w, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &w.vs_reader,
+                     true, &w.vs_reader, &v, &mm);
+   ROW("gate refuses (barrier)", KK_RENC_HOIST_BARRIER, KK_RENC_ORACLE_CLEAR, 0);
+   printf("(iii-b) tess VS samples the attachment, layout GENERAL:\n");
+   why = oracle_case(&w, VK_IMAGE_LAYOUT_GENERAL, &w.vs_reader, false,
+                     &w.vs_samples_att, &v, &mm);
+   ROW("gate refuses (feedback), oracle agrees (attachment overlap)",
+       KK_RENC_HOIST_FEEDBACK, KK_RENC_ORACLE_CONFLICT, 0);
+   printf("(iv) deliberately broken: reflection lost the WRITES bit:\n");
+   why = oracle_case(&w, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &w.vs_liar,
+                     false, &w.vs_reader, &v, &mm);
+   ROW("gate hoists, oracle decodes the SSBO store: MISMATCH caught",
+       KK_RENC_HOIST_OK, KK_RENC_ORACLE_CONFLICT, 1);
+   printf("(iv-b) deliberately broken: attachment sampled, layout claims ATTACHMENT_OPTIMAL:\n");
+   why = oracle_case(&w, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &w.vs_reader,
+                     false, &w.vs_samples_att, &v, &mm);
+   ROW("gate hoists, oracle decodes the attachment read: MISMATCH caught",
+       KK_RENC_HOIST_OK, KK_RENC_ORACLE_CONFLICT, 1);
+#undef ROW
+   printf("oracle test: %s\n", bad ? "FAIL" : "PASS");
    return bad ? 1 : 0;
 }
 
@@ -409,6 +724,10 @@ main(int argc, char **argv)
 {
    if (argc >= 2 && !strcmp(argv[1], "predicate"))
       return predicate_table();
+   if (argc >= 2 && !strcmp(argv[1], "oracle"))
+      return oracle_mode();
+   /* BB_KK_HOIST_WHY_ALL / BB_KK_HOIST_ORACLE from the environment for the
+    * op-stream modes (the latches read the env on first use) */
    if (argc < 3) return 2;
    const bool deferred = strcmp(argv[1], "direct") != 0;
    const bool hoist = !strcmp(argv[1], "hoist");
@@ -531,8 +850,8 @@ main(int argc, char **argv)
    pass_end(cmd, true, MTL_STAGE_ALL);
 
    /* ---- pass E: a gated draw whose second pre side op cannot be hoisted
-    * (flagged ANY on its decoded arguments): late refusal; the first stays
-    * hoisted ---- */
+    * (write_u32_array: (address, value) pairs read from memory, flagged ANY
+    * on its decoded arguments): late refusal; the first stays hoisted ---- */
    pass_begin(cmd, desc, true);
    state(cmd, pipe, ds, 4);
    kk_renc_draw_primitives(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 3, 3, 1, 0);
@@ -541,8 +860,8 @@ main(int argc, char **argv)
       gate(cmd, false, rd, 2, false);
       struct libkk_predicate_indirect_gt_draw_id_args pa = {0xF0000010ull, 0xF1000010ull, 0xF2000010ull, 5, 5};
       side(cmd, true, LIBKK_PREDICATE_INDIRECT_GT_DRAW_ID, &pa, sizeof(pa));
-      uint64_t pfx[2] = {0xAA000000ull, 0xAB000000ull};
-      side(cmd, true, LIBKK_PREFIX_SUM_TESS, pfx, sizeof(pfx));
+      uint64_t wa[1] = {0xAA000000ull};
+      side(cmd, true, LIBKK_WRITE_U32_ARRAY, wa, sizeof(wa));
       kk_renc_draw_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0xF0000010ull);
       draw_done(cmd);
    }
@@ -577,21 +896,98 @@ main(int argc, char **argv)
    store_ops(cmd);
    pass_end(cmd, true, MTL_STAGE_ALL);
 
+   /* ---- pass G: tessellation whose VS/TCS only read, after a draw that
+    * writes only its attachments: the whole tess chain (VS+TCS dispatch,
+    * tessellator count, prefix sum, tessellator) is hoisted (SHADER, not
+    * ANY; the libkk tess programs are DRIVER) ---- */
+   struct kk_shader *vs_ro = calloc(1, sizeof(*vs_ro));
+   struct kk_shader *vs_w = calloc(1, sizeof(*vs_w));
+   vs_w->info.bb_mem = vs_w->info.bb_mem_stage = KK_SHADER_MEM_WRITES;
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 6);
+   cmd->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_primitives(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0);
+   {  /* D11 */
+      gate(cmd, true, NULL, 0, false);
+      tess_side(cmd, 0x78000000ull);
+      struct libkk_tess_tri_args ta = {0x78000000ull, 0};
+      side(cmd, true, LIBKK_TESS_TRI, &ta, sizeof(ta));
+      struct libkk_prefix_sum_tess_args pa = {0x78000000ull};
+      side(cmd, true, LIBKK_PREFIX_SUM_TESS, &pa, sizeof(pa));
+      ta.tess_mode = 1;
+      side(cmd, true, LIBKK_TESS_TRI, &ta, sizeof(ta));
+      kk_renc_note_draw(cmd);
+      kk_renc_draw_indexed_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, MTL_INDEX_TYPE_UINT32,
+                                               0x99000100ull, 0x100000, 0x78000100ull);
+      draw_done(cmd);
+   }
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+
+   /* ---- pass H: the same tess draw after a draw whose pipeline writes
+    * memory: SHADER_WRITE, M1 path ---- */
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 7);
+   cmd->state.shaders[MESA_SHADER_VERTEX] = vs_w;
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_primitives(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0);
+   cmd->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+   {  /* D12 */
+      gate(cmd, true, NULL, 0, false);
+      tess_side(cmd, 0x79000000ull);
+      struct libkk_tess_tri_args ta = {0x79000000ull, 0};
+      side(cmd, true, LIBKK_TESS_TRI, &ta, sizeof(ta));
+      kk_renc_note_draw(cmd);
+      kk_renc_draw_indexed_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, MTL_INDEX_TYPE_UINT32,
+                                               0x99000100ull, 0x100000, 0x79000100ull);
+      draw_done(cmd);
+   }
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+   cmd->state.shaders[MESA_SHADER_VERTEX] = NULL;
+
    kk_renc_fini(cmd);
    fclose(rl);
    fclose(mt);
    fclose(hl);
    free(cmd);
+   free(vs_ro);
+   free(vs_w);
 
    if (hoist) {
       printf("hoist counters: draws=%lld side_ops=%lld encoders=%lld refused=%lld "
-             "(enc=%lld any=%lld any_earlier=%lld raw=%lld barrier=%lld heap=%lld busy=%lld) late=%lld\n",
+             "(enc=%lld any=%lld any_earlier=%lld raw=%lld barrier=%lld heap=%lld busy=%lld "
+             "shader_write=%lld xfb=%lld feedback=%lld) late=%lld\n",
              (long long)stats[KK_BBSTAT_HOIST_DRAWS], (long long)stats[KK_BBSTAT_HOIST_OPS],
              (long long)stats[KK_BBSTAT_HOIST_ENCODERS], (long long)stats[KK_BBSTAT_HOIST_REFUSED],
              (long long)stats[KK_BBSTAT_HOIST_REFUSED_ENC], (long long)stats[KK_BBSTAT_HOIST_REFUSED_ANY],
              (long long)stats[KK_BBSTAT_HOIST_REFUSED_ANY_EARLIER], (long long)stats[KK_BBSTAT_HOIST_REFUSED_RAW],
              (long long)stats[KK_BBSTAT_HOIST_REFUSED_BARRIER], (long long)stats[KK_BBSTAT_HOIST_REFUSED_HEAP],
-             (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY], (long long)stats[KK_BBSTAT_HOIST_LATE]);
+             (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY],
+             (long long)stats[KK_BBSTAT_HOIST_REFUSED_SHADER_WRITE],
+             (long long)stats[KK_BBSTAT_HOIST_REFUSED_XFB],
+             (long long)stats[KK_BBSTAT_HOIST_REFUSED_FEEDBACK],
+             (long long)stats[KK_BBSTAT_HOIST_LATE]);
+      if (kk_renc_hoist_why_all()) {
+         printf("why-all: evals=%lld late_evals=%lld refused=%lld only_any=%lld any_cascade=%lld "
+                "renderings=%lld hoisted=%lld if_any=%lld reasons:",
+                (long long)stats[KK_BBSTAT_HOIST_WA_EVALS], (long long)stats[KK_BBSTAT_HOIST_WA_LATE_EVALS],
+                (long long)stats[KK_BBSTAT_HOIST_WA_REFUSED], (long long)stats[KK_BBSTAT_HOIST_WA_ONLY_ANY],
+                (long long)stats[KK_BBSTAT_HOIST_WA_ANY_CASCADE], (long long)stats[KK_BBSTAT_HOIST_WA_REND],
+                (long long)stats[KK_BBSTAT_HOIST_WA_REND_HOISTED], (long long)stats[KK_BBSTAT_HOIST_WA_REND_IF_ANY]);
+         for (unsigned w = 1; w < KK_RENC_HOIST_WHY_COUNT; w++)
+            printf(" %s=%lld", kk_renc_hoist_why_name((enum kk_renc_hoist_why)w),
+                   (long long)stats[KK_BBSTAT_HOIST_WA_REASON + w]);
+         printf("\n");
+      }
+      if (kk_renc_hoist_oracle()) {
+         printf("oracle: checked=%lld clear=%lld mismatches=%lld undecoded=%lld\n",
+                (long long)stats[KK_BBSTAT_HOIST_ORACLE_CHECKS], (long long)stats[KK_BBSTAT_HOIST_ORACLE_CLEAR],
+                (long long)stats[KK_BBSTAT_HOIST_ORACLE_MISMATCH], (long long)stats[KK_BBSTAT_HOIST_ORACLE_UNDECODED]);
+         if (stats[KK_BBSTAT_HOIST_ORACLE_MISMATCH] != 0)
+            return 4; /* a mismatch fails the test mode */
+      }
    }
    return 0;
 }
