@@ -228,3 +228,38 @@ render encoder).
 
 Working rule from the two lost half-hours: a milestone's design goes into the tree (headers or a doc)
 **before** its body is written, so a crash costs the body, never the reasoning.
+
+## M2 - built and offline-proven (probe driver, default off)
+
+`BB_KK_DEFER_HOIST=1` (needs `BB_KK_DEFER_RENDER=1` + `BB_KK_ONE_CMDBUF=1`): a draw whose pre-gfx
+compute passes the gate is not split; its pre side ops are marked hoisted, go into the pass's hoist
+compute encoder on the **pass's own command buffer** ahead of the render encoder, in record order, and
+`kk_cmd_hoist_close` ends that encoder from the replay's pass-open node right before
+`kk_renc_direct_begin` creates the render encoder. `kk_renc_slow_sync` is a no-op while the hoist
+encoder is open, so nothing can create the render encoder early; non-hoisted compute takes
+`kk_renc_slow_sync_force` and the M1 path. Post-gfx work and the tessellation path are unchanged.
+
+The gate (`kk_renc_hoist_check`) refuses, per draw on its known reads and again per side op on its own
+decoded addresses: ENC (render encoder exists), ANY (op flagged), ANY_EARLIER (earlier non-hoisted
+ANY side op in this pass), RAW (read equals a write of an earlier non-hoisted side node), BARRIER
+(in-pass barrier after a draw), HEAP (first heap use), BUSY (a compute encoder occupies the slot).
+Hoisted nodes are excluded from ANY_EARLIER/RAW because they move ahead together in record order.
+
+Evidence (run here, not accepted from the report): `ninja` exit 0, probe dylib UUID
+`2E07D05D-746E-3EBE-812A-EC2A90F1D1C7`, `deps-arm64/lib/kosmickrisp` mtimes unchanged. M1 harness
+still green (renc 93 / mtl 96 lines, both IDENTICAL, both controls detected). New
+`deps-arm64-probe/defer-m2-test/` PASS: hoist-mode counters `draws=4 ops=4 encoders=3 refused=6
+(enc=2 any=1 any_earlier=0 raw=0 barrier=1 heap=1 busy=1) late=1` (the one late refusal is the
+synthetic D8 case only); hoisted dispatch order 1 2 10 12; the hoist Metal log equals the M1 log with
+exactly those dispatches moved ahead of their render encoders; structure checks pass (each hoist
+encoder closes immediately before its render encoder); predicate table passes all 19 rows; both
+negative controls detected.
+
+**Known gap, not fixed:** a *late* refusal (a pre side op refused after its draw passed the gate) leaves
+the pass unsplit, so that op would be encoded on its own command buffer while the shared buffer is
+open - `KK_BBSTAT_ONECB_ORDER_VIOLATIONS` in release, an assert in debug. Every pre-gfx path in
+`kk_draw` is refused at the gate instead (tessellation and prefix-sum are ANY, first heap use is HEAP,
+predicate/unroll addresses are in the gate's read set, an occupied slot is BUSY), and the per-op
+re-check can only differ from the gate through work this draw itself adds - so it should not fire in
+the real driver, but that is a trace, not a proof. **The runtime A/B must show `late refusals = 0`.**
+If it ever fires, the fix is to split the pass at the refusal, not to widen the gate.
