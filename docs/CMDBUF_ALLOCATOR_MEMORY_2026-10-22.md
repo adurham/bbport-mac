@@ -175,3 +175,34 @@ buffer because nothing is encoded until the pass is closed; both are multi-day c
 submission path, and both must be gated and proved against the same bar: <= 1 Metal command buffer
 per recording, allocator median <= 2 quanta, total allocator bytes <= ~500 MB, footprint <= 9 GiB
 flat for 10 minutes, fps >= 41, zero order violations, and a pixel-identical capture set.
+
+## The rewrite: milestones M0-M1 (probe driver, default off)
+
+Per the reference model's plan, variant A (deferred render recording) is being built in the probe
+driver behind `BB_KK_DEFER_RENDER`. Two milestones are in:
+
+- **M0 - the abstraction.** Every Metal render-encoder call now goes through `kk_render_enc.h`
+  (`kk_renc_*`), with a direct backend as the default and the deferred backend behind the knob.
+  Direct-path equivalence was proven by comparing compiled objects: same calls in the same order,
+  no allocations added.
+- **M1 - the deferred list + an offline proof.** New `kk_render_defer.{h,c}`: a pass records 104-byte
+  op nodes (state, draws, barriers, timestamps, labels, side ops with their read/write addresses) and
+  replays them into one render encoder at the pass's end or at a mid-pass compute side op. The proof
+  is offline, no GPU: `deps-arm64-probe/defer-m1-test/run.sh` drives the same op stream through both
+  backends and compares the call logs. **Both logs are byte-identical - `renc` 93 lines, `mtl` 96
+  lines - and a perturbed control is caught in both.** The UUID is a probe build; the installed
+  driver is untouched.
+
+Two things this milestone taught, both worth keeping:
+
+- **The first "identical" was false.** The test compared Metal calls grouped per encoder, which cannot
+  see a reordering - the one property M1 exists to preserve. Judging on raw `cmp` of the whole
+  `direct.mtl` vs `deferred.mtl` exposed it: compute encoders were emitted before the render encoder
+  instead of mid-pass. The harness now compares raw global order and fails on any reordering.
+- **The direct backend does not end the render encoder at a mid-pass side op.** It keeps one encoder
+  open and interleaves the compute inside it. The deferred backend now mirrors that exactly
+  (`kk_renc_sync` replays the recorded ops and leaves the encoder open), which is why the raw order
+  can match at all.
+
+M2 (hoist pre-gfx compute) and M3 (sink post-gfx work) are gated separately; M1 deliberately changes
+the data structure only, so the allocator block is still ~10 GB until they land.
