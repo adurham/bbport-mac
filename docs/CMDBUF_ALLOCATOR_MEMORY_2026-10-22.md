@@ -293,3 +293,11 @@ is to give the **tessellation side op a decoded read/write set** instead of `ANY
 index/vertex inputs and writes fresh heap outputs, so it is hoistable once that is established), and to
 decide whether the heap reset can be emitted ahead of the unroll safely. Until then the deferred-recording
 route leaves the block where it is.
+
+**Caveat on that run's frame rate (corrected the same night).** It was not a perf measurement: the run
+script had `BB_KK_RENC_LOG` on, which writes one line per render-encoder call - **1.0 GB / 24.5 M lines in
+five minutes** - and that alone explains the 12 fps the owner saw. The hoist counters are unaffected by
+logging (the gate's decisions do not depend on it) and stand: zero hoists, block unchanged. `m2ab.sh` no
+longer sets that log; it collects `BB_FRAME_STATS`/`BB_FRAME_LOG` instead so fps is read from the frame
+CSV. The run also missed the Mesa shader cache (new driver UUID `2E07D05D` vs the preload's `C5B640F8`),
+so it filled `~/.cache/mesa_shader_cache` from scratch; the next run on the same build is warm.

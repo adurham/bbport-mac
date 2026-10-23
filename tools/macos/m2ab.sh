@@ -18,8 +18,13 @@ export BB_KK_DEFER_RENDER=1
 export BB_KK_DEFER_HOIST=$h
 export BB_KK_STATS=1
 export BB_KK_ALLOC_LOG=/tmp/kk-m2-$label.alloc
-export BB_KK_FLUSH_LOG=/tmp/kk-m2-$label.flush
-export BB_KK_RENC_LOG=/tmp/kk-m2-$label.renc
+# Frame stats: per-frame ms + the columns that split CPU/GPU. The fps number comes from here, not
+# from an impression. NB: BB_KK_RENC_LOG is NOT set here - it writes one line per render-encoder call
+# (1.0 GB / 24.5 M lines in a 5-min run) and destroys the frame rate. It belongs to the offline
+# harnesses only.
+export BB_FRAME_STATS=1
+export BB_FRAME_LOG=/tmp/kk-m2-$label.frames.csv
+unset BB_KK_RENC_LOG BB_KK_FLUSH_LOG
 
 rm -f /tmp/kk-m2-$label.alloc /tmp/kk-m2-$label.flush /tmp/kk-m2-$label.renc
 # Preflight: the probe driver must be the one bb-gpu will load, and bb-gpu must exist.
