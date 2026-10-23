@@ -45,4 +45,5 @@ pkill -TERM -f 'bb-gpu' 2>/dev/null
 wait "$game" 2>/dev/null
 echo "selfdrive: done (reached=$reached)"
 grep -a 'pre-gfx hoist (BB_KK_DEFER_HOIST)' "$log" | tail -1
-grep -a 'hoist oracle' "$log" | tail -1
+grep -a 'hoist oracle' "$log" | tail -1 || true
+exit 0
