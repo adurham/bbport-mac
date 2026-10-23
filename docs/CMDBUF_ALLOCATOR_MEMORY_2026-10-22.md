@@ -436,3 +436,32 @@ list even when the render encoder already existed) - restored for the default pa
 still pays the walk.
 
 Unmeasured at runtime: whether draws now hoist, and what that does to ENC/BUSY, the block and fps.
+
+## M2 lands: 941k hoists, the block falls 4.5x (2026-10-23, run h1d)
+
+One 168 s run at the owner's settings, probe driver `A6E705F8`, default flags (no WHY_ALL, no oracle):
+
+```
+draws hoisted 941076, side ops hoisted 3381890, hoist encoders 654578;
+refusals 32925 (pass encoder already created 8771, first heap use 24154, everything else 0);
+late refusals 0; max Metal command buffers per recording 37 (gfx only 18); order violations 0
+```
+
+| | before M2 | after |
+|---|---|---|
+| gfx allocators | 86 / 10 151 MB / median 132.7 | **86 / 2 260 MB / median 27.5 (max 57.5)** |
+| pre / post | 1 003 / 1 004 MB | 176 / 173 MB |
+| max gfx Metal CBs per recording | 48 | **18** |
+| frame mean | 19.0 ms (52.6 fps) | 17.8 ms (**56.3 fps**) |
+| frame p95 | 40.7 ms | **26.1 ms** |
+
+The command-allocator block went from ~12.2 GB to ~2.6 GB - roughly 9.6 GB freed - and the frame-time tail
+improved with it. The split premise from the bench (2.4 MB per Metal CB, high-water for life) is what makes
+this land: the worst recording went from 48 gfx CBs to 18.
+
+What still refuses, in order: 24 154 first-heap-use (a draw that is not hoisted because something else
+refused first, so its reset stays in-pass) and 8 771 encoder-exists (the cascade tail of those). No
+read-after-write, barrier, shader-write, XFB or feedback refusals at all.
+
+NOT yet proven: pixel parity. Hoisting reorders execution, so a visible A/B (same route, hoist off vs on,
+screenshot diff) is the gate before this is called safe, even though nothing looked wrong in the run.
