@@ -178,3 +178,24 @@ remains the way to finish the attribution; this result removes the cheapest expl
 
 Frames kept at `out/titlecap-v3-*.png` in the metalfx worktree; the mechanism (retriggered
 `BB_BUGREPORT_TRIGGER` in a hidden warm run) is reusable for any future title-screen look.
+
+## Found and fixed (2026-10-23): the UI edge-stretch snapping a text draw
+
+The band is in the port's own frame (hidden run at 3440x1440, the drawable at the output size - the
+2026-10-17 capture missed it only because its drawable was 1512x982). It is `EmitUiEdgeStretch`: on an
+output wider than 16:9 the vertex shader moves UI vertices that sit on the game's 16:9 screen edge out to
+the output's edge, so full-screen fills and backgrounds cover the ultrawide frame. The side-edge case
+(the subtitles' backdrop band) fired on the title's legal line: its glyph quad's last vertices land on
+x = 0.7442 of the output (the 16:9 edge) in the lower part of the screen, so they were dragged to the
+output's right edge and the text smeared into a white streak.
+
+The guard that was meant to keep text and pictures intact only skipped textures >= 2048 ("the title's
+picture 2048x1024, the font page 2048x2048"). The legal line's page is **1024x512**, so it passed the
+guard. Traced with a temporary `BB_UI_SNAP_TRACE`: `edges 0.7442,1.0000 img 1024x512 indices 30` - armed,
+every frame.
+
+Fix (`gpu/render/raster_targets.cpp`): the snap is now skipped for every draw that samples a texture, not
+just the >= 2048 ones. Untextured fills (menus' dimming, fades, subtitle bands) keep it, which is what the
+mechanism exists for; textured content keeps its proportions, which was always the intent. Verified on a
+hidden 3440x1440 title capture: the streak is gone, the text reads clean, and the frame still fills the
+panel (no seam at the 16:9 edge; the brightness fall-off to the corners is the title art's vignette).
