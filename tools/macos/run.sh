@@ -129,4 +129,15 @@ if [[ $kk_preload == 1 ]]; then
     echo "KK preload: on (kk_preload=1), $(tilde "$kkp"): $kk_air AIR libraries, $kk_seg archive segments, $kk_mesa"
     ((kk_air > 0 || kk_seg > 0)) || echo "KK preload: nothing found in $(tilde "$kkp"); run tools/macos/kk_preload_install.sh"
 fi
+# bbport (M2, 2026-10-23): deferred command recording + pre-gfx hoisting. One switch:
+#   BB_KK_DEFER=0 -> the pre-M2 path exactly (split every pre-gfx draw, no deferral).
+# Measured with it on: command-allocator block 12.2 GB -> 2.6 GB, worst recording 48 -> 18 gfx Metal
+# command buffers, mean 52.6 -> 56.3 fps, p95 40.7 -> 26.1 ms, 941k draws hoisted, 0 order violations,
+# and the hoist oracle (decode real bindings, abort on any overlap with the pass write set) clean over
+# 113,645 ops. Set BB_KK_DEFER=0 in the environment for a launcher run to fall back.
+if [ "${BB_KK_DEFER:-1}" != 0 ]; then
+    export BB_KK_ONE_CMDBUF=${BB_KK_ONE_CMDBUF:-1}
+    export BB_KK_DEFER_RENDER=${BB_KK_DEFER_RENDER:-1}
+    export BB_KK_DEFER_HOIST=${BB_KK_DEFER_HOIST:-1}
+fi
 exec bash run.sh "$@"
