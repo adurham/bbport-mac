@@ -412,3 +412,27 @@ PASS with the tessellation chain now hoisting end to end; a whole-pass hoist cas
 
 **Still unmeasured: the ceiling in the real driver.** Needs one runtime run with `BB_KK_HOIST_WHY_ALL=1`
 and `BB_KK_HOIST_ORACLE=abort` plus an image-diff against hoist-off.
+
+## The heap reset joins the hoist (2026-10-23) - the last refusal that stood in front of every pass
+
+The gate's `HEAP` refusal (first heap use in a recording) was cascading: 147 216 of 147 216 renderings
+with pre-gfx work refused on it, and every later draw in those passes then refused as ENC or BUSY.
+
+`kk_heap` now routes the reset as a **pre side op of the hoisted draw** when that draw passed the gate:
+`libkk_write_u32(..., pre_gfx = true, heap bottom = 0)`, so `kk_dispatch_precomp` records the node before
+`cs_get_compute` and the reset is encoded into the pass's hoist encoder ahead of the allocating dispatch.
+`HEAP` alone no longer refuses (`if (heap_first && mask != 0u)`), the reason and counter are kept for draws
+refused for something else, and a non-hoisted draw keeps the old in-pass post_gfx placement. `uses_heap` is
+cleared by `cs_start_render`, not by the gate, so the "first use in this pass" decision lives in `kk_heap`
+keyed on `renc.hoist_draw` - which is why the gate's `heap_first` alone could not be trusted.
+
+Offline: M1 harness still byte-identical with both controls; M2 harness PASS, with the heap section showing
+`reset -> VS+TCS -> tess -> prefix -> tess -> render encoder` inside one hoist encoder, the non-hoisted
+cases keeping the post_gfx placement, and the wrong-placement control caught. Probe UUID
+`A6E705F8-3333-3765-A206-B4C281B26E9E`, installed driver untouched (sha256 `87ea3824…`).
+
+Also fixed before this: the gate had lost its early-out when it became mask-based (it walked the whole op
+list even when the render encoder already existed) - restored for the default path, `BB_KK_HOIST_WHY_ALL`
+still pays the walk.
+
+Unmeasured at runtime: whether draws now hoist, and what that does to ENC/BUSY, the block and fps.

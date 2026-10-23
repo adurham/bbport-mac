@@ -31,6 +31,9 @@
 #include "kk_image.h"
 #include "kk_image_view.h"
 
+#include "poly/geometry.h" /* struct poly_heap (kk_heap's reset address) */
+
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -231,6 +234,22 @@ tess_side(struct kk_cmd_buffer *cmd, uint64_t state)
    dispatch(cmd, enc, 9000u, s);
 }
 
+/* kk_heap's reset on the pass's first heap use (kk_cmd_draw.c): a draw that
+ * passed the hoist gate records it as a pre side op (libkk_write_u32 with
+ * pre_gfx=true, hoisted with the draw's other pre-gfx work); otherwise
+ * kk_cmd_write: pre_gfx = !kk_renc_is_open (in-pass: post-gfx). Every reset
+ * is listed in <out>.heap: "seq draw pre|post bottom". */
+static FILE *heapl;
+static void
+heap_reset(struct kk_cmd_buffer *cmd, uint64_t bottom, const char *draw)
+{
+   const bool pre = cmd->renc.hoist_draw ? true : !kk_renc_is_open(cmd);
+   fprintf(heapl, "%u %s %s 0x%llx\n", seq + 1u, draw, pre ? "pre" : "post",
+           (unsigned long long)bottom);
+   struct libkk_write_u32_args wa = {bottom, 0u};
+   side(cmd, pre, LIBKK_WRITE_U32, &wa, sizeof(wa));
+}
+
 /* kk_draw -> kk_bb_hoist_gate (the draw has pre-gfx work) */
 static void
 gate(struct kk_cmd_buffer *cmd, bool tess, const uint64_t *reads, uint32_t nr,
@@ -409,12 +428,20 @@ predicate_table(void)
    c->gfx.cmd_buf = fake();
    kk_renc_begin(c, d);
    memset(stats, 0, sizeof(stats));
+   /* heap_first alone no longer refuses: the hoisted draw takes its heap
+    * reset with it as a pre side op (kk_heap) */
    bool h = kk_renc_hoist_draw(c, 0u, NULL, 0u, true);
    printf("  %-52s -> hoist=%d refused_heap=%lld\n", "kk_renc_hoist_draw heap_first (fresh pass)",
           h, (long long)stats[KK_BBSTAT_HOIST_REFUSED_HEAP]);
-   bad += h || stats[KK_BBSTAT_HOIST_REFUSED_HEAP] != 1;
+   bad += !h || stats[KK_BBSTAT_HOIST_REFUSED_HEAP] != 0;
+   draw_done(c);
    void *busy_enc = fake();
    c->pre_gfx->encoder = busy_enc; /* a non-hoist, non-folded encoder */
+   /* refused anyway (BUSY): HEAP reported first, as before (enum order) */
+   h = kk_renc_hoist_draw(c, 0u, NULL, 0u, true);
+   printf("  %-52s -> hoist=%d refused_heap=%lld busy=%lld\n", "kk_renc_hoist_draw heap_first, pre_gfx busy",
+          h, (long long)stats[KK_BBSTAT_HOIST_REFUSED_HEAP], (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY]);
+   bad += h || stats[KK_BBSTAT_HOIST_REFUSED_HEAP] != 1 || stats[KK_BBSTAT_HOIST_REFUSED_BUSY] != 0;
    h = kk_renc_hoist_draw(c, 0u, NULL, 0u, false);
    printf("  %-52s -> hoist=%d refused_busy=%lld\n", "kk_renc_hoist_draw, pre_gfx holds another encoder",
           h, (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY]);
@@ -423,7 +450,7 @@ predicate_table(void)
    h = kk_renc_hoist_draw(c, 0u, NULL, 0u, false);
    printf("  %-52s -> hoist=%d draws=%lld\n", "kk_renc_hoist_draw, nothing in the way",
           h, (long long)stats[KK_BBSTAT_HOIST_DRAWS]);
-   bad += !h || stats[KK_BBSTAT_HOIST_DRAWS] != 1;
+   bad += !h || stats[KK_BBSTAT_HOIST_DRAWS] != 2;
    draw_done(c);
    c->renc.hoist = false; /* flag unset: never hoists, never counts */
    memset(stats, 0, sizeof(stats));
@@ -717,6 +744,164 @@ oracle_mode(void)
    return bad ? 1 : 0;
 }
 
+/* ---- heap stream: the pass's first heap user ------------------------------
+ * usage: renc_hoist_test heap direct|deferred|hoist <out-prefix>
+ * Geometry heap at HEAP_GPU, its poly_heap.bottom field (the reset's write
+ * address, kk_heap) at HEAP_GPU + offsetof(struct poly_heap, bottom).
+ *   P1 tessellation draw, first heap user (kk_upload_tess_params' kk_heap),
+ *      read-only VS: hoisted -> reset, VS+TCS, tess count, prefix sum, tess
+ *   P2 geometry unroll, first heap user (kk_unroll_geometry's kk_heap):
+ *      hoisted -> reset, unroll
+ *   P3 unroll, first heap user, after a draw + in-pass barrier: refused
+ *      (BARRIER) -> reset stays in-pass post-gfx (M1 placement)
+ *   P4 tessellation, first heap user, pre_gfx busy (a non-folded compute
+ *      encoder open from work outside the pass): refused, HEAP reported (as
+ *      before: HEAP precedes BUSY) -> reset in-pass post-gfx
+ * Prints one line per draw: hoisted, HEAP counter delta, reset placement. */
+#define HEAP_GPU 0x99000000ull
+#define HEAP_BOTTOM (HEAP_GPU + offsetof(struct poly_heap, bottom))
+
+struct heap_draw_rec {
+   const char *name;
+   bool hoisted;
+   long long heap_delta;
+};
+
+static void
+heap_tess_draw(struct kk_cmd_buffer *cmd, struct kk_renc *r, uint64_t st,
+               const char *name, struct heap_draw_rec *rec)
+{
+   const long long h0 = stats[KK_BBSTAT_HOIST_REFUSED_HEAP];
+   gate(cmd, true, NULL, 0, true); /* kk_bb_hoist_gate: tess, !uses_heap */
+   rec->name = name;
+   rec->hoisted = cmd->renc.hoist_draw;
+   /* kk_upload_per_draw_data -> kk_upload_tess_params -> kk_heap */
+   heap_reset(cmd, HEAP_BOTTOM, name);
+   tess_side(cmd, st);                                  /* kk_launch_tess */
+   struct libkk_tess_tri_args ta = {st, 0};
+   side(cmd, true, LIBKK_TESS_TRI, &ta, sizeof(ta));
+   struct libkk_prefix_sum_tess_args pa = {st};
+   side(cmd, true, LIBKK_PREFIX_SUM_TESS, &pa, sizeof(pa));
+   ta.tess_mode = 1;
+   side(cmd, true, LIBKK_TESS_TRI, &ta, sizeof(ta));
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_indexed_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, MTL_INDEX_TYPE_UINT32,
+                                            HEAP_GPU + 16u, 0x100000, st + 0x100u);
+   draw_done(cmd);
+   rec->heap_delta = stats[KK_BBSTAT_HOIST_REFUSED_HEAP] - h0;
+}
+
+static void
+heap_unroll_draw(struct kk_cmd_buffer *cmd, struct kk_renc *r, uint64_t ib,
+                 uint64_t in, uint64_t out, const char *name,
+                 struct heap_draw_rec *rec)
+{
+   const long long h0 = stats[KK_BBSTAT_HOIST_REFUSED_HEAP];
+   const uint64_t rd[2] = {in, ib};
+   gate(cmd, false, rd, 2, true); /* kk_bb_hoist_gate: unroll, !uses_heap */
+   rec->name = name;
+   rec->hoisted = cmd->renc.hoist_draw;
+   heap_reset(cmd, HEAP_BOTTOM, name);                  /* kk_heap */
+   struct libkk_unroll_geometry_args ua = {ib, HEAP_GPU, in, out, 5, 0xffff, 36, 2, 4, 0, 4};
+   side(cmd, true, LIBKK_UNROLL_GEOMETRY, &ua, sizeof(ua));
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_indexed_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, MTL_INDEX_TYPE_UINT32,
+                                            HEAP_GPU + 16u, 0x100000, out);
+   draw_done(cmd);
+   rec->heap_delta = stats[KK_BBSTAT_HOIST_REFUSED_HEAP] - h0;
+}
+
+static int
+heap_mode(int argc, char **argv)
+{
+   if (argc < 4) return 2;
+   const bool deferred = strcmp(argv[2], "direct") != 0;
+   const bool hoist = !strcmp(argv[2], "hoist");
+   char path[1024];
+   snprintf(path, sizeof(path), "%s.renc", argv[3]);
+   FILE *rl = fopen(path, "w");
+   snprintf(path, sizeof(path), "%s.mtl", argv[3]);
+   mt = fopen(path, "w");
+   snprintf(path, sizeof(path), "%s.hoist", argv[3]);
+   hl = fopen(path, "w");
+   snprintf(path, sizeof(path), "%s.heap", argv[3]);
+   heapl = fopen(path, "w");
+   if (!rl || !mt || !hl || !heapl) return 2;
+   kk_renc_log_set_file_for_test(rl);
+
+   the_table = fake();
+   void *cb1 = fake(), *cb2 = fake();
+   void *desc = fake(), *pipe = fake(), *ds = fake();
+   struct kk_shader *vs_ro = calloc(1, sizeof(*vs_ro));
+   struct kk_cmd_buffer *cmd = new_cmd(deferred, hoist);
+   cmd->argument_table = the_table;
+   cmd->gfx.cmd_buf = cb1;
+   kk_renc_set_table_address(cmd, 1u, 0x5A000000ull);
+   struct kk_renc *r = kk_renc(cmd);
+   cmd->state.shaders[MESA_SHADER_VERTEX] = vs_ro;
+   struct heap_draw_rec rec[4];
+
+   /* P1: tessellation, the pass's first heap user, nothing earlier */
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 10);
+   heap_tess_draw(cmd, r, 0x7A000000ull, "P1-tess", &rec[0]);
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+
+   /* P2: geometry unroll, first heap user of its pass, after a draw that
+    * writes only its attachments */
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 11);
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_primitives(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0);
+   heap_unroll_draw(cmd, r, 0xD4000000ull, 0xE4000000ull, 0xE5000000ull, "P2-unroll", &rec[1]);
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+
+   /* P3: unroll, first heap user, refused (in-pass barrier after a draw) */
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 12);
+   kk_renc_note_draw(cmd);
+   kk_renc_draw_primitives(r, MTL_PRIMITIVE_TYPE_TRIANGLE, 0, 3, 1, 0);
+   kk_renc_barrier_after_encoder_stages(r, MTL_STAGE_FRAGMENT, MTL_STAGE_VERTEX);
+   heap_unroll_draw(cmd, r, 0xD6000000ull, 0xE6000000ull, 0xE7000000ull, "P3-unroll-refused", &rec[2]);
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+
+   /* P4: tessellation, first heap user, pre_gfx busy: refused */
+   cmd->gfx.cmd_buf = NULL;
+   {
+      struct libkk_write_u32_args wa = {0xE0000040ull, 3u};
+      side(cmd, true, LIBKK_WRITE_U32, &wa, sizeof(wa)); /* outside a pass */
+   }
+   cmd->gfx.cmd_buf = cb2;
+   pass_begin(cmd, desc, true);
+   state(cmd, pipe, ds, 13);
+   heap_tess_draw(cmd, r, 0x7B000000ull, "P4-tess-busy", &rec[3]);
+   store_ops(cmd);
+   pass_end(cmd, true, MTL_STAGE_ALL);
+
+   kk_renc_fini(cmd);
+   fclose(rl);
+   fclose(mt);
+   fclose(hl);
+   fclose(heapl);
+   free(cmd);
+   free(vs_ro);
+   for (unsigned i = 0; i < 4; i++)
+      printf("draw %-18s hoisted=%d heap_refusals+=%lld\n", rec[i].name,
+             rec[i].hoisted, rec[i].heap_delta);
+   if (hoist)
+      printf("hoist counters: draws=%lld side_ops=%lld encoders=%lld refused=%lld "
+             "(enc=%lld barrier=%lld heap=%lld busy=%lld) late=%lld\n",
+             (long long)stats[KK_BBSTAT_HOIST_DRAWS], (long long)stats[KK_BBSTAT_HOIST_OPS],
+             (long long)stats[KK_BBSTAT_HOIST_ENCODERS], (long long)stats[KK_BBSTAT_HOIST_REFUSED],
+             (long long)stats[KK_BBSTAT_HOIST_REFUSED_ENC], (long long)stats[KK_BBSTAT_HOIST_REFUSED_BARRIER],
+             (long long)stats[KK_BBSTAT_HOIST_REFUSED_HEAP], (long long)stats[KK_BBSTAT_HOIST_REFUSED_BUSY],
+             (long long)stats[KK_BBSTAT_HOIST_LATE]);
+   return 0;
+}
+
 /* ---- the op stream ------------------------------------------------------- */
 
 int
@@ -726,6 +911,8 @@ main(int argc, char **argv)
       return predicate_table();
    if (argc >= 2 && !strcmp(argv[1], "oracle"))
       return oracle_mode();
+   if (argc >= 2 && !strcmp(argv[1], "heap"))
+      return heap_mode(argc, argv);
    /* BB_KK_HOIST_WHY_ALL / BB_KK_HOIST_ORACLE from the environment for the
     * op-stream modes (the latches read the env on first use) */
    if (argc < 3) return 2;
@@ -740,7 +927,9 @@ main(int argc, char **argv)
    mt = fopen(path, "w");
    snprintf(path, sizeof(path), "%s.hoist", argv[2]);
    hl = fopen(path, "w");
-   if (!rl || !mt || !hl) return 2;
+   snprintf(path, sizeof(path), "%s.heap", argv[2]);
+   heapl = fopen(path, "w");
+   if (!rl || !mt || !hl || !heapl) return 2;
    kk_renc_log_set_file_for_test(rl);
 
    the_table = fake();
@@ -810,16 +999,15 @@ main(int argc, char **argv)
    store_ops(cmd);
    pass_end(cmd, false, MTL_STAGE_ALL & ~MTL_STAGE_VERTEX);
 
-   /* ---- pass C (new shared buffer): first heap user: HEAP ---- */
+   /* ---- pass C (new shared buffer): first heap user. M2: hoisted, its
+    * heap reset with it (pre); M1: the reset is in-pass post-gfx ---- */
    cmd->gfx.cmd_buf = cb2;
    pass_begin(cmd, desc, true);
    state(cmd, pipe, ds, 2);
-   {  /* D6: kk_unroll_geometry -> kk_heap's reset (in-pass post write_u32),
-       * then the unroll */
+   {  /* D6: kk_unroll_geometry -> kk_heap's reset, then the unroll */
       uint64_t rd[2] = {0xFA000000ull, 0xD2000000ull};
       gate(cmd, false, rd, 2, true);
-      struct libkk_write_u32_args wa = {0x99000000ull, 0u};
-      side(cmd, false, LIBKK_WRITE_U32, &wa, sizeof(wa));
+      heap_reset(cmd, 0x99000000ull, "D6");
       struct libkk_unroll_geometry_args ua = {0xD2000000ull, 0x99000000ull, 0xFA000000ull, 0xFB000000ull, 5, 0xffff, 36, 2, 4, 0, 4};
       side(cmd, true, LIBKK_UNROLL_GEOMETRY, &ua, sizeof(ua));
       kk_renc_draw_indexed_primitives_indirect(r, MTL_PRIMITIVE_TYPE_TRIANGLE, MTL_INDEX_TYPE_UINT32,
@@ -951,6 +1139,7 @@ main(int argc, char **argv)
    fclose(rl);
    fclose(mt);
    fclose(hl);
+   fclose(heapl);
    free(cmd);
    free(vs_ro);
    free(vs_w);

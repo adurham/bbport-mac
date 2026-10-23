@@ -67,7 +67,8 @@ echo "== 1. M1 on this stream: direct vs deferred"
 echo -n "renc: "; same "$OUT/direct.renc" "$OUT/deferred.renc"
 echo -n "mtl (global order): "; same "$OUT/direct.mtl" "$OUT/deferred.mtl"
 echo "== 2. recorded op list: deferred (M1) vs hoist (M2) renc log ($(wc -l < "$OUT/hoist.renc" | tr -d ' ') lines)"
-same "$OUT/deferred.renc" "$OUT/hoist.renc"
+echo "   (the only allowed difference: a hoisted draw's heap reset node, side post -> side pre, same write, no reads)"
+python3 "$HERE/heap_renc.py" "$OUT/deferred.renc" "$OUT/hoist.renc" "$OUT/deferred.heap" "$OUT/hoist.heap" || rc=1
 echo "== hoisted dispatch seqs (record order): $(tr '\n' ' ' < "$OUT/hoist.hoist")"
 [ -s "$OUT/hoist.hoist" ] || { echo "nothing hoisted (FAIL)"; rc=1; }
 echo "== 3. the asserted difference: M1 mtl vs hoist mtl ($(wc -l < "$OUT/deferred.mtl" | tr -d ' ') / $(wc -l < "$OUT/hoist.mtl" | tr -d ' ') lines)"
@@ -120,11 +121,12 @@ c = dict((k, int(v)) for k, v in re.findall(r'(\w+)=(\d+)', t.split('why-all:')[
 # 12 draw gates (D1..D12); refused only by the may-touch-anything family:
 # D3 (tess with no VS reflection: ANY) and D12 (tess after a memory-writing
 # draw: SHADER_WRITE); their ENC/BUSY cascade: D4 (ENC + BUSY + ANY_EARLIER,
-# all caused by D3's M1 fallback). Renderings with gated draws: A..H = 8,
-# hoisted end to end: G; would hoist end to end if the family were
-# satisfied: A (D3/D4 excused), E (its refusal is a late ANY), G, H.
-want = {'evals': 12, 'refused': 7, 'only_any': 2, 'any_cascade': 1,
-        'renderings': 8, 'hoisted': 1, 'if_any': 4}
+# all caused by D3's M1 fallback). D6 (first heap user) is no longer refused
+# (its heap reset is hoisted with it). Renderings with gated draws: A..H = 8,
+# hoisted end to end: C, G; would hoist end to end if the family were
+# satisfied: A (D3/D4 excused), C, E (its refusal is a late ANY), G, H.
+want = {'evals': 12, 'refused': 6, 'only_any': 2, 'any_cascade': 1,
+        'renderings': 8, 'hoisted': 2, 'if_any': 5}
 bad = [k for k in want if c.get(k) != want[k]]
 print('why-all expected %s: %s' % (want, 'PASS' if not bad else 'FAIL %s' % {k: c.get(k) for k in bad}))
 sys.exit(1 if bad else 0)
@@ -133,5 +135,21 @@ echo "== 6. negative controls (must be DETECTED)"
 $X "$OUT/deferred.mtl" "$OUT/porder.hoist" > "$OUT/expected-porder.mtl"
 if cmp -s "$OUT/expected-porder.mtl" "$OUT/porder.mtl"; then echo "perturb-order: NOT DETECTED (harness broken)"; rc=1; else echo "perturb-order (render encoder created before the hoisted dispatch):"; diff "$OUT/expected-porder.mtl" "$OUT/porder.mtl" | head -12; echo "perturb-order: detected"; fi
 if cmp -s "$OUT/expected.mtl" "$OUT/pbind.mtl"; then echo "perturb-bind: NOT DETECTED (harness broken)"; rc=1; else diff "$OUT/expected.mtl" "$OUT/pbind.mtl"; echo "perturb-bind: detected"; fi
+echo "== 7. heap stream: the pass's first heap user (kk_heap's reset)"
+for m in direct deferred hoist; do "$T" heap $m "$OUT/heap-$m" > "$OUT/heap-$m.counters" || { echo "heap $m failed"; rc=1; }; done
+cat "$OUT/heap-hoist.counters"
+echo -n "7a. M1 unchanged on this stream: direct vs deferred renc: "; same "$OUT/heap-direct.renc" "$OUT/heap-deferred.renc"
+echo -n "    direct vs deferred mtl (global order): "; same "$OUT/heap-direct.mtl" "$OUT/heap-deferred.mtl"
+echo -n "    reset placement direct vs deferred: "; same "$OUT/heap-direct.heap" "$OUT/heap-deferred.heap"
+echo "7b. recorded op list deferred vs hoist (only the hoisted resets may change, post -> pre):"
+python3 "$HERE/heap_renc.py" "$OUT/heap-deferred.renc" "$OUT/heap-hoist.renc" "$OUT/heap-deferred.heap" "$OUT/heap-hoist.heap" || rc=1
+$X "$OUT/heap-deferred.mtl" "$OUT/heap-hoist.hoist" > "$OUT/heap-expected.mtl" || { echo "expect_hoist.py failed"; exit 2; }
+echo -n "7c. hoist mtl vs expected (M1 with exactly the hoisted dispatches moved), raw cmp: "
+same "$OUT/heap-expected.mtl" "$OUT/heap-hoist.mtl"
+echo "7d. per draw: reset -> heap-using dispatches -> render encoder; HEAP counter; non-hoisted placement"
+python3 "$HERE/heap_check.py" "$OUT/heap-hoist" "$OUT/heap-deferred" || rc=1
+echo "7e. negative control: a hoist whose reset lands AFTER the unroll/tess (reset left post) must be caught"
+python3 "$HERE/heap_check.py" "$OUT/heap-hoist" "$OUT/heap-deferred" --control-reset-late > "$OUT/heap-control.txt" 2>&1
+if [ $? = 0 ]; then cat "$OUT/heap-control.txt"; echo "reset-late control: NOT DETECTED (harness broken)"; rc=1; else grep FAIL "$OUT/heap-control.txt" | head -4; echo "reset-late control: detected"; fi
 echo "== result: $([ $rc = 0 ] && echo PASS || echo FAIL)"
 exit $rc
